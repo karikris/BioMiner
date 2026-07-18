@@ -20,6 +20,16 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 DYNAMIC_POOL_AUDIT_FRAME_SCHEMA_VERSION = "dynamic-pool-audit-frame-v1.0.0"
 DYNAMIC_POOL_AUDIT_FRAME_FILE = "dynamic_pool_audit_frame.parquet"
+DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA_VERSION = (
+    "dynamic-pool-probability-register-v1.0.0"
+)
+DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA_VERSION = (
+    "dynamic-pool-probability-sample-v1.0.0"
+)
+DYNAMIC_POOL_PROBABILITY_REGISTER_FILE = (
+    "dynamic_pool_probability_audit_register.parquet"
+)
+DYNAMIC_POOL_PROBABILITY_SAMPLE_FILE = "dynamic_pool_probability_audit_sample.parquet"
 
 QUERY_TIERS = frozenset({"T1", "T2", "T3", "T4", "T5"})
 RAW_SCORE_SEMANTICS = "raw_model_evidence_not_probability"
@@ -96,6 +106,44 @@ DYNAMIC_POOL_AUDIT_FRAME_SCHEMA: dict[str, pl.DataType] = {
     "final_release_candidate": pl.Boolean,
 }
 
+_PROBABILITY_DESIGN_FIELDS: dict[str, pl.DataType] = {
+    "sample_policy_fingerprint": pl.String,
+    "sampling_register_fingerprint": pl.String,
+    "sampling_population_unit_id": pl.String,
+    "sampling_population_member_count": pl.UInt32,
+    "sampling_population_member_unit_ids": pl.List(pl.String),
+    "sampling_population_owner_group_ids": pl.List(pl.String),
+    "sampling_population_duplicate_group_ids": pl.List(pl.String),
+    "sampling_population_observation_group_ids": pl.List(pl.String),
+    "member_analysis_stratum_ids": pl.List(pl.String),
+    "component_crosses_analysis_strata": pl.Boolean,
+    "selection_hash": pl.String,
+    "selection_rank": pl.UInt32,
+    "stratum_population_count": pl.UInt32,
+    "stratum_sample_count": pl.UInt32,
+    "inclusion_probability": pl.Float64,
+    "sampling_weight": pl.Float64,
+    "sampling_design": pl.String,
+    "representative_estimation_eligible": pl.Boolean,
+    "variance_cluster_id": pl.String,
+}
+
+DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA: dict[str, pl.DataType] = {
+    "schema_version": pl.String,
+    **_PROBABILITY_DESIGN_FIELDS,
+    "representative_audit_unit_fingerprint": pl.String,
+    "representative_sampling_unit_id": pl.String,
+    "analysis_stratum_id": pl.String,
+    "analysis_stratum_fingerprint": pl.String,
+    "selected": pl.Boolean,
+}
+
+DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA: dict[str, pl.DataType] = {
+    **DYNAMIC_POOL_AUDIT_FRAME_SCHEMA,
+    "probability_sample_schema_version": pl.String,
+    **_PROBABILITY_DESIGN_FIELDS,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class DynamicPoolAuditStrataPolicy:
@@ -139,6 +187,62 @@ class DynamicPoolAuditStrataPolicy:
                 "subject_area_cutpoints": self.subject_area_cutpoints,
             }
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ProbabilityAuditSamplingPolicy:
+    """Deterministic allocation for a stratified probability audit."""
+
+    review_budget: int
+    schema_version: str = "probability-audit-sampling-policy-v1.0.0"
+    minimum_per_nonempty_stratum: int = 1
+    random_seed: int = 42
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "schema_version",
+            _required_text(self.schema_version, field="schema_version"),
+        )
+        for field in ("review_budget", "minimum_per_nonempty_stratum"):
+            value = getattr(self, field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{field} must be a positive integer")
+        if (
+            not isinstance(self.random_seed, int)
+            or isinstance(self.random_seed, bool)
+            or not 0 <= self.random_seed <= 2**64 - 1
+        ):
+            raise ValueError("random_seed must be an unsigned 64-bit integer")
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_semantic_fingerprint(
+            {
+                "schema_version": self.schema_version,
+                "review_budget": self.review_budget,
+                "minimum_per_nonempty_stratum": self.minimum_per_nonempty_stratum,
+                "random_seed": self.random_seed,
+                "target_population": (
+                    "one_deterministic_representative_per_connected_"
+                    "duplicate_observation_component"
+                ),
+                "allocation": (
+                    "minimum_then_proportional_largest_remainder_by_analysis_stratum"
+                ),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProbabilityAuditSelection:
+    """All-unit design register plus the selected review rows."""
+
+    register_fingerprint: str
+    population_count: int
+    selected_count: int
+    register: pl.DataFrame
+    sample: pl.DataFrame
 
 
 def empty_dynamic_pool_audit_frame() -> pl.DataFrame:
@@ -227,6 +331,381 @@ def validate_dynamic_pool_audit_frame(frame: pl.DataFrame) -> None:
     )
     if fingerprints != {expected}:
         raise ValueError("dynamic-pool audit frame fingerprint mismatch")
+
+
+def build_probability_audit_sample(
+    frame: pl.DataFrame,
+    *,
+    policy: ProbabilityAuditSamplingPolicy,
+) -> ProbabilityAuditSelection:
+    """Select a stratified probability sample with exact design weights.
+
+    Duplicate and observation identities define connected components.  One
+    deterministic representative per component is the audit target population;
+    owner identities remain variance clusters rather than being treated as
+    independent observations.
+    """
+
+    validate_dynamic_pool_audit_frame(frame)
+    if not isinstance(policy, ProbabilityAuditSamplingPolicy):
+        raise TypeError("policy must be a ProbabilityAuditSamplingPolicy")
+    if not frame.height:
+        fingerprint = canonical_semantic_fingerprint(
+            {
+                "schema_version": DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA_VERSION,
+                "sample_policy_fingerprint": policy.fingerprint,
+                "audit_frame_fingerprint": None,
+                "population_units": [],
+            }
+        )
+        return ProbabilityAuditSelection(
+            register_fingerprint=fingerprint,
+            population_count=0,
+            selected_count=0,
+            register=pl.DataFrame(schema=DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA),
+            sample=pl.DataFrame(schema=DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA),
+        )
+
+    frame_rows = frame.sort("sampling_unit_id").to_dicts()
+    population_units = _build_sampling_population(frame_rows, policy=policy)
+    stratum_sizes: dict[str, int] = {}
+    for unit in population_units:
+        stratum = str(unit["analysis_stratum_id"])
+        stratum_sizes[stratum] = stratum_sizes.get(stratum, 0) + 1
+    allocations = _allocate_stratified_sample(
+        stratum_sizes,
+        review_budget=policy.review_budget,
+        minimum_per_stratum=policy.minimum_per_nonempty_stratum,
+    )
+    units_by_stratum: dict[str, list[dict[str, object]]] = {
+        stratum: [] for stratum in stratum_sizes
+    }
+    for unit in population_units:
+        units_by_stratum[str(unit["analysis_stratum_id"])].append(unit)
+    for stratum, units in units_by_stratum.items():
+        units.sort(
+            key=lambda unit: (
+                str(unit["selection_hash"]),
+                str(unit["sampling_population_unit_id"]),
+            )
+        )
+        population_count = len(units)
+        sample_count = allocations[stratum]
+        inclusion_probability = sample_count / population_count
+        for rank, unit in enumerate(units, start=1):
+            unit.update(
+                {
+                    "selection_rank": rank,
+                    "stratum_population_count": population_count,
+                    "stratum_sample_count": sample_count,
+                    "inclusion_probability": inclusion_probability,
+                    "sampling_weight": 1.0 / inclusion_probability,
+                    "selected": rank <= sample_count,
+                }
+            )
+    population_units.sort(key=lambda unit: str(unit["sampling_population_unit_id"]))
+    register_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA_VERSION,
+            "sample_policy_fingerprint": policy.fingerprint,
+            "audit_frame_fingerprint": frame["frame_fingerprint"].item(0),
+            "population_units": [
+                {
+                    key: value
+                    for key, value in unit.items()
+                    if key != "representative_row"
+                }
+                for unit in population_units
+            ],
+        }
+    )
+    register_rows = [
+        _probability_register_row(
+            unit,
+            policy=policy,
+            register_fingerprint=register_fingerprint,
+        )
+        for unit in population_units
+    ]
+    register = pl.DataFrame(
+        register_rows,
+        schema=DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA,
+        strict=True,
+    ).sort("sampling_population_unit_id")
+    sample_rows: list[dict[str, object]] = []
+    for unit in population_units:
+        if not unit["selected"]:
+            continue
+        representative = dict(unit["representative_row"])
+        design = _probability_design_values(
+            unit,
+            policy=policy,
+            register_fingerprint=register_fingerprint,
+        )
+        sample_rows.append(
+            {
+                **representative,
+                "probability_sample_schema_version": (
+                    DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA_VERSION
+                ),
+                **design,
+            }
+        )
+    sample = pl.DataFrame(
+        sample_rows,
+        schema=DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA,
+        strict=True,
+    ).sort(["analysis_stratum_id", "selection_rank", "sampling_unit_id"])
+    validate_probability_audit_selection(register, sample)
+    return ProbabilityAuditSelection(
+        register_fingerprint=register_fingerprint,
+        population_count=register.height,
+        selected_count=sample.height,
+        register=register,
+        sample=sample,
+    )
+
+
+def validate_probability_audit_selection(
+    register: pl.DataFrame,
+    sample: pl.DataFrame,
+) -> None:
+    """Validate the published first-order selection design."""
+
+    if register.schema != DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA:
+        raise ValueError("probability audit register schema does not match contract")
+    if sample.schema != DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA:
+        raise ValueError("probability audit sample schema does not match contract")
+    if not register.height:
+        if sample.height:
+            raise ValueError("empty probability register cannot have sample rows")
+        return
+    if set(register["schema_version"].to_list()) != {
+        DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA_VERSION
+    }:
+        raise ValueError("unsupported probability audit register schema version")
+    if register["sampling_population_unit_id"].n_unique() != register.height:
+        raise ValueError("probability population unit IDs must be unique")
+    invalid = register.filter(
+        ~pl.col("inclusion_probability").is_between(0.0, 1.0, closed="right")
+        | (
+            (pl.col("sampling_weight") * pl.col("inclusion_probability") - 1.0).abs()
+            > 1e-12
+        )
+        | (pl.col("stratum_sample_count") > pl.col("stratum_population_count"))
+    )
+    if invalid.height:
+        raise ValueError("probability audit inclusion probabilities are invalid")
+    selected = register.filter(pl.col("selected"))
+    if selected.height != sample.height:
+        raise ValueError("probability register and sample selection counts differ")
+    if set(selected["representative_sampling_unit_id"].to_list()) != set(
+        sample["sampling_unit_id"].to_list()
+    ):
+        raise ValueError("probability sample is not the selected representative set")
+    for stratum in register["analysis_stratum_id"].unique().to_list():
+        group = register.filter(pl.col("analysis_stratum_id") == stratum)
+        if group.filter(pl.col("selected")).height != group[
+            "stratum_sample_count"
+        ].item(0):
+            raise ValueError("probability sample count does not match stratum design")
+
+
+def _build_sampling_population(
+    rows: list[dict[str, object]],
+    *,
+    policy: ProbabilityAuditSamplingPolicy,
+) -> list[dict[str, object]]:
+    parent = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    identities: dict[tuple[str, str], int] = {}
+    for index, row in enumerate(rows):
+        for field in ("duplicate_group_id", "observation_group_id"):
+            identity = (field, str(row[field]))
+            previous = identities.setdefault(identity, index)
+            union(index, previous)
+    components: dict[int, list[dict[str, object]]] = {}
+    for index, row in enumerate(rows):
+        components.setdefault(find(index), []).append(row)
+
+    population: list[dict[str, object]] = []
+    for members in components.values():
+        members.sort(key=lambda row: str(row["sampling_unit_id"]))
+        representative = min(
+            members,
+            key=lambda row: canonical_semantic_fingerprint(
+                {
+                    "role": "probability_population_representative",
+                    "random_seed": policy.random_seed,
+                    "audit_unit_fingerprint": row["audit_unit_fingerprint"],
+                }
+            ),
+        )
+        member_unit_ids = sorted(str(row["sampling_unit_id"]) for row in members)
+        population_unit_fingerprint = canonical_semantic_fingerprint(
+            {
+                "duplicate_group_ids": sorted(
+                    {str(row["duplicate_group_id"]) for row in members}
+                ),
+                "observation_group_ids": sorted(
+                    {str(row["observation_group_id"]) for row in members}
+                ),
+                "member_audit_unit_fingerprints": sorted(
+                    str(row["audit_unit_fingerprint"]) for row in members
+                ),
+            }
+        )
+        population_unit_id = (
+            "dynamic-pool-review-population-unit:"
+            f"{population_unit_fingerprint.removeprefix('sha256:')}"
+        )
+        member_strata = sorted({str(row["analysis_stratum_id"]) for row in members})
+        population.append(
+            {
+                "sampling_population_unit_id": population_unit_id,
+                "sampling_population_member_count": len(members),
+                "sampling_population_member_unit_ids": member_unit_ids,
+                "sampling_population_owner_group_ids": sorted(
+                    {str(row["owner_group_id"]) for row in members}
+                ),
+                "sampling_population_duplicate_group_ids": sorted(
+                    {str(row["duplicate_group_id"]) for row in members}
+                ),
+                "sampling_population_observation_group_ids": sorted(
+                    {str(row["observation_group_id"]) for row in members}
+                ),
+                "member_analysis_stratum_ids": member_strata,
+                "component_crosses_analysis_strata": len(member_strata) > 1,
+                "representative_audit_unit_fingerprint": representative[
+                    "audit_unit_fingerprint"
+                ],
+                "representative_sampling_unit_id": representative["sampling_unit_id"],
+                "representative_row": representative,
+                "analysis_stratum_id": representative["analysis_stratum_id"],
+                "analysis_stratum_fingerprint": representative[
+                    "analysis_stratum_fingerprint"
+                ],
+                "selection_hash": canonical_semantic_fingerprint(
+                    {
+                        "role": "probability_audit_selection",
+                        "random_seed": policy.random_seed,
+                        "sampling_population_unit_id": population_unit_id,
+                    }
+                ),
+                "sampling_design": (
+                    "stratified_srs_without_replacement_of_connected_"
+                    "duplicate_observation_components"
+                ),
+                "representative_estimation_eligible": True,
+                "variance_cluster_id": str(representative["owner_group_id"]),
+            }
+        )
+    return population
+
+
+def _allocate_stratified_sample(
+    stratum_sizes: Mapping[str, int],
+    *,
+    review_budget: int,
+    minimum_per_stratum: int,
+) -> dict[str, int]:
+    allocation = {
+        stratum: min(minimum_per_stratum, size)
+        for stratum, size in stratum_sizes.items()
+    }
+    population_count = sum(stratum_sizes.values())
+    effective_budget = min(review_budget, population_count)
+    required_minimum = sum(allocation.values())
+    if effective_budget < required_minimum:
+        raise ValueError(
+            "review_budget cannot represent every nonempty audit stratum at the "
+            "configured minimum"
+        )
+    remaining = effective_budget - required_minimum
+    capacities = {
+        stratum: stratum_sizes[stratum] - allocation[stratum]
+        for stratum in stratum_sizes
+    }
+    capacity_total = sum(capacities.values())
+    if not remaining or not capacity_total:
+        return allocation
+    exact = {
+        stratum: remaining * capacity / capacity_total
+        for stratum, capacity in capacities.items()
+    }
+    floors = {stratum: math.floor(value) for stratum, value in exact.items()}
+    for stratum, count in floors.items():
+        allocation[stratum] += count
+    leftover = remaining - sum(floors.values())
+    priority = sorted(
+        stratum_sizes,
+        key=lambda stratum: (
+            -(exact[stratum] - floors[stratum]),
+            stratum,
+        ),
+    )
+    for stratum in priority:
+        if not leftover:
+            break
+        if allocation[stratum] < stratum_sizes[stratum]:
+            allocation[stratum] += 1
+            leftover -= 1
+    if leftover:
+        raise RuntimeError("stratified allocation did not exhaust the review budget")
+    return allocation
+
+
+def _probability_design_values(
+    unit: Mapping[str, object],
+    *,
+    policy: ProbabilityAuditSamplingPolicy,
+    register_fingerprint: str,
+) -> dict[str, object]:
+    return {
+        "sample_policy_fingerprint": policy.fingerprint,
+        "sampling_register_fingerprint": register_fingerprint,
+        **{
+            field: unit[field]
+            for field in _PROBABILITY_DESIGN_FIELDS
+            if field
+            not in {"sample_policy_fingerprint", "sampling_register_fingerprint"}
+        },
+    }
+
+
+def _probability_register_row(
+    unit: Mapping[str, object],
+    *,
+    policy: ProbabilityAuditSamplingPolicy,
+    register_fingerprint: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA_VERSION,
+        **_probability_design_values(
+            unit,
+            policy=policy,
+            register_fingerprint=register_fingerprint,
+        ),
+        "representative_audit_unit_fingerprint": unit[
+            "representative_audit_unit_fingerprint"
+        ],
+        "representative_sampling_unit_id": unit["representative_sampling_unit_id"],
+        "analysis_stratum_id": unit["analysis_stratum_id"],
+        "analysis_stratum_fingerprint": unit["analysis_stratum_fingerprint"],
+        "selected": unit["selected"],
+    }
 
 
 def _normalize_candidate(
@@ -442,9 +921,19 @@ __all__ = [
     "DYNAMIC_POOL_AUDIT_FRAME_FILE",
     "DYNAMIC_POOL_AUDIT_FRAME_SCHEMA",
     "DYNAMIC_POOL_AUDIT_FRAME_SCHEMA_VERSION",
+    "DYNAMIC_POOL_PROBABILITY_REGISTER_FILE",
+    "DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA",
+    "DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA_VERSION",
+    "DYNAMIC_POOL_PROBABILITY_SAMPLE_FILE",
+    "DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA",
+    "DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA_VERSION",
     "RAW_SCORE_SEMANTICS",
     "DynamicPoolAuditStrataPolicy",
+    "ProbabilityAuditSamplingPolicy",
+    "ProbabilityAuditSelection",
     "build_dynamic_pool_audit_frame",
+    "build_probability_audit_sample",
     "empty_dynamic_pool_audit_frame",
     "validate_dynamic_pool_audit_frame",
+    "validate_probability_audit_selection",
 ]

@@ -6,9 +6,13 @@ import pytest
 
 from biominer.evaluation.dynamic_pool_review import (
     DYNAMIC_POOL_AUDIT_FRAME_SCHEMA,
+    DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA,
+    DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA,
     RAW_SCORE_SEMANTICS,
     DynamicPoolAuditStrataPolicy,
+    ProbabilityAuditSamplingPolicy,
     build_dynamic_pool_audit_frame,
+    build_probability_audit_sample,
     empty_dynamic_pool_audit_frame,
 )
 
@@ -131,3 +135,83 @@ def test_policy_cutpoints_are_versioned_and_strictly_increasing() -> None:
 
 def test_empty_audit_frame_preserves_the_contract_schema() -> None:
     assert empty_dynamic_pool_audit_frame().schema == DYNAMIC_POOL_AUDIT_FRAME_SCHEMA
+
+
+def _probability_frame():
+    candidates: list[dict[str, object]] = []
+    for index in range(6):
+        candidates.append(
+            _candidate(
+                sampling_unit_id=f"review-unit-{index}",
+                source_record_hash=_sha(str(index + 3)),
+                flickr_photo_id=f"photo-{index}",
+                organism_unit_id=f"organism-{index}",
+                primary_query_tier="T2" if index < 4 else "T3",
+                owner_group_id=f"owner-{index // 2}",
+                duplicate_group_id=(
+                    "duplicate-shared" if index < 2 else f"duplicate-{index}"
+                ),
+                observation_group_id=f"observation-{index}",
+            )
+        )
+    return build_dynamic_pool_audit_frame(candidates)
+
+
+def test_probability_sample_publishes_exact_all_unit_inclusion_design() -> None:
+    selection = build_probability_audit_sample(
+        _probability_frame(),
+        policy=ProbabilityAuditSamplingPolicy(review_budget=3, random_seed=7),
+    )
+
+    assert selection.population_count == 5
+    assert selection.selected_count == 3
+    assert selection.register.schema == DYNAMIC_POOL_PROBABILITY_REGISTER_SCHEMA
+    assert selection.sample.schema == DYNAMIC_POOL_PROBABILITY_SAMPLE_SCHEMA
+    assert selection.register["sampling_register_fingerprint"].n_unique() == 1
+    assert selection.register.filter(~selection.register["selected"]).height == 2
+    for row in selection.register.to_dicts():
+        assert row["inclusion_probability"] == pytest.approx(
+            row["stratum_sample_count"] / row["stratum_population_count"]
+        )
+        assert row["sampling_weight"] == pytest.approx(
+            1.0 / row["inclusion_probability"]
+        )
+    assert selection.sample["representative_estimation_eligible"].all()
+
+
+def test_probability_population_collapses_duplicate_observation_components() -> None:
+    selection = build_probability_audit_sample(
+        _probability_frame(),
+        policy=ProbabilityAuditSamplingPolicy(review_budget=10),
+    )
+    grouped = selection.register.filter(
+        selection.register["sampling_population_member_count"] == 2
+    ).row(0, named=True)
+
+    assert selection.population_count == 5
+    assert grouped["sampling_population_member_unit_ids"] == [
+        "review-unit-0",
+        "review-unit-1",
+    ]
+    assert grouped["sampling_population_owner_group_ids"] == ["owner-0"]
+    assert grouped["inclusion_probability"] == 1.0
+    assert grouped["sampling_weight"] == 1.0
+
+
+def test_probability_sample_is_input_order_independent() -> None:
+    frame = _probability_frame()
+    policy = ProbabilityAuditSamplingPolicy(review_budget=3, random_seed=91)
+    first = build_probability_audit_sample(frame, policy=policy)
+    reversed_frame = frame.reverse()
+    second = build_probability_audit_sample(reversed_frame, policy=policy)
+
+    assert first.register.to_dicts() == second.register.to_dicts()
+    assert first.sample.to_dicts() == second.sample.to_dicts()
+
+
+def test_probability_budget_must_cover_configured_stratum_minimum() -> None:
+    with pytest.raises(ValueError, match="represent every nonempty"):
+        build_probability_audit_sample(
+            _probability_frame(),
+            policy=ProbabilityAuditSamplingPolicy(review_budget=1),
+        )
