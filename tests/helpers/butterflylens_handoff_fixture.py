@@ -7,6 +7,11 @@ from biominer.integration.butterflylens_model_export import (
     build_butterflylens_project_projection,
     build_butterflylens_run_projection,
 )
+from biominer.evaluation.dynamic_pool_review import (
+    ProbabilityAuditSamplingPolicy,
+    build_dynamic_pool_audit_frame,
+    build_probability_audit_sample,
+)
 from helpers.dynamic_pool_handoff_fixture import build_dynamic_pool_handoff_fixture
 
 
@@ -87,4 +92,57 @@ def build_butterflylens_model_fixture() -> dict[str, object]:
     }
 
 
-__all__ = ["build_butterflylens_model_fixture", "sha"]
+def build_butterflylens_review_fixture() -> dict[str, object]:
+    """Build a one-unit representative review selection linked to the model layer."""
+
+    fixture = build_butterflylens_model_fixture()
+    layer = fixture["layer"]
+    source = layer.flickr_source_records.row(0, named=True)
+    evidence = layer.model_evidence.sort("candidate_rank").row(0, named=True)
+    audit = build_dynamic_pool_audit_frame(
+        [
+            {
+                "sampling_unit_id": "review-unit-flickr-photo-1",
+                "source_record_hash": source["source_record_fingerprint"],
+                "source_artifact_fingerprint": source["source_snapshot_fingerprint"],
+                "flickr_photo_id": source["flickr_photo_id"],
+                "organism_unit_id": source["organism_unit_id"],
+                "candidate_family_accepted_taxon_key": "gbif:9417",
+                "candidate_family_scientific_name": "Papilionidae",
+                "candidate_genus_accepted_taxon_key": "gbif:1920494",
+                "candidate_genus_scientific_name": "Papilio",
+                "candidate_species_accepted_taxon_key": evidence[
+                    "candidate_accepted_taxon_key"
+                ],
+                "candidate_species_scientific_name": evidence[
+                    "candidate_scientific_name"
+                ],
+                "geographic_cluster_id": "geo-au-qld",
+                "no_geo": False,
+                "primary_query_tier": "T2",
+                "raw_fusion_score": evidence["fused_raw_score"],
+                "raw_competitor_margin": evidence["margin_to_next_raw"],
+                "pool_disagreement": abs(
+                    evidence["global_raw_component_score"]
+                    - evidence["local_raw_component_score"]
+                ),
+                "route": "adult_field",
+                "visual_domain": "field_photo",
+                "subject_area_ratio": 0.08,
+                "owner_group_id": source["owner_group_id"],
+                "duplicate_group_id": source["duplicate_group_id"],
+                "observation_group_id": source["observation_group_id"],
+                "final_release_candidate": False,
+            }
+        ]
+    )
+    policy = ProbabilityAuditSamplingPolicy(review_budget=1, random_seed=17)
+    selection = build_probability_audit_sample(audit, policy=policy)
+    return {**fixture, "selection": selection, "sampling_policy": policy}
+
+
+__all__ = [
+    "build_butterflylens_model_fixture",
+    "build_butterflylens_review_fixture",
+    "sha",
+]
