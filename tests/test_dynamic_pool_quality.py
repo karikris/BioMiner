@@ -13,6 +13,7 @@ from biominer.evaluation.dynamic_pool_quality import (
     TARGETED_FAILURE_PURPOSE,
     DynamicPoolQualityObservation,
     DynamicPoolQualityPolicy,
+    report_family_pooling_quality,
     report_overall_pooling_quality,
     validate_dynamic_pool_quality_report,
 )
@@ -218,3 +219,73 @@ def test_quality_observation_rejects_invalid_review_design_or_claims() -> None:
         _observation(0, selected=True, abstained=True)
     with pytest.raises(ValueError, match="requires an observed decision error"):
         replace(_observation(0), reference_outlier_influenced_error=True)
+
+
+def test_family_quality_uses_the_common_metric_contract_per_family() -> None:
+    observations = [
+        _observation(0, selected=True, human_supported=True),
+        _observation(2, selected=True, human_supported=False),
+        _observation(1, selected=True, human_supported=True),
+        _observation(3, selected=False, human_supported=False),
+    ]
+
+    report = report_family_pooling_quality(
+        observations,
+        policy=_permissive_policy(),
+    )
+
+    assert report.height == 26
+    assert report["hierarchy_level"].unique().to_list() == ["family"]
+    assert report["group_id"].unique().sort().to_list() == [
+        "family:family-0",
+        "family:family-1",
+    ]
+    family_zero = report.filter(pl.col("group_id") == "family:family-0")
+    family_one = report.filter(pl.col("group_id") == "family:family-1")
+    assert _metric(family_zero, "selection_precision")["estimate"] == pytest.approx(0.5)
+    assert _metric(family_one, "decision_accuracy")["estimate"] == pytest.approx(1.0)
+    assert set(family_zero["confidence_interval_method"].unique()) == {
+        GROUPED_WEIGHTED_INTERVAL_METHOD,
+        "not_applicable_point_diagnostic",
+    }
+
+
+def test_targeted_only_family_remains_visible_as_insufficient() -> None:
+    targeted = replace(
+        _observation(5, targeted=True),
+        family_key="family-targeted",
+        family_name="Targeted family",
+    )
+
+    report = report_family_pooling_quality(
+        [_observation(0), _observation(2), targeted],
+        policy=_permissive_policy(),
+    )
+
+    row = report.filter(pl.col("family_key") == "family-targeted").row(0, named=True)
+    assert row["source_item_count"] == 1
+    assert row["evaluated_item_count"] == 0
+    assert row["excluded_targeted_item_count"] == 1
+    assert row["group_status"] == "insufficient_sample"
+    assert "group_empty" in row["group_insufficiency_reasons"]
+
+
+def test_family_quality_rejects_conflicting_names_for_one_key() -> None:
+    observations = [
+        _observation(0),
+        replace(_observation(2), family_name="Conflicting family name"),
+    ]
+
+    with pytest.raises(ValueError, match="conflicting family_name"):
+        report_family_pooling_quality(observations)
+
+
+def test_family_quality_is_deterministic() -> None:
+    observations = [_observation(index) for index in range(6)]
+    first = report_family_pooling_quality(observations, policy=_permissive_policy())
+    second = report_family_pooling_quality(
+        list(reversed(observations)),
+        policy=_permissive_policy(),
+    )
+
+    assert first.equals(second)

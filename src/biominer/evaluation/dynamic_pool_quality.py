@@ -258,6 +258,46 @@ def report_overall_pooling_quality(
     )
 
 
+def report_family_pooling_quality(
+    observations: Sequence[DynamicPoolQualityObservation],
+    *,
+    policy: DynamicPoolQualityPolicy | None = None,
+) -> pl.DataFrame:
+    """Report each canonical family under the common quality contract."""
+
+    items = _normalized_observations(observations)
+    if not items:
+        raise ValueError("family quality report requires source observations")
+    grouped: dict[str, list[DynamicPoolQualityObservation]] = defaultdict(list)
+    for item in items:
+        grouped[item.family_key].append(item)
+    groups = []
+    for family_key in sorted(grouped):
+        family_items = tuple(grouped[family_key])
+        family_name = _unique_group_label(
+            family_items,
+            field="family_name",
+            group_id=family_key,
+        )
+        groups.append(
+            (
+                _identity(
+                    hierarchy_level="family",
+                    group_id=f"family:{family_key}",
+                    group_label=family_name,
+                    family_key=family_key,
+                    family_name=family_name,
+                ),
+                family_items,
+            )
+        )
+    return _build_quality_report(
+        items,
+        groups=groups,
+        policy=policy or DynamicPoolQualityPolicy(),
+    )
+
+
 def validate_dynamic_pool_quality_report(table: pl.DataFrame) -> None:
     """Reject schema, fingerprint, interval or release-authority drift."""
 
@@ -860,6 +900,18 @@ def _normalized_observations(
     return ordered
 
 
+def _unique_group_label(
+    items: Sequence[DynamicPoolQualityObservation],
+    *,
+    field: str,
+    group_id: str,
+) -> str:
+    values = {str(getattr(item, field)) for item in items}
+    if len(values) != 1:
+        raise ValueError(f"{group_id} has conflicting {field} values")
+    return next(iter(values))
+
+
 def _required_text(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be nonempty text")
@@ -912,6 +964,7 @@ __all__ = [
     "TARGETED_FAILURE_PURPOSE",
     "DynamicPoolQualityObservation",
     "DynamicPoolQualityPolicy",
+    "report_family_pooling_quality",
     "report_overall_pooling_quality",
     "validate_dynamic_pool_quality_report",
 ]
