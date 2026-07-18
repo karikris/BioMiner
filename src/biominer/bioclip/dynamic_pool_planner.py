@@ -125,9 +125,15 @@ def plan_dynamic_reference_pools(
         if not any(item["pool_scope"] == "global" for item in selections):
             raise ValueError("dynamic pool planning request has no global reference support")
         local_available = any(item["pool_scope"] == "local" for item in selections)
+        local_reference_support_available = _local_reference_support_available(
+            request,
+            candidate_group=candidate_group,
+            reference_index=reference_geography_index,
+        )
         local_reason = _local_unavailable_reason(
             request,
             local_available=local_available,
+            local_reference_support_available=local_reference_support_available,
         )
         context = _plan_context(
             request,
@@ -649,13 +655,35 @@ def _query_supports_local(request: Mapping[str, object]) -> bool:
 
 
 def _local_unavailable_reason(
-    request: Mapping[str, object], *, local_available: bool
+    request: Mapping[str, object],
+    *,
+    local_available: bool,
+    local_reference_support_available: bool,
 ) -> str | None:
     if local_available:
         return None
     if not _query_supports_local(request):
         return "no_geo_global_fallback"
+    if local_reference_support_available:
+        return "local_pool_not_selected_within_stage_budget"
     return "no_exact_local_reference_support"
+
+
+def _local_reference_support_available(
+    request: Mapping[str, object],
+    *,
+    candidate_group: pl.DataFrame,
+    reference_index: pl.DataFrame,
+) -> bool:
+    if not _query_supports_local(request):
+        return False
+    candidate_keys = candidate_group["candidate_accepted_taxon_key"].to_list()
+    return not reference_index.filter(
+        pl.col("accepted_taxon_key").is_in(candidate_keys)
+        & (pl.col("route") == request["query_route"])
+        & pl.col("local_anchor_eligible")
+        & (pl.col("geo_cluster_id") == request["query_geo_cluster_id"])
+    ).is_empty()
 
 
 def _scope_geography_rank(row: Mapping[str, object], *, scope: str) -> int:

@@ -12,9 +12,14 @@ from biominer.bioclip.dynamic_pool_contracts import (
     validate_dynamic_reference_pool_artifacts,
 )
 from biominer.bioclip.dynamic_pool_expansion import (
+    DYNAMIC_POOL_EXPANSION_CACHE_REUSE_FILE,
+    DYNAMIC_POOL_EXPANSION_DECISIONS_FILE,
+    DYNAMIC_POOL_EXPANSION_EVIDENCE_FILE,
     build_dynamic_pool_expansion_evidence,
     expand_dynamic_reference_pools_from_cache,
     validate_dynamic_pool_expansion_cache_reuse,
+    validate_dynamic_pool_expansion_execution,
+    write_dynamic_pool_expansion_artifacts,
 )
 from biominer.bioclip.dynamic_pool_planner import plan_dynamic_reference_pools
 from biominer.bioclip.dynamic_pool_policy import default_dynamic_reference_pool_policy
@@ -347,7 +352,9 @@ def test_coverage_report_materializes_zero_member_candidate_shortfall() -> None:
     assert summary["production_release_authorized"] is False
 
 
-def test_triggered_expansion_selects_only_cached_embedding_identities() -> None:
+def test_triggered_expansion_selects_only_cached_embedding_identities(
+    tmp_path,
+) -> None:
     candidate_sets = _candidate_sets_two_taxa()
     rows = [
         *_reference_rows(),
@@ -378,6 +385,9 @@ def test_triggered_expansion_selects_only_cached_embedding_identities() -> None:
         policy=policy,
     )
     plan = initial[0].row(0, named=True)
+    assert plan["local_pool_unavailable_reason"] == (
+        "local_pool_not_selected_within_stage_budget"
+    )
     evidence = build_dynamic_pool_expansion_evidence(
         [
             _expansion_evidence_row(
@@ -388,13 +398,15 @@ def test_triggered_expansion_selects_only_cached_embedding_identities() -> None:
         ]
     )
 
-    plans, members, summaries, reuse = expand_dynamic_reference_pools_from_cache(
-        *initial,
-        evidence,
-        candidate_sets,
-        index,
-        anchors,
-        policy=policy,
+    plans, members, summaries, reuse, decisions = (
+        expand_dynamic_reference_pools_from_cache(
+            *initial,
+            evidence,
+            candidate_sets,
+            index,
+            anchors,
+            policy=policy,
+        )
     )
 
     validate_dynamic_reference_pool_artifacts(plans, members, summaries)
@@ -417,6 +429,28 @@ def test_triggered_expansion_selects_only_cached_embedding_identities() -> None:
     assert reuse_row["reference_embeddings_reused"] is True
     assert reuse_row["encoder_invocations"] == 0
     assert reuse_row["embedding_vectors_materialized"] is False
+    decision = decisions.row(0, named=True)
+    assert decision["action"] == "expand"
+    assert decision["stop_reason"] == "round_complete_rescore_required"
+    assert decision["rescore_required"] is True
+    assert decision["added_reference_count"] == 3
+    assert decision["added_candidate_reference_counts"] == [2, 1]
+    assert max(decision["added_candidate_reference_counts"]) <= (
+        policy.uncertainty_expansion_increment
+    )
+    assert decision["production_release_authorized"] is False
+    validate_dynamic_pool_expansion_execution(evidence, reuse, decisions)
+    paths = write_dynamic_pool_expansion_artifacts(
+        evidence, reuse, decisions, tmp_path
+    )
+    assert paths["evidence"].name == DYNAMIC_POOL_EXPANSION_EVIDENCE_FILE
+    assert paths["cache_reuse"].name == DYNAMIC_POOL_EXPANSION_CACHE_REUSE_FILE
+    assert paths["decisions"].name == DYNAMIC_POOL_EXPANSION_DECISIONS_FILE
+    validate_dynamic_pool_expansion_execution(
+        pl.read_parquet(paths["evidence"]),
+        pl.read_parquet(paths["cache_reuse"]),
+        pl.read_parquet(paths["decisions"]),
+    )
 
 
 def test_untriggered_expansion_materializes_no_replacement_plan() -> None:
@@ -450,7 +484,295 @@ def test_untriggered_expansion_materializes_no_replacement_plan() -> None:
         policy=policy,
     )
 
-    assert all(frame.is_empty() for frame in expanded)
+    assert all(frame.is_empty() for frame in expanded[:4])
+    decision = expanded[4].row(0, named=True)
+    assert decision["action"] == "stop"
+    assert decision["stop_reason"] == "signals_clear"
+    assert decision["next_expansion_round"] == 0
+    assert decision["rescore_required"] is False
+
+
+def test_expansion_stops_at_round_and_stage_budgets() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    round_policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 5),
+            ("selective_rescore", 5),
+        ),
+        maximum_expansion_rounds=1,
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=round_policy,
+    )
+    initial_plan = initial[0].row(0, named=True)
+    first_evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                initial_plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=round_policy.fingerprint,
+            )
+        ]
+    )
+    first = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        first_evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=round_policy,
+    )
+    expanded_plan = first[0].row(0, named=True)
+    second_evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                expanded_plan,
+                expansion_round=1,
+                species_margin=0.01,
+                selection_policy_fingerprint=round_policy.fingerprint,
+            )
+        ]
+    )
+
+    stopped_round = expand_dynamic_reference_pools_from_cache(
+        first[0],
+        first[1],
+        first[2],
+        second_evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=round_policy,
+    )
+
+    assert all(frame.is_empty() for frame in stopped_round[:4])
+    assert stopped_round[4]["stop_reason"].to_list() == [
+        "maximum_rounds_reached"
+    ]
+
+    stage_policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 2),
+            ("selective_rescore", 2),
+        ),
+    )
+    stage_initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=stage_policy,
+    )
+    stage_plan = stage_initial[0].row(0, named=True)
+    stage_evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                stage_plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=stage_policy.fingerprint,
+            )
+        ]
+    )
+    stopped_stage = expand_dynamic_reference_pools_from_cache(
+        *stage_initial,
+        stage_evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=stage_policy,
+    )
+    assert all(frame.is_empty() for frame in stopped_stage[:4])
+    assert stopped_stage[4]["stop_reason"].to_list() == [
+        "stage_budget_exhausted"
+    ]
+
+
+def test_expansion_stops_when_cached_index_has_no_additional_members() -> None:
+    candidate_sets = _candidate_sets()
+    index = _reference_index()
+    anchors = select_global_reference_anchors(index)
+    policy = _small_policy()
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    result = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert all(frame.is_empty() for frame in result[:4])
+    decision = result[4].row(0, named=True)
+    assert decision["action"] == "stop"
+    assert decision["stop_reason"] == "no_cached_reference_additions"
+    assert decision["added_reference_count"] == 0
+
+    with pytest.raises(ValueError, match="species-margin thresholds differ"):
+        expand_dynamic_reference_pools_from_cache(
+            *initial,
+            evidence,
+            candidate_sets,
+            index,
+            anchors,
+            policy=replace(policy, uncertainty_margin_threshold=0.04),
+        )
+
+
+def test_expansion_intersects_candidate_rank_and_per_candidate_increment() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 5),
+            ("selective_rescore", 5),
+        ),
+        uncertainty_candidate_rank_limit=1,
+        uncertainty_expansion_increment=1,
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    result = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert result[1].height == initial[1].height + 1
+    decision = result[4].row(0, named=True)
+    assert decision["candidate_rank_limit"] == 1
+    assert decision["per_candidate_increment"] == 1
+    assert decision["added_candidate_accepted_taxon_keys"] == [TARGET]
+    assert decision["added_candidate_reference_counts"] == [1]
+
+
+def test_expansion_stops_at_total_pool_budget() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 4),
+            ("uncertainty_expansion", 4),
+            ("selective_rescore", 4),
+        ),
+        maximum_total_reference_members=4,
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    result = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert initial[1].height == 4
+    assert all(frame.is_empty() for frame in result[:4])
+    decision = result[4].row(0, named=True)
+    assert decision["stop_reason"] == "total_budget_exhausted"
+    assert decision["remaining_total_budget"] == 0
 
 
 def _small_policy():
@@ -470,6 +792,7 @@ def _expansion_evidence_row(
     plan: dict[str, object],
     *,
     selection_policy_fingerprint: str,
+    expansion_round: int = 0,
     species_margin: float = 0.20,
 ) -> dict[str, object]:
     return {
@@ -479,7 +802,7 @@ def _expansion_evidence_row(
         "candidate_scores_fingerprint": _sha("9"),
         "selection_policy_fingerprint": selection_policy_fingerprint,
         "model_fingerprint": plan["model_fingerprint"],
-        "expansion_round": 0,
+        "expansion_round": expansion_round,
         "family_margin": 0.20,
         "species_margin": species_margin,
         "global_local_disagreement": 0.05,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isfinite
+from pathlib import Path
 import re
 
 import polars as pl
@@ -13,6 +14,7 @@ from biominer.bioclip.dynamic_pool_contracts import (
     build_dynamic_reference_pool_members,
     build_dynamic_reference_pool_plans,
     build_dynamic_reference_pool_summaries,
+    dynamic_reference_pool_plan_id,
     dynamic_reference_pool_member_schema,
     dynamic_reference_pool_plan_schema,
     dynamic_reference_pool_summary_schema,
@@ -33,6 +35,7 @@ from biominer.bioclip.reference_geography_index import (
     validate_reference_geography_index,
 )
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.storage.parquet import write_parquet
 
 
 DYNAMIC_POOL_EXPANSION_EVIDENCE_SCHEMA_VERSION = (
@@ -44,6 +47,25 @@ DYNAMIC_POOL_EXPANSION_SIGNAL_POLICY_SCHEMA_VERSION = (
 DYNAMIC_POOL_EXPANSION_SIGNAL_POLICY_VERSION = "raw-evidence-safe-v1"
 DYNAMIC_POOL_EXPANSION_CACHE_REUSE_SCHEMA_VERSION = (
     "dynamic-pool-expansion-cache-reuse-v1.0.0"
+)
+DYNAMIC_POOL_EXPANSION_DECISION_SCHEMA_VERSION = (
+    "dynamic-pool-expansion-decision-v1.0.0"
+)
+DYNAMIC_POOL_EXPANSION_DECISIONS_FILE = "dynamic_pool_expansion_decisions.parquet"
+DYNAMIC_POOL_EXPANSION_EVIDENCE_FILE = "dynamic_pool_expansion_evidence.parquet"
+DYNAMIC_POOL_EXPANSION_CACHE_REUSE_FILE = (
+    "dynamic_pool_expansion_cache_reuse.parquet"
+)
+DYNAMIC_POOL_EXPANSION_ACTIONS = frozenset({"expand", "stop"})
+DYNAMIC_POOL_EXPANSION_STOP_REASONS = frozenset(
+    {
+        "round_complete_rescore_required",
+        "signals_clear",
+        "maximum_rounds_reached",
+        "stage_budget_exhausted",
+        "total_budget_exhausted",
+        "no_cached_reference_additions",
+    }
 )
 
 DYNAMIC_POOL_EXPANSION_SIGNALS = (
@@ -96,6 +118,7 @@ _INPUT_FIELDS = frozenset(
 )
 _SORT = ("run_id", "plan_id", "expansion_round")
 _CACHE_REUSE_SORT = ("run_id", "prior_plan_id", "expansion_round")
+_DECISION_SORT = ("run_id", "prior_plan_id", "current_expansion_round")
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PLAN_ID_PATTERN = re.compile(r"dynamic-pool-plan:[0-9a-f]{64}\Z")
@@ -410,6 +433,45 @@ def dynamic_pool_expansion_cache_reuse_schema() -> dict[str, pl.DataType]:
     }
 
 
+def dynamic_pool_expansion_decision_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "run_id": pl.String,
+        "prior_plan_id": pl.String,
+        "prior_plan_fingerprint": pl.String,
+        "expanded_plan_id": pl.String,
+        "expanded_plan_fingerprint": pl.String,
+        "expansion_evidence_fingerprint": pl.String,
+        "selection_policy_version": pl.String,
+        "selection_policy_fingerprint": pl.String,
+        "signal_policy_version": pl.String,
+        "signal_policy_fingerprint": pl.String,
+        "current_expansion_round": pl.UInt16,
+        "next_expansion_round": pl.UInt16,
+        "maximum_expansion_rounds": pl.UInt16,
+        "stage_member_limit": pl.UInt32,
+        "maximum_total_reference_members": pl.UInt32,
+        "prior_member_count": pl.UInt32,
+        "remaining_stage_budget": pl.UInt32,
+        "remaining_total_budget": pl.UInt32,
+        "candidate_rank_limit": pl.UInt32,
+        "per_candidate_increment": pl.UInt32,
+        "triggered_signals": pl.List(pl.String),
+        "eligible_candidate_accepted_taxon_keys": pl.List(pl.String),
+        "added_candidate_accepted_taxon_keys": pl.List(pl.String),
+        "added_candidate_reference_counts": pl.List(pl.UInt32),
+        "added_reference_media_ids": pl.List(pl.String),
+        "added_reference_observation_ids": pl.List(pl.String),
+        "added_reference_embedding_fingerprints": pl.List(pl.String),
+        "added_reference_count": pl.UInt32,
+        "action": pl.String,
+        "stop_reason": pl.String,
+        "rescore_required": pl.Boolean,
+        "production_release_authorized": pl.Boolean,
+        "decision_fingerprint": pl.String,
+    }
+
+
 def expand_dynamic_reference_pools_from_cache(
     prior_plans: pl.DataFrame,
     prior_members: pl.DataFrame,
@@ -420,8 +482,9 @@ def expand_dynamic_reference_pools_from_cache(
     global_reference_anchors: pl.DataFrame,
     *,
     policy: DynamicReferencePoolPolicy,
+    signal_policy: DynamicPoolExpansionSignalPolicy | None = None,
     burst_group_by_observation: Mapping[str, str] | None = None,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Materialize triggered plans using cached embedding identities only.
 
     The function deliberately accepts no encoder and no embedding-vector column.
@@ -431,10 +494,24 @@ def expand_dynamic_reference_pools_from_cache(
 
     if not isinstance(policy, DynamicReferencePoolPolicy):
         raise TypeError("policy must be a DynamicReferencePoolPolicy")
+    active_signal_policy = (
+        signal_policy or default_dynamic_pool_expansion_signal_policy()
+    )
+    if not isinstance(active_signal_policy, DynamicPoolExpansionSignalPolicy):
+        raise TypeError("signal_policy must be a DynamicPoolExpansionSignalPolicy")
+    if (
+        active_signal_policy.species_margin_threshold
+        != policy.uncertainty_margin_threshold
+    ):
+        raise ValueError(
+            "expansion signal and selection policy species-margin thresholds differ"
+        )
     validate_dynamic_reference_pool_artifacts(
         prior_plans, prior_members, prior_summaries
     )
-    validate_dynamic_pool_expansion_evidence(expansion_evidence)
+    validate_dynamic_pool_expansion_evidence(
+        expansion_evidence, policy=active_signal_policy
+    )
     validate_family_geo_candidate_sets(candidate_sets)
     validate_reference_geography_index(reference_geography_index)
     validate_global_reference_anchors(global_reference_anchors)
@@ -445,31 +522,42 @@ def expand_dynamic_reference_pools_from_cache(
         reference_index=reference_geography_index,
         policy=policy,
     )
-    triggered = expansion_evidence.filter(pl.col("expansion_required"))
-    if triggered.is_empty():
-        return (
-            pl.DataFrame(schema=dynamic_reference_pool_plan_schema()),
-            pl.DataFrame(schema=dynamic_reference_pool_member_schema()),
-            pl.DataFrame(schema=dynamic_reference_pool_summary_schema()),
-            pl.DataFrame(schema=dynamic_pool_expansion_cache_reuse_schema()),
-        )
-
     prior_lookup = {
         str(row["plan_id"]): row for row in prior_plans.iter_rows(named=True)
     }
     evidence_lookup = {
-        str(row["plan_id"]): row for row in triggered.iter_rows(named=True)
+        str(row["plan_id"]): row for row in expansion_evidence.iter_rows(named=True)
     }
-    selected_prior = [prior_lookup[plan_id] for plan_id in sorted(evidence_lookup)]
-    requests = [_expansion_request(row) for row in selected_prior]
-    planned_plans, planned_members, _planned_summaries = plan_dynamic_reference_pools(
-        requests,
-        candidate_sets,
-        reference_geography_index,
-        global_reference_anchors,
-        policy=policy,
-        burst_group_by_observation=burst_group_by_observation,
-    )
+    preflight_by_id = {
+        plan_id: _expansion_preflight(
+            prior_lookup[plan_id],
+            evidence=evidence,
+            prior_members=prior_members.filter(pl.col("plan_id") == plan_id),
+            candidate_sets=candidate_sets,
+            policy=policy,
+        )
+        for plan_id, evidence in evidence_lookup.items()
+    }
+    selected_prior = [
+        prior_lookup[plan_id]
+        for plan_id in sorted(preflight_by_id)
+        if preflight_by_id[plan_id]["actionable"]
+    ]
+    if selected_prior:
+        requests = [_expansion_request(row) for row in selected_prior]
+        planned_plans, planned_members, _planned_summaries = (
+            plan_dynamic_reference_pools(
+                requests,
+                candidate_sets,
+                reference_geography_index,
+                global_reference_anchors,
+                policy=policy,
+                burst_group_by_observation=burst_group_by_observation,
+            )
+        )
+    else:
+        planned_plans = pl.DataFrame(schema=dynamic_reference_pool_plan_schema())
+        planned_members = pl.DataFrame(schema=dynamic_reference_pool_member_schema())
     planned_lookup = {
         _plan_match_key(row): row for row in planned_plans.iter_rows(named=True)
     }
@@ -478,6 +566,7 @@ def expand_dynamic_reference_pools_from_cache(
     reuse_contexts: list[dict[str, object]] = []
     for prior in selected_prior:
         evidence = evidence_lookup[str(prior["plan_id"])]
+        preflight = preflight_by_id[str(prior["plan_id"])]
         expanded = planned_lookup.get(_plan_match_key(prior))
         if expanded is None:
             raise ValueError("expanded plan is missing its prior plan context")
@@ -495,10 +584,51 @@ def expand_dynamic_reference_pools_from_cache(
         }
         if not set(prior_by_identity) <= set(expanded_by_identity):
             raise ValueError("expanded plan dropped a prior reference membership")
+        selected_additions = _bounded_addition_identities(
+            expanded_group,
+            prior_identities=set(prior_by_identity),
+            eligible_candidates=set(preflight["eligible_candidates"]),
+            addition_budget=min(
+                int(preflight["remaining_stage_budget"]),
+                int(preflight["remaining_total_budget"]),
+            ),
+            per_candidate_increment=policy.uncertainty_expansion_increment,
+        )
+        if not selected_additions:
+            preflight["stop_reason"] = "no_cached_reference_additions"
+            continue
+        retained_and_added = set(prior_by_identity) | selected_additions
+        expanded_by_identity = {
+            identity: expanded_by_identity[identity]
+            for identity in retained_and_added
+        }
         next_round = int(evidence["expansion_round"]) + 1
+        plan_input = _plan_input(expanded)
+        local_available = any(
+            row["pool_scope"] == "local" for row in expanded_by_identity.values()
+        )
+        plan_input["local_pool_status"] = (
+            "available" if local_available else "unavailable"
+        )
+        plan_input["local_pool_unavailable_reason"] = (
+            None
+            if local_available
+            else (
+                "no_geo_global_fallback"
+                if prior["local_pool_unavailable_reason"]
+                == "no_geo_global_fallback"
+                else "local_pool_not_selected_within_expansion_budget"
+            )
+        )
+        plan_context = {
+            field: value for field, value in plan_input.items() if field != "plan_id"
+        }
+        expanded_plan_id = dynamic_reference_pool_plan_id(plan_context)
+        plan_input["plan_id"] = expanded_plan_id
         group_inputs: list[dict[str, object]] = []
         for identity, row in expanded_by_identity.items():
             item = _member_input(row)
+            item["plan_id"] = expanded_plan_id
             item["expansion_round"] = (
                 int(prior_by_identity[identity]["expansion_round"])
                 if identity in prior_by_identity
@@ -507,22 +637,29 @@ def expand_dynamic_reference_pools_from_cache(
             group_inputs.append(item)
         _reset_pool_selection_ranks(group_inputs)
         member_inputs.extend(group_inputs)
-        plan_inputs.append(_plan_input(expanded))
+        plan_inputs.append(plan_input)
         reuse_contexts.append(
             {
                 "prior": prior,
-                "expanded_plan_id": expanded["plan_id"],
+                "expanded_plan_id": expanded_plan_id,
                 "evidence": evidence,
                 "prior_identities": set(prior_by_identity),
                 "expanded_identities": set(expanded_by_identity),
+                "selected_additions": selected_additions,
                 "next_round": next_round,
             }
         )
+        preflight["actual_context"] = reuse_contexts[-1]
 
-    members = build_dynamic_reference_pool_members(member_inputs)
-    plans = build_dynamic_reference_pool_plans(plan_inputs, members)
-    summaries = build_dynamic_reference_pool_summaries(plans, members)
-    validate_dynamic_reference_pool_artifacts(plans, members, summaries)
+    if member_inputs:
+        members = build_dynamic_reference_pool_members(member_inputs)
+        plans = build_dynamic_reference_pool_plans(plan_inputs, members)
+        summaries = build_dynamic_reference_pool_summaries(plans, members)
+        validate_dynamic_reference_pool_artifacts(plans, members, summaries)
+    else:
+        plans = pl.DataFrame(schema=dynamic_reference_pool_plan_schema())
+        members = pl.DataFrame(schema=dynamic_reference_pool_member_schema())
+        summaries = pl.DataFrame(schema=dynamic_reference_pool_summary_schema())
     plan_by_id = {str(row["plan_id"]): row for row in plans.iter_rows(named=True)}
     reuse_rows = [
         _cache_reuse_row(
@@ -534,14 +671,41 @@ def expand_dynamic_reference_pools_from_cache(
         )
         for context in reuse_contexts
     ]
-    reuse = pl.DataFrame(
-        reuse_rows,
-        schema=dynamic_pool_expansion_cache_reuse_schema(),
+    reuse = (
+        pl.DataFrame(
+            reuse_rows,
+            schema=dynamic_pool_expansion_cache_reuse_schema(),
+            orient="row",
+            strict=True,
+        ).sort(*_CACHE_REUSE_SORT)
+        if reuse_rows
+        else pl.DataFrame(schema=dynamic_pool_expansion_cache_reuse_schema())
+    )
+    validate_dynamic_pool_expansion_cache_reuse(reuse)
+    decision_rows = [
+        _expansion_decision_row(
+            preflight_by_id[plan_id],
+            expanded_plan=(
+                plan_by_id[
+                    str(preflight_by_id[plan_id]["actual_context"]["expanded_plan_id"])
+                ]
+                if "actual_context" in preflight_by_id[plan_id]
+                else None
+            ),
+        )
+        for plan_id in sorted(preflight_by_id)
+    ]
+    decisions = pl.DataFrame(
+        decision_rows,
+        schema=dynamic_pool_expansion_decision_schema(),
         orient="row",
         strict=True,
-    ).sort(*_CACHE_REUSE_SORT)
-    validate_dynamic_pool_expansion_cache_reuse(reuse)
-    return plans, members, summaries, reuse
+    ).sort(*_DECISION_SORT)
+    validate_dynamic_pool_expansion_decisions(decisions)
+    validate_dynamic_pool_expansion_execution(
+        expansion_evidence, reuse, decisions
+    )
+    return plans, members, summaries, reuse, decisions
 
 
 def validate_dynamic_pool_expansion_cache_reuse(frame: pl.DataFrame) -> None:
@@ -605,6 +769,388 @@ def validate_dynamic_pool_expansion_cache_reuse(frame: pl.DataFrame) -> None:
             raise ValueError("dynamic pool cache reuse fingerprint mismatch")
 
 
+def validate_dynamic_pool_expansion_decisions(frame: pl.DataFrame) -> None:
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("dynamic pool expansion decisions must be a Polars DataFrame")
+    if frame.schema != dynamic_pool_expansion_decision_schema():
+        raise ValueError("dynamic pool expansion decision schema mismatch")
+    if not frame.equals(frame.sort(*_DECISION_SORT)):
+        raise ValueError("dynamic pool expansion decisions are not canonically sorted")
+    if frame.select("prior_plan_id", "current_expansion_round").n_unique() != frame.height:
+        raise ValueError("dynamic pool expansion decision grain is not unique")
+    for row in frame.iter_rows(named=True):
+        if not _PLAN_ID_PATTERN.fullmatch(str(row["prior_plan_id"])):
+            raise ValueError("expansion decision prior_plan_id is invalid")
+        for field in (
+            "prior_plan_fingerprint",
+            "expansion_evidence_fingerprint",
+            "selection_policy_fingerprint",
+            "signal_policy_fingerprint",
+            "decision_fingerprint",
+        ):
+            _sha256(row[field], field=field)
+        action = row["action"]
+        reason = row["stop_reason"]
+        if action not in DYNAMIC_POOL_EXPANSION_ACTIONS:
+            raise ValueError("unsupported dynamic pool expansion action")
+        if reason not in DYNAMIC_POOL_EXPANSION_STOP_REASONS:
+            raise ValueError("unsupported dynamic pool expansion stop reason")
+        eligible = list(row["eligible_candidate_accepted_taxon_keys"])
+        added_candidates = list(row["added_candidate_accepted_taxon_keys"])
+        candidate_counts = list(row["added_candidate_reference_counts"])
+        if eligible != sorted(set(eligible)):
+            raise ValueError("eligible expansion candidates are not canonical")
+        if added_candidates != sorted(set(added_candidates)):
+            raise ValueError("added expansion candidates are not canonical")
+        if not set(added_candidates) <= set(eligible):
+            raise ValueError("added expansion candidate was not eligible")
+        if len(added_candidates) != len(candidate_counts):
+            raise ValueError("added candidate counts are incomplete")
+        if any(
+            count <= 0 or count > row["per_candidate_increment"]
+            for count in candidate_counts
+        ):
+            raise ValueError("per-candidate expansion increment was exceeded")
+        added_count = int(row["added_reference_count"])
+        if sum(candidate_counts) != added_count:
+            raise ValueError("added candidate counts do not match references")
+        for field in (
+            "added_reference_media_ids",
+            "added_reference_observation_ids",
+            "added_reference_embedding_fingerprints",
+        ):
+            values = list(row[field])
+            if len(values) != added_count:
+                raise ValueError(f"{field} count does not match expansion decision")
+            if values != sorted(values):
+                raise ValueError(f"{field} is not canonically sorted")
+        for fingerprint in row["added_reference_embedding_fingerprints"]:
+            _sha256(fingerprint, field="added_reference_embedding_fingerprints")
+        if added_count > min(
+            row["remaining_stage_budget"], row["remaining_total_budget"]
+        ):
+            raise ValueError("expansion exceeded its remaining pool budget")
+        current_round = int(row["current_expansion_round"])
+        next_round = int(row["next_expansion_round"])
+        maximum_rounds = int(row["maximum_expansion_rounds"])
+        if current_round > maximum_rounds:
+            raise ValueError("expansion decision exceeds maximum round")
+        if (
+            int(row["prior_member_count"])
+            + int(row["remaining_total_budget"])
+            != int(row["maximum_total_reference_members"])
+        ):
+            raise ValueError("remaining total expansion budget is inconsistent")
+        if action == "expand":
+            for field in ("expanded_plan_id", "expanded_plan_fingerprint"):
+                if row[field] is None:
+                    raise ValueError("expanded decision lacks replacement plan identity")
+            if not _PLAN_ID_PATTERN.fullmatch(str(row["expanded_plan_id"])):
+                raise ValueError("expansion decision expanded_plan_id is invalid")
+            _sha256(
+                row["expanded_plan_fingerprint"],
+                field="expanded_plan_fingerprint",
+            )
+            if (
+                reason != "round_complete_rescore_required"
+                or not row["rescore_required"]
+                or added_count == 0
+                or next_round != current_round + 1
+                or current_round >= maximum_rounds
+            ):
+                raise ValueError("expanded decision rescore state is inconsistent")
+        elif (
+            row["expanded_plan_id"] is not None
+            or row["expanded_plan_fingerprint"] is not None
+            or row["rescore_required"]
+            or added_count
+            or next_round != current_round
+            or reason == "round_complete_rescore_required"
+        ):
+            raise ValueError("stopped expansion decision is inconsistent")
+        if action == "stop":
+            triggered = list(row["triggered_signals"])
+            expected_stop = {
+                "signals_clear": not triggered,
+                "maximum_rounds_reached": (
+                    bool(triggered) and current_round >= maximum_rounds
+                ),
+                "stage_budget_exhausted": (
+                    bool(triggered)
+                    and current_round < maximum_rounds
+                    and row["remaining_total_budget"] > 0
+                    and row["remaining_stage_budget"] == 0
+                ),
+                "total_budget_exhausted": (
+                    bool(triggered)
+                    and current_round < maximum_rounds
+                    and row["remaining_total_budget"] == 0
+                ),
+                "no_cached_reference_additions": (
+                    bool(triggered)
+                    and current_round < maximum_rounds
+                    and row["remaining_stage_budget"] > 0
+                    and row["remaining_total_budget"] > 0
+                ),
+            }
+            if not expected_stop.get(str(reason), False):
+                raise ValueError("expansion stop reason does not match evidence and budget")
+        if row["production_release_authorized"]:
+            raise ValueError("expansion decision cannot authorize production release")
+        identity = dict(row)
+        fingerprint = identity.pop("decision_fingerprint")
+        if canonical_semantic_fingerprint(identity) != fingerprint:
+            raise ValueError("dynamic pool expansion decision fingerprint mismatch")
+
+
+def validate_dynamic_pool_expansion_execution(
+    evidence: pl.DataFrame,
+    cache_reuse: pl.DataFrame,
+    decisions: pl.DataFrame,
+) -> None:
+    validate_dynamic_pool_expansion_evidence(evidence)
+    validate_dynamic_pool_expansion_cache_reuse(cache_reuse)
+    validate_dynamic_pool_expansion_decisions(decisions)
+    evidence_by_fingerprint = {
+        str(row["evidence_fingerprint"]): row
+        for row in evidence.iter_rows(named=True)
+    }
+    decision_by_key = {
+        (
+            str(row["prior_plan_id"]),
+            int(row["current_expansion_round"]),
+        ): row
+        for row in decisions.iter_rows(named=True)
+    }
+    if set(decisions["expansion_evidence_fingerprint"].to_list()) - set(
+        evidence_by_fingerprint
+    ):
+        raise ValueError("expansion decision references unknown evidence")
+    reuse_keys: set[tuple[str, int]] = set()
+    for row in cache_reuse.iter_rows(named=True):
+        key = (str(row["prior_plan_id"]), int(row["expansion_round"]) - 1)
+        decision = decision_by_key.get(key)
+        if decision is None or decision["action"] != "expand":
+            raise ValueError("cache reuse lacks a matching expansion decision")
+        if (
+            row["expanded_plan_id"] != decision["expanded_plan_id"]
+            or row["expanded_plan_fingerprint"]
+            != decision["expanded_plan_fingerprint"]
+            or row["expansion_evidence_fingerprint"]
+            != decision["expansion_evidence_fingerprint"]
+            or row["added_reference_count"] != decision["added_reference_count"]
+        ):
+            raise ValueError("cache reuse and expansion decision conflict")
+        reuse_keys.add(key)
+    expanded_keys = {
+        key for key, row in decision_by_key.items() if row["action"] == "expand"
+    }
+    if reuse_keys != expanded_keys:
+        raise ValueError("expanded decisions and cache reuse identities differ")
+    for decision in decisions.iter_rows(named=True):
+        evidence_row = evidence_by_fingerprint[
+            str(decision["expansion_evidence_fingerprint"])
+        ]
+        if (
+            decision["prior_plan_id"] != evidence_row["plan_id"]
+            or decision["prior_plan_fingerprint"]
+            != evidence_row["plan_fingerprint"]
+            or decision["current_expansion_round"]
+            != evidence_row["expansion_round"]
+            or decision["triggered_signals"] != evidence_row["triggered_signals"]
+        ):
+            raise ValueError("expansion decision does not match its evidence")
+
+
+def write_dynamic_pool_expansion_artifacts(
+    evidence: pl.DataFrame,
+    cache_reuse: pl.DataFrame,
+    decisions: pl.DataFrame,
+    output_dir: str | Path,
+) -> dict[str, Path]:
+    validate_dynamic_pool_expansion_execution(evidence, cache_reuse, decisions)
+    destination = Path(output_dir)
+    return {
+        "evidence": write_parquet(
+            evidence, destination / DYNAMIC_POOL_EXPANSION_EVIDENCE_FILE
+        ),
+        "cache_reuse": write_parquet(
+            cache_reuse, destination / DYNAMIC_POOL_EXPANSION_CACHE_REUSE_FILE
+        ),
+        "decisions": write_parquet(
+            decisions, destination / DYNAMIC_POOL_EXPANSION_DECISIONS_FILE
+        ),
+    }
+
+
+def _expansion_preflight(
+    prior: Mapping[str, object],
+    *,
+    evidence: Mapping[str, object],
+    prior_members: pl.DataFrame,
+    candidate_sets: pl.DataFrame,
+    policy: DynamicReferencePoolPolicy,
+) -> dict[str, object]:
+    stage_limit = min(
+        dict(policy.stage_member_limits)["uncertainty_expansion"],
+        policy.maximum_total_reference_members,
+    )
+    prior_count = prior_members.height
+    remaining_stage = max(stage_limit - prior_count, 0)
+    remaining_total = max(policy.maximum_total_reference_members - prior_count, 0)
+    candidates = candidate_sets.filter(
+        pl.col("candidate_set_id") == prior["candidate_set_id"]
+    ).sort("candidate_priority", "candidate_accepted_taxon_key")
+    ranked = candidates.head(policy.uncertainty_candidate_rank_limit)
+    retained = candidates.filter(
+        pl.col("target_candidate") | pl.col("safety_union_membership")
+    )
+    eligible = sorted(
+        set(ranked["candidate_accepted_taxon_key"].to_list())
+        | set(retained["candidate_accepted_taxon_key"].to_list())
+    )
+    current_round = int(evidence["expansion_round"])
+    if not evidence["expansion_required"]:
+        stop_reason = "signals_clear"
+    elif current_round >= policy.maximum_expansion_rounds:
+        stop_reason = "maximum_rounds_reached"
+    elif remaining_total == 0:
+        stop_reason = "total_budget_exhausted"
+    elif remaining_stage == 0:
+        stop_reason = "stage_budget_exhausted"
+    else:
+        stop_reason = None
+    return {
+        "prior": prior,
+        "evidence": evidence,
+        "actionable": stop_reason is None,
+        "stop_reason": stop_reason,
+        "eligible_candidates": eligible,
+        "stage_limit": stage_limit,
+        "prior_member_count": prior_count,
+        "remaining_stage_budget": remaining_stage,
+        "remaining_total_budget": remaining_total,
+        "maximum_total_reference_members": policy.maximum_total_reference_members,
+        "candidate_rank_limit": policy.uncertainty_candidate_rank_limit,
+        "per_candidate_increment": policy.uncertainty_expansion_increment,
+    }
+
+
+def _bounded_addition_identities(
+    expanded_members: pl.DataFrame,
+    *,
+    prior_identities: set[tuple[str, ...]],
+    eligible_candidates: set[str],
+    addition_budget: int,
+    per_candidate_increment: int,
+) -> set[tuple[str, ...]]:
+    queues: dict[str, list[tuple[str, ...]]] = {
+        candidate: [] for candidate in sorted(eligible_candidates)
+    }
+    for row in expanded_members.iter_rows(named=True):
+        identity = _member_cache_identity(row)
+        candidate = identity[0]
+        if identity not in prior_identities and candidate in queues:
+            queues[candidate].append(identity)
+    selected: set[tuple[str, ...]] = set()
+    counts = {candidate: 0 for candidate in queues}
+    positions = {candidate: 0 for candidate in queues}
+    while len(selected) < addition_budget:
+        progress = False
+        for candidate in sorted(queues):
+            if len(selected) >= addition_budget:
+                break
+            if counts[candidate] >= per_candidate_increment:
+                continue
+            position = positions[candidate]
+            if position >= len(queues[candidate]):
+                continue
+            selected.add(queues[candidate][position])
+            positions[candidate] += 1
+            counts[candidate] += 1
+            progress = True
+        if not progress:
+            break
+    return selected
+
+
+def _expansion_decision_row(
+    preflight: Mapping[str, object],
+    *,
+    expanded_plan: Mapping[str, object] | None,
+) -> dict[str, object]:
+    prior = preflight["prior"]
+    evidence = preflight["evidence"]
+    if not isinstance(prior, Mapping) or not isinstance(evidence, Mapping):
+        raise TypeError("expansion decision context is invalid")
+    actual = preflight.get("actual_context")
+    selected: set[tuple[str, ...]] = set()
+    if isinstance(actual, Mapping):
+        raw_selected = actual["selected_additions"]
+        if not isinstance(raw_selected, set):
+            raise TypeError("selected expansion identities must be a set")
+        selected = raw_selected
+    candidate_counts: dict[str, int] = {}
+    for identity in selected:
+        candidate_counts[identity[0]] = candidate_counts.get(identity[0], 0) + 1
+    added_candidates = sorted(candidate_counts)
+    expanded = expanded_plan is not None
+    current_round = int(evidence["expansion_round"])
+    row: dict[str, object] = {
+        "schema_version": DYNAMIC_POOL_EXPANSION_DECISION_SCHEMA_VERSION,
+        "run_id": prior["run_id"],
+        "prior_plan_id": prior["plan_id"],
+        "prior_plan_fingerprint": prior["plan_fingerprint"],
+        "expanded_plan_id": expanded_plan["plan_id"] if expanded else None,
+        "expanded_plan_fingerprint": (
+            expanded_plan["plan_fingerprint"] if expanded else None
+        ),
+        "expansion_evidence_fingerprint": evidence["evidence_fingerprint"],
+        "selection_policy_version": prior["selection_policy_version"],
+        "selection_policy_fingerprint": prior["selection_policy_fingerprint"],
+        "signal_policy_version": evidence["signal_policy_version"],
+        "signal_policy_fingerprint": evidence["signal_policy_fingerprint"],
+        "current_expansion_round": current_round,
+        "next_expansion_round": current_round + 1 if expanded else current_round,
+        "maximum_expansion_rounds": prior["maximum_expansion_rounds"],
+        "stage_member_limit": preflight["stage_limit"],
+        "maximum_total_reference_members": preflight[
+            "maximum_total_reference_members"
+        ],
+        "prior_member_count": preflight["prior_member_count"],
+        "remaining_stage_budget": preflight["remaining_stage_budget"],
+        "remaining_total_budget": preflight["remaining_total_budget"],
+        "candidate_rank_limit": preflight["candidate_rank_limit"],
+        "per_candidate_increment": preflight["per_candidate_increment"],
+        "triggered_signals": list(evidence["triggered_signals"]),
+        "eligible_candidate_accepted_taxon_keys": list(
+            preflight["eligible_candidates"]
+        ),
+        "added_candidate_accepted_taxon_keys": added_candidates,
+        "added_candidate_reference_counts": [
+            candidate_counts[candidate] for candidate in added_candidates
+        ],
+        "added_reference_media_ids": sorted(identity[1] for identity in selected),
+        "added_reference_observation_ids": sorted(
+            identity[2] for identity in selected
+        ),
+        "added_reference_embedding_fingerprints": sorted(
+            identity[3] for identity in selected
+        ),
+        "added_reference_count": len(selected),
+        "action": "expand" if expanded else "stop",
+        "stop_reason": (
+            "round_complete_rescore_required"
+            if expanded
+            else preflight["stop_reason"]
+        ),
+        "rescore_required": expanded,
+        "production_release_authorized": False,
+    }
+    row["decision_fingerprint"] = canonical_semantic_fingerprint(row)
+    return row
+
+
 def _validate_expansion_inputs(
     plans: pl.DataFrame,
     *,
@@ -635,8 +1181,6 @@ def _validate_expansion_inputs(
             ].max()
         ):
             raise ValueError("expansion evidence round does not match prior members")
-        if int(row["expansion_round"]) >= policy.maximum_expansion_rounds:
-            raise ValueError("expansion evidence already reached the maximum rounds")
     index_identities = {
         (str(row["reference_media_id"]), str(row["embedding_fingerprint"]))
         for row in reference_index.iter_rows(named=True)
@@ -1042,7 +1586,11 @@ def _sha256(value: object, *, field: str) -> str:
 
 __all__ = [
     "DYNAMIC_POOL_EXPANSION_CACHE_REUSE_SCHEMA_VERSION",
+    "DYNAMIC_POOL_EXPANSION_CACHE_REUSE_FILE",
+    "DYNAMIC_POOL_EXPANSION_DECISIONS_FILE",
+    "DYNAMIC_POOL_EXPANSION_DECISION_SCHEMA_VERSION",
     "DYNAMIC_POOL_EXPANSION_EVIDENCE_SCHEMA_VERSION",
+    "DYNAMIC_POOL_EXPANSION_EVIDENCE_FILE",
     "DYNAMIC_POOL_EXPANSION_SIGNALS",
     "DYNAMIC_POOL_EXPANSION_SIGNAL_POLICY_SCHEMA_VERSION",
     "DYNAMIC_POOL_EXPANSION_SIGNAL_POLICY_VERSION",
@@ -1050,8 +1598,12 @@ __all__ = [
     "build_dynamic_pool_expansion_evidence",
     "default_dynamic_pool_expansion_signal_policy",
     "dynamic_pool_expansion_cache_reuse_schema",
+    "dynamic_pool_expansion_decision_schema",
     "dynamic_pool_expansion_evidence_schema",
     "expand_dynamic_reference_pools_from_cache",
     "validate_dynamic_pool_expansion_cache_reuse",
+    "validate_dynamic_pool_expansion_decisions",
     "validate_dynamic_pool_expansion_evidence",
+    "validate_dynamic_pool_expansion_execution",
+    "write_dynamic_pool_expansion_artifacts",
 ]
