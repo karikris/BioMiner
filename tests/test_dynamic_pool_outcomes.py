@@ -1,0 +1,202 @@
+"""Tests for exclusive dynamic-pool release, screening and unresolved lanes."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import polars as pl
+import pytest
+
+from biominer.evaluation.dynamic_pool_outcomes import (
+    HUMAN_REVIEWED_RELEASE_LABEL,
+    HUMAN_REVIEWED_RELEASE_SCHEMA,
+    DynamicPoolOutcomeEvidence,
+    project_human_reviewed_release_set,
+    validate_human_reviewed_release_set,
+)
+from biominer.evaluation.flickr_export import validate_verified_flickr_export
+from biominer.evaluation.flickr_release import (
+    FlickrReleaseEvidence,
+    decide_flickr_release,
+)
+
+
+def _sha(index: int) -> str:
+    return f"sha256:{format(index % 16, 'x') * 64}"
+
+
+def _outcome(
+    index: int,
+    *,
+    review_decision: str | None = "include",
+    release_eligible: bool = True,
+    occurrence_claim_supported: bool | None = None,
+    probability: float | None = 0.90,
+    threshold_status: str = "selected",
+) -> DynamicPoolOutcomeEvidence:
+    source_hash = _sha(index)
+    reviewed = review_decision is not None
+    release_evidence = FlickrReleaseEvidence(
+        source_record_id=f"flickr:{index}",
+        source_image_sha256=source_hash,
+        review_decision=review_decision,
+        review_source_image_sha256=source_hash if reviewed else None,
+        duplicate_group_resolved=release_eligible,
+        target_identity_supported=release_eligible,
+        visual_domain_suitable=release_eligible,
+        life_stage_suitable=release_eligible,
+        coordinate_requirements_pass=release_eligible,
+        date_requirements_pass=release_eligible,
+        release_policy_permits=release_eligible,
+    )
+    if occurrence_claim_supported is None:
+        occurrence_claim_supported = review_decision == "include" and release_eligible
+    return DynamicPoolOutcomeEvidence(
+        item_id=f"item-{index}",
+        source_record_id=f"flickr:{index}",
+        source_image_sha256=source_hash,
+        candidate_species_key=f"species-{index % 2}",
+        route="adult_field",
+        evidence_model_fingerprint=_sha(13),
+        calibrator_fingerprint=_sha(14),
+        split_fingerprint=_sha(15),
+        release_decision=decide_flickr_release(release_evidence),
+        conflict_status="not_required",
+        occurrence_claim_supported=occurrence_claim_supported,
+        screening_threshold_status=threshold_status,
+        route_compatible=True,
+        reference_coverage_sufficient=True,
+        geographic_evidence_sufficient=True,
+        visual_detail_sufficient=True,
+        domain_negative_absent=True,
+        out_of_distribution_absent=True,
+        review_priority=0.4 + index * 0.05,
+        human_review_decision=review_decision,
+        review_decision_fingerprint=_sha(index + 1) if reviewed else None,
+        review_source_image_sha256=source_hash if reviewed else None,
+        calibrated_supported_probability=probability,
+        screening_threshold_selection_fingerprint=(
+            _sha(12) if threshold_status == "selected" else None
+        ),
+        screening_threshold=0.80 if threshold_status == "selected" else None,
+        triage_reasons=("fixture",),
+    )
+
+
+def test_release_projection_contains_only_source_bound_human_eligible_rows() -> None:
+    eligible = _outcome(0, probability=0.10)
+    unreviewed_high_score = _outcome(
+        1,
+        review_decision=None,
+        release_eligible=False,
+        probability=0.99,
+    )
+    reviewed_but_blocked = _outcome(2, release_eligible=False)
+
+    projection = project_human_reviewed_release_set(
+        [reviewed_but_blocked, unreviewed_high_score, eligible]
+    )
+
+    assert projection.table.schema == HUMAN_REVIEWED_RELEASE_SCHEMA
+    assert projection.source_item_count == 3
+    assert projection.projected_item_count == 1
+    row = projection.table.row(0, named=True)
+    assert row["source_record_id"] == "flickr:0"
+    assert row["outcome_label"] == HUMAN_REVIEWED_RELEASE_LABEL
+    assert row["human_review_decision"] == "include"
+    assert row["human_reviewed"] is True
+    assert row["release_authorized"] is True
+    assert row["model_evidence_authorizes_release"] is False
+    assert row["calibrated_supported_probability"] == pytest.approx(0.10)
+    assert validate_verified_flickr_export(projection.table) is projection.table
+
+
+def test_high_calibrated_probability_cannot_release_an_unreviewed_row() -> None:
+    projection = project_human_reviewed_release_set(
+        [
+            _outcome(
+                1,
+                review_decision=None,
+                release_eligible=False,
+                probability=1.0,
+            )
+        ]
+    )
+
+    assert projection.table.is_empty()
+    assert projection.projected_item_count == 0
+    validate_human_reviewed_release_set(projection.table)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"conflict_status": "unresolved"},
+        {"occurrence_claim_supported": False},
+    ],
+)
+def test_projection_fails_closed_on_additional_release_lane_gates(
+    changes: dict[str, object],
+) -> None:
+    evidence = replace(_outcome(0), **changes)
+
+    assert project_human_reviewed_release_set([evidence]).table.is_empty()
+
+
+def test_projection_excludes_a_stale_review_source_binding() -> None:
+    source = _outcome(0)
+    stale_hash = _sha(9)
+    stale_decision = decide_flickr_release(
+        FlickrReleaseEvidence(
+            source_record_id=source.source_record_id,
+            source_image_sha256=source.source_image_sha256,
+            review_decision="include",
+            review_source_image_sha256=stale_hash,
+            duplicate_group_resolved=True,
+            target_identity_supported=True,
+            visual_domain_suitable=True,
+            life_stage_suitable=True,
+            coordinate_requirements_pass=True,
+            date_requirements_pass=True,
+            release_policy_permits=True,
+        )
+    )
+    stale = replace(
+        source,
+        release_decision=stale_decision,
+        review_source_image_sha256=stale_hash,
+    )
+
+    assert project_human_reviewed_release_set([stale]).table.is_empty()
+
+
+def test_outcome_evidence_rejects_release_decision_from_another_source() -> None:
+    source = _outcome(0)
+    foreign_decision = decide_flickr_release(
+        FlickrReleaseEvidence(
+            source_record_id="flickr:foreign",
+            source_image_sha256=_sha(0),
+        )
+    )
+
+    with pytest.raises(ValueError, match="another source record"):
+        replace(source, release_decision=foreign_decision)
+
+
+def test_release_lane_validator_detects_authority_tampering() -> None:
+    table = project_human_reviewed_release_set([_outcome(0)]).table
+    tampered = table.with_columns(
+        pl.lit(True).alias("model_evidence_authorizes_release")
+    )
+
+    with pytest.raises(ValueError, match="ineligible row"):
+        validate_human_reviewed_release_set(tampered)
+
+
+def test_release_projection_is_deterministic() -> None:
+    items = [_outcome(0), _outcome(1), _outcome(2)]
+    first = project_human_reviewed_release_set(items)
+    second = project_human_reviewed_release_set(list(reversed(items)))
+
+    assert first.lane_fingerprint == second.lane_fingerprint
+    assert first.table.equals(second.table)
