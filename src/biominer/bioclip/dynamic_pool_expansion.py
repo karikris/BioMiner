@@ -9,6 +9,29 @@ import re
 
 import polars as pl
 
+from biominer.bioclip.dynamic_pool_contracts import (
+    build_dynamic_reference_pool_members,
+    build_dynamic_reference_pool_plans,
+    build_dynamic_reference_pool_summaries,
+    dynamic_reference_pool_member_schema,
+    dynamic_reference_pool_plan_schema,
+    dynamic_reference_pool_summary_schema,
+    validate_dynamic_reference_pool_artifacts,
+)
+from biominer.bioclip.dynamic_pool_planner import (
+    DYNAMIC_POOL_PLANNING_REQUEST_FIELDS,
+    plan_dynamic_reference_pools,
+)
+from biominer.bioclip.dynamic_pool_policy import DynamicReferencePoolPolicy
+from biominer.bioclip.family_geo_candidates import (
+    validate_family_geo_candidate_sets,
+)
+from biominer.bioclip.global_reference_anchors import (
+    validate_global_reference_anchors,
+)
+from biominer.bioclip.reference_geography_index import (
+    validate_reference_geography_index,
+)
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 
@@ -19,6 +42,9 @@ DYNAMIC_POOL_EXPANSION_SIGNAL_POLICY_SCHEMA_VERSION = (
     "dynamic-pool-expansion-signal-policy-v1.0.0"
 )
 DYNAMIC_POOL_EXPANSION_SIGNAL_POLICY_VERSION = "raw-evidence-safe-v1"
+DYNAMIC_POOL_EXPANSION_CACHE_REUSE_SCHEMA_VERSION = (
+    "dynamic-pool-expansion-cache-reuse-v1.0.0"
+)
 
 DYNAMIC_POOL_EXPANSION_SIGNALS = (
     "small_family_margin",
@@ -69,6 +95,7 @@ _INPUT_FIELDS = frozenset(
     }
 )
 _SORT = ("run_id", "plan_id", "expansion_round")
+_CACHE_REUSE_SORT = ("run_id", "prior_plan_id", "expansion_round")
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PLAN_ID_PATTERN = re.compile(r"dynamic-pool-plan:[0-9a-f]{64}\Z")
@@ -355,6 +382,408 @@ def validate_dynamic_pool_expansion_evidence(
         _validate_materialized_evidence(row, policy=policy)
 
 
+def dynamic_pool_expansion_cache_reuse_schema() -> dict[str, pl.DataType]:
+    return {
+        "schema_version": pl.String,
+        "run_id": pl.String,
+        "prior_plan_id": pl.String,
+        "prior_plan_fingerprint": pl.String,
+        "expanded_plan_id": pl.String,
+        "expanded_plan_fingerprint": pl.String,
+        "expansion_evidence_fingerprint": pl.String,
+        "selection_policy_fingerprint": pl.String,
+        "model_fingerprint": pl.String,
+        "query_embedding_fingerprint": pl.String,
+        "expansion_round": pl.UInt16,
+        "retained_reference_count": pl.UInt32,
+        "added_reference_count": pl.UInt32,
+        "dropped_reference_count": pl.UInt32,
+        "prior_reference_embedding_fingerprints": pl.List(pl.String),
+        "added_reference_embedding_fingerprints": pl.List(pl.String),
+        "expanded_reference_embedding_fingerprints": pl.List(pl.String),
+        "query_embedding_reused": pl.Boolean,
+        "reference_embeddings_reused": pl.Boolean,
+        "encoder_invocations": pl.UInt32,
+        "embedding_vectors_materialized": pl.Boolean,
+        "expanded_membership_fingerprint": pl.String,
+        "reuse_fingerprint": pl.String,
+    }
+
+
+def expand_dynamic_reference_pools_from_cache(
+    prior_plans: pl.DataFrame,
+    prior_members: pl.DataFrame,
+    prior_summaries: pl.DataFrame,
+    expansion_evidence: pl.DataFrame,
+    candidate_sets: pl.DataFrame,
+    reference_geography_index: pl.DataFrame,
+    global_reference_anchors: pl.DataFrame,
+    *,
+    policy: DynamicReferencePoolPolicy,
+    burst_group_by_observation: Mapping[str, str] | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Materialize triggered plans using cached embedding identities only.
+
+    The function deliberately accepts no encoder and no embedding-vector column.
+    It replaces an immutable plan with a larger plan over the same query and
+    reference cache identities, while retaining every prior member.
+    """
+
+    if not isinstance(policy, DynamicReferencePoolPolicy):
+        raise TypeError("policy must be a DynamicReferencePoolPolicy")
+    validate_dynamic_reference_pool_artifacts(
+        prior_plans, prior_members, prior_summaries
+    )
+    validate_dynamic_pool_expansion_evidence(expansion_evidence)
+    validate_family_geo_candidate_sets(candidate_sets)
+    validate_reference_geography_index(reference_geography_index)
+    validate_global_reference_anchors(global_reference_anchors)
+    _validate_expansion_inputs(
+        prior_plans,
+        prior_members=prior_members,
+        evidence=expansion_evidence,
+        reference_index=reference_geography_index,
+        policy=policy,
+    )
+    triggered = expansion_evidence.filter(pl.col("expansion_required"))
+    if triggered.is_empty():
+        return (
+            pl.DataFrame(schema=dynamic_reference_pool_plan_schema()),
+            pl.DataFrame(schema=dynamic_reference_pool_member_schema()),
+            pl.DataFrame(schema=dynamic_reference_pool_summary_schema()),
+            pl.DataFrame(schema=dynamic_pool_expansion_cache_reuse_schema()),
+        )
+
+    prior_lookup = {
+        str(row["plan_id"]): row for row in prior_plans.iter_rows(named=True)
+    }
+    evidence_lookup = {
+        str(row["plan_id"]): row for row in triggered.iter_rows(named=True)
+    }
+    selected_prior = [prior_lookup[plan_id] for plan_id in sorted(evidence_lookup)]
+    requests = [_expansion_request(row) for row in selected_prior]
+    planned_plans, planned_members, _planned_summaries = plan_dynamic_reference_pools(
+        requests,
+        candidate_sets,
+        reference_geography_index,
+        global_reference_anchors,
+        policy=policy,
+        burst_group_by_observation=burst_group_by_observation,
+    )
+    planned_lookup = {
+        _plan_match_key(row): row for row in planned_plans.iter_rows(named=True)
+    }
+    member_inputs: list[dict[str, object]] = []
+    plan_inputs: list[dict[str, object]] = []
+    reuse_contexts: list[dict[str, object]] = []
+    for prior in selected_prior:
+        evidence = evidence_lookup[str(prior["plan_id"])]
+        expanded = planned_lookup.get(_plan_match_key(prior))
+        if expanded is None:
+            raise ValueError("expanded plan is missing its prior plan context")
+        prior_group = prior_members.filter(pl.col("plan_id") == prior["plan_id"])
+        expanded_group = planned_members.filter(
+            pl.col("plan_id") == expanded["plan_id"]
+        )
+        prior_by_identity = {
+            _member_cache_identity(row): row
+            for row in prior_group.iter_rows(named=True)
+        }
+        expanded_by_identity = {
+            _member_cache_identity(row): row
+            for row in expanded_group.iter_rows(named=True)
+        }
+        if not set(prior_by_identity) <= set(expanded_by_identity):
+            raise ValueError("expanded plan dropped a prior reference membership")
+        next_round = int(evidence["expansion_round"]) + 1
+        group_inputs: list[dict[str, object]] = []
+        for identity, row in expanded_by_identity.items():
+            item = _member_input(row)
+            item["expansion_round"] = (
+                int(prior_by_identity[identity]["expansion_round"])
+                if identity in prior_by_identity
+                else next_round
+            )
+            group_inputs.append(item)
+        _reset_pool_selection_ranks(group_inputs)
+        member_inputs.extend(group_inputs)
+        plan_inputs.append(_plan_input(expanded))
+        reuse_contexts.append(
+            {
+                "prior": prior,
+                "expanded_plan_id": expanded["plan_id"],
+                "evidence": evidence,
+                "prior_identities": set(prior_by_identity),
+                "expanded_identities": set(expanded_by_identity),
+                "next_round": next_round,
+            }
+        )
+
+    members = build_dynamic_reference_pool_members(member_inputs)
+    plans = build_dynamic_reference_pool_plans(plan_inputs, members)
+    summaries = build_dynamic_reference_pool_summaries(plans, members)
+    validate_dynamic_reference_pool_artifacts(plans, members, summaries)
+    plan_by_id = {str(row["plan_id"]): row for row in plans.iter_rows(named=True)}
+    reuse_rows = [
+        _cache_reuse_row(
+            context,
+            expanded_plan=plan_by_id[str(context["expanded_plan_id"])],
+            expanded_members=members.filter(
+                pl.col("plan_id") == context["expanded_plan_id"]
+            ),
+        )
+        for context in reuse_contexts
+    ]
+    reuse = pl.DataFrame(
+        reuse_rows,
+        schema=dynamic_pool_expansion_cache_reuse_schema(),
+        orient="row",
+        strict=True,
+    ).sort(*_CACHE_REUSE_SORT)
+    validate_dynamic_pool_expansion_cache_reuse(reuse)
+    return plans, members, summaries, reuse
+
+
+def validate_dynamic_pool_expansion_cache_reuse(frame: pl.DataFrame) -> None:
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("dynamic pool cache reuse must be a Polars DataFrame")
+    if frame.schema != dynamic_pool_expansion_cache_reuse_schema():
+        raise ValueError("dynamic pool cache reuse schema mismatch")
+    if not frame.equals(frame.sort(*_CACHE_REUSE_SORT)):
+        raise ValueError("dynamic pool cache reuse is not canonically sorted")
+    if frame.select("prior_plan_id", "expansion_round").n_unique() != frame.height:
+        raise ValueError("dynamic pool cache reuse grain is not unique")
+    for row in frame.iter_rows(named=True):
+        for field in (
+            "prior_plan_id",
+            "expanded_plan_id",
+        ):
+            if not _PLAN_ID_PATTERN.fullmatch(str(row[field])):
+                raise ValueError(f"{field} is invalid")
+        for field in (
+            "prior_plan_fingerprint",
+            "expanded_plan_fingerprint",
+            "expansion_evidence_fingerprint",
+            "selection_policy_fingerprint",
+            "model_fingerprint",
+            "query_embedding_fingerprint",
+            "expanded_membership_fingerprint",
+            "reuse_fingerprint",
+        ):
+            _sha256(row[field], field=field)
+        for field in (
+            "prior_reference_embedding_fingerprints",
+            "added_reference_embedding_fingerprints",
+            "expanded_reference_embedding_fingerprints",
+        ):
+            values = list(row[field])
+            if values != sorted(set(values)):
+                raise ValueError(f"{field} must be unique and sorted")
+            for value in values:
+                _sha256(value, field=field)
+        prior = set(row["prior_reference_embedding_fingerprints"])
+        added = set(row["added_reference_embedding_fingerprints"])
+        expanded = set(row["expanded_reference_embedding_fingerprints"])
+        if prior & added or prior | added != expanded:
+            raise ValueError("cache reuse embedding identity sets are inconsistent")
+        if row["retained_reference_count"] != len(prior):
+            raise ValueError("retained cache identity count is inconsistent")
+        if row["added_reference_count"] != len(added):
+            raise ValueError("added cache identity count is inconsistent")
+        if row["dropped_reference_count"] != 0:
+            raise ValueError("cached expansion cannot drop prior references")
+        if (
+            row["query_embedding_reused"] is not True
+            or row["reference_embeddings_reused"] is not True
+            or row["encoder_invocations"] != 0
+            or row["embedding_vectors_materialized"] is not False
+        ):
+            raise ValueError("cache reuse evidence permits embedding recomputation")
+        identity = dict(row)
+        fingerprint = identity.pop("reuse_fingerprint")
+        if canonical_semantic_fingerprint(identity) != fingerprint:
+            raise ValueError("dynamic pool cache reuse fingerprint mismatch")
+
+
+def _validate_expansion_inputs(
+    plans: pl.DataFrame,
+    *,
+    prior_members: pl.DataFrame,
+    evidence: pl.DataFrame,
+    reference_index: pl.DataFrame,
+    policy: DynamicReferencePoolPolicy,
+) -> None:
+    plan_lookup = {
+        str(row["plan_id"]): row for row in plans.iter_rows(named=True)
+    }
+    unknown = set(evidence["plan_id"].to_list()) - set(plan_lookup)
+    if unknown:
+        raise ValueError("expansion evidence references an unknown prior plan")
+    for row in evidence.iter_rows(named=True):
+        plan = plan_lookup[str(row["plan_id"])]
+        if row["plan_fingerprint"] != plan["plan_fingerprint"]:
+            raise ValueError("expansion evidence prior plan fingerprint mismatch")
+        if row["selection_policy_fingerprint"] != policy.fingerprint:
+            raise ValueError("expansion evidence selection policy mismatch")
+        if plan["selection_policy_fingerprint"] != policy.fingerprint:
+            raise ValueError("prior plan selection policy mismatch")
+        if row["model_fingerprint"] != plan["model_fingerprint"]:
+            raise ValueError("expansion evidence model fingerprint mismatch")
+        if int(row["expansion_round"]) != int(
+            prior_members.filter(pl.col("plan_id") == plan["plan_id"])[
+                "expansion_round"
+            ].max()
+        ):
+            raise ValueError("expansion evidence round does not match prior members")
+        if int(row["expansion_round"]) >= policy.maximum_expansion_rounds:
+            raise ValueError("expansion evidence already reached the maximum rounds")
+    index_identities = {
+        (str(row["reference_media_id"]), str(row["embedding_fingerprint"]))
+        for row in reference_index.iter_rows(named=True)
+    }
+    member_identities = {
+        (str(row["reference_media_id"]), str(row["reference_embedding_fingerprint"]))
+        for row in prior_members.iter_rows(named=True)
+    }
+    if not member_identities <= index_identities:
+        raise ValueError("prior member embedding identity is absent from reference index")
+
+
+def _expansion_request(plan: Mapping[str, object]) -> dict[str, object]:
+    request = {field: plan[field] for field in DYNAMIC_POOL_PLANNING_REQUEST_FIELDS}
+    request["scoring_stage"] = "uncertainty_expansion"
+    return request
+
+
+def _plan_match_key(plan: Mapping[str, object]) -> tuple[object, ...]:
+    return tuple(
+        plan[field]
+        for field in (
+            "run_id",
+            "flickr_query_id",
+            "flickr_photo_id",
+            "organism_unit_id",
+            "visual_input_id",
+            "candidate_set_id",
+        )
+    )
+
+
+def _member_cache_identity(member: Mapping[str, object]) -> tuple[str, ...]:
+    return tuple(
+        str(member[field])
+        for field in (
+            "candidate_accepted_taxon_key",
+            "reference_media_id",
+            "reference_observation_id",
+            "reference_embedding_fingerprint",
+        )
+    )
+
+
+def _member_input(member: Mapping[str, object]) -> dict[str, object]:
+    excluded = {"schema_version", "pool_id", "member_fingerprint"}
+    return {field: value for field, value in member.items() if field not in excluded}
+
+
+def _plan_input(plan: Mapping[str, object]) -> dict[str, object]:
+    excluded = {
+        "schema_version",
+        "global_pool_ids",
+        "local_pool_ids",
+        "safety_pool_ids",
+        "plan_fingerprint",
+    }
+    return {field: value for field, value in plan.items() if field not in excluded}
+
+
+def _reset_pool_selection_ranks(rows: list[dict[str, object]]) -> None:
+    grouped: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    for row in rows:
+        key = tuple(
+            row[field]
+            for field in (
+                "plan_id",
+                "pool_scope",
+                "pool_role",
+                "candidate_accepted_taxon_key",
+                "expansion_round",
+            )
+        )
+        grouped.setdefault(key, []).append(row)
+    for group in grouped.values():
+        group.sort(
+            key=lambda row: (
+                int(row["selection_rank"]),
+                str(row["reference_observation_id"]),
+                str(row["reference_media_id"]),
+            )
+        )
+        for rank, row in enumerate(group, start=1):
+            row["selection_rank"] = rank
+
+
+def _cache_reuse_row(
+    context: Mapping[str, object],
+    *,
+    expanded_plan: Mapping[str, object],
+    expanded_members: pl.DataFrame,
+) -> dict[str, object]:
+    prior = context["prior"]
+    evidence = context["evidence"]
+    if not isinstance(prior, Mapping) or not isinstance(evidence, Mapping):
+        raise TypeError("cache reuse context is invalid")
+    prior_identities = context["prior_identities"]
+    expanded_identities = context["expanded_identities"]
+    if not isinstance(prior_identities, set) or not isinstance(
+        expanded_identities, set
+    ):
+        raise TypeError("cache reuse member identity context is invalid")
+    added_identities = expanded_identities - prior_identities
+    prior_fingerprints = sorted({str(identity[3]) for identity in prior_identities})
+    added_fingerprints = sorted({str(identity[3]) for identity in added_identities})
+    expanded_fingerprints = sorted(
+        {str(identity[3]) for identity in expanded_identities}
+    )
+    if set(prior_fingerprints) & set(added_fingerprints):
+        raise ValueError(
+            "one reference embedding identity cannot be both retained and added"
+        )
+    membership_fingerprint = canonical_semantic_fingerprint(
+        {
+            "schema_version": "expanded-reference-membership-set-v1",
+            "expanded_plan_id": expanded_plan["plan_id"],
+            "member_fingerprints": expanded_members["member_fingerprint"].to_list(),
+        }
+    )
+    row: dict[str, object] = {
+        "schema_version": DYNAMIC_POOL_EXPANSION_CACHE_REUSE_SCHEMA_VERSION,
+        "run_id": prior["run_id"],
+        "prior_plan_id": prior["plan_id"],
+        "prior_plan_fingerprint": prior["plan_fingerprint"],
+        "expanded_plan_id": expanded_plan["plan_id"],
+        "expanded_plan_fingerprint": expanded_plan["plan_fingerprint"],
+        "expansion_evidence_fingerprint": evidence["evidence_fingerprint"],
+        "selection_policy_fingerprint": prior["selection_policy_fingerprint"],
+        "model_fingerprint": prior["model_fingerprint"],
+        "query_embedding_fingerprint": prior["query_embedding_fingerprint"],
+        "expansion_round": int(context["next_round"]),
+        "retained_reference_count": len(prior_fingerprints),
+        "added_reference_count": len(added_fingerprints),
+        "dropped_reference_count": 0,
+        "prior_reference_embedding_fingerprints": prior_fingerprints,
+        "added_reference_embedding_fingerprints": added_fingerprints,
+        "expanded_reference_embedding_fingerprints": expanded_fingerprints,
+        "query_embedding_reused": True,
+        "reference_embeddings_reused": True,
+        "encoder_invocations": 0,
+        "embedding_vectors_materialized": False,
+        "expanded_membership_fingerprint": membership_fingerprint,
+    }
+    row["reuse_fingerprint"] = canonical_semantic_fingerprint(row)
+    return row
+
+
 def _normalized_evidence(values: Mapping[str, object]) -> dict[str, object]:
     row: dict[str, object] = {
         "run_id": _required_text(values["run_id"], field="run_id"),
@@ -612,6 +1041,7 @@ def _sha256(value: object, *, field: str) -> str:
 
 
 __all__ = [
+    "DYNAMIC_POOL_EXPANSION_CACHE_REUSE_SCHEMA_VERSION",
     "DYNAMIC_POOL_EXPANSION_EVIDENCE_SCHEMA_VERSION",
     "DYNAMIC_POOL_EXPANSION_SIGNALS",
     "DYNAMIC_POOL_EXPANSION_SIGNAL_POLICY_SCHEMA_VERSION",
@@ -619,6 +1049,9 @@ __all__ = [
     "DynamicPoolExpansionSignalPolicy",
     "build_dynamic_pool_expansion_evidence",
     "default_dynamic_pool_expansion_signal_policy",
+    "dynamic_pool_expansion_cache_reuse_schema",
     "dynamic_pool_expansion_evidence_schema",
+    "expand_dynamic_reference_pools_from_cache",
+    "validate_dynamic_pool_expansion_cache_reuse",
     "validate_dynamic_pool_expansion_evidence",
 ]

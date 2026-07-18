@@ -11,6 +11,11 @@ import pytest
 from biominer.bioclip.dynamic_pool_contracts import (
     validate_dynamic_reference_pool_artifacts,
 )
+from biominer.bioclip.dynamic_pool_expansion import (
+    build_dynamic_pool_expansion_evidence,
+    expand_dynamic_reference_pools_from_cache,
+    validate_dynamic_pool_expansion_cache_reuse,
+)
 from biominer.bioclip.dynamic_pool_planner import plan_dynamic_reference_pools
 from biominer.bioclip.dynamic_pool_policy import default_dynamic_reference_pool_policy
 from biominer.bioclip.family_geo_candidates import build_family_geo_candidate_sets
@@ -342,6 +347,112 @@ def test_coverage_report_materializes_zero_member_candidate_shortfall() -> None:
     assert summary["production_release_authorized"] is False
 
 
+def test_triggered_expansion_selects_only_cached_embedding_identities() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 5),
+            ("selective_rescore", 5),
+        ),
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    plans, members, summaries, reuse = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    validate_dynamic_reference_pool_artifacts(plans, members, summaries)
+    validate_dynamic_pool_expansion_cache_reuse(reuse)
+    assert initial[1].height == 2
+    assert members.height == 5
+    assert members.filter(pl.col("expansion_round") == 0).height == 2
+    assert members.filter(pl.col("expansion_round") == 1).height == 3
+    assert plans["scoring_stage"].to_list() == ["uncertainty_expansion"]
+    assert plans["query_embedding_fingerprint"].to_list() == [
+        plan["query_embedding_fingerprint"]
+    ]
+    cached = set(index["embedding_fingerprint"].to_list())
+    assert set(members["reference_embedding_fingerprint"].to_list()) <= cached
+    reuse_row = reuse.row(0, named=True)
+    assert reuse_row["retained_reference_count"] == 2
+    assert reuse_row["added_reference_count"] == 3
+    assert reuse_row["dropped_reference_count"] == 0
+    assert reuse_row["query_embedding_reused"] is True
+    assert reuse_row["reference_embeddings_reused"] is True
+    assert reuse_row["encoder_invocations"] == 0
+    assert reuse_row["embedding_vectors_materialized"] is False
+
+
+def test_untriggered_expansion_materializes_no_replacement_plan() -> None:
+    candidate_sets = _candidate_sets()
+    index = _reference_index()
+    anchors = select_global_reference_anchors(index)
+    policy = _small_policy()
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    expanded = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert all(frame.is_empty() for frame in expanded)
+
+
 def _small_policy():
     return replace(
         default_dynamic_reference_pool_policy(),
@@ -353,6 +464,35 @@ def _small_policy():
         minimum_independent_observation_groups_per_candidate=2,
         minimum_global_countries_per_candidate=1,
     )
+
+
+def _expansion_evidence_row(
+    plan: dict[str, object],
+    *,
+    selection_policy_fingerprint: str,
+    species_margin: float = 0.20,
+) -> dict[str, object]:
+    return {
+        "run_id": plan["run_id"],
+        "plan_id": plan["plan_id"],
+        "plan_fingerprint": plan["plan_fingerprint"],
+        "candidate_scores_fingerprint": _sha("9"),
+        "selection_policy_fingerprint": selection_policy_fingerprint,
+        "model_fingerprint": plan["model_fingerprint"],
+        "expansion_round": 0,
+        "family_margin": 0.20,
+        "species_margin": species_margin,
+        "global_local_disagreement": 0.05,
+        "prototype_method_disagreement": 0.05,
+        "visual_input_disagreement": 0.05,
+        "local_support_ratio": 1.0,
+        "subject_area_ratio": 0.5,
+        "known_competitor_margin": 0.20,
+        "no_geo_global_fallback": False,
+        "out_of_distribution_score": 0.1,
+        "route_domain_compatible": True,
+        "unavailable_signal_reasons": {},
+    }
 
 
 def _request(
