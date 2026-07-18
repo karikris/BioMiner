@@ -95,6 +95,11 @@ results are in `adaptive_release_verification.json` and `.md`. These reports
 verify software and fixture behavior only. Their listed live-source steps and
 human review remain required before scientific release claims.
 
+The completed geography-conditioned dynamic-pooling software goal is summarized
+in `reports/geo_dynamic_pooling/final_report.json` and `.md`; its technical and
+scientific-semantics receipts remain separate. The production-selection outcome
+is `insufficient_evidence`, not a selected default or scientific release.
+
 ## Task workflow
 
 1. **Discover:** inspect status, current task evidence, code, tests, ADRs, and

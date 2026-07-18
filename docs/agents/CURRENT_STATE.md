@@ -10,11 +10,11 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling workflow/documentation commit:
-  `845966f0f63c4b38111f3e16468b14c6b674cc09`
-  (`docs(architecture): document pooling contracts`)
+  `98c64ec27e0aaa6aa3da333b3e4d37df3fc1c30b`
+  (`test(release): verify dynamic pooling semantics`)
 - Latest verified dynamic-pooling task report commit:
-  `0bd997694ea0de59f844fc00009c7fad0e5b5218`
-  (`docs(provenance): record task 15.2 push`)
+  `19fd744b1104c09dde75367bafb6b531ef4239a4`
+  (`docs(provenance): record task 16.1 push`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -75,7 +75,10 @@ at the start of every task.
   pooling variant, or fusion method is selected or production-defaulted. Phase
   16 Task 16.1 aligns public/production guidance, architecture, schemas, human
   governance and agent handoff state with that implemented workflow and
-  fail-closed decision.
+  fail-closed decision. Task 16.2 records the complete technical gate, ten
+  scientific-semantics invariants and the final self-identifying workflow
+  report. The software/fixture goal is complete; live execution, review,
+  statistical support, default selection and release remain pending.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -240,6 +243,14 @@ at the start of every task.
   - Task 16.1.2 architecture/schema documentation gate: 14 passed in 0.88
     seconds, including exact consumer pins and implementation-backed schema
     constants;
+  - Task 16.2.1 full regression: 3,233 passed in 169.62 seconds;
+  - Task 16.2.1 focused release gates: strict 77, adaptive 68, dynamic pooling
+    428, CLI 146, configured schema/parity 44 and handoffs 85 passed;
+  - Task 16.2.1 Ruff passed across all tracked Python, the locked 44-package
+    audit found zero known vulnerabilities, no tracked file exceeds 1 MiB and
+    no private-key/common live-token prefix matched;
+  - Task 16.2.2 scientific-semantics gate: 21 passed in 0.34 seconds across all
+    ten required invariants;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
@@ -458,13 +469,13 @@ Therefore:
 - keep public, schema, governance and agent documentation aligned when a
   versioned contract or accepted default changes.
 
-## Remaining implementation, live and human work
+## Remaining live and human work
 
-The implementation, downstream handoffs, fixture-backed pilot, and Task 16.1
-documentation/governance work are complete. Final release verification remains
-in Task 16.2. Neither boundary completes the scientific run.
-The authoritative remaining-work ledger is in
-`reports/gbif_fast_start/final_report.json` and currently includes:
+The dynamic-pooling implementation, downstream handoffs, fixture-backed pilot,
+documentation/governance and final software release verification are complete.
+This does not complete the scientific run. The authoritative goal report is
+`reports/geo_dynamic_pooling/final_report.json`; related adaptive remaining work
+also remains in `reports/gbif_fast_start/final_report.json`.
 
 - live current-policy GBIF acquisition and durable-media admission;
 - live BioCLIP embedding, prototype, and Flickr scoring with instrumentation;
@@ -476,12 +487,12 @@ Provider-asserted GBIF support remains provisional, current quality metrics are
 unavailable, and no live production improvement or scientific release is
 claimed.
 
-For the active dynamic-pooling goal, the next boundary is Phase 16 Task 16.2:
-run the complete technical and scientific release gates, verify exact workflow
-semantics and publish the final JSON/Markdown report. The parallel
-family/geography union is only the current review projection. No strategy is
-selected or production-defaulted because only fixture evidence has run. No
-strategy is empirically superior, and no live dynamic pool, live score,
+The exact next action is one bounded, instrumented current-policy live run that
+materializes reference-index and dynamic-score artifacts, comparable throughput
+and MPS peak memory, followed by the frozen representative human-review plan.
+The parallel family/geography union is only the current review projection. No
+strategy is selected or production-defaulted because only fixture evidence has
+run. No strategy is empirically superior, and no live dynamic pool, live score,
 calibrated probability, completed human review, statistical-support result or
 new release-ready occurrence is claimed by the completed phases.
 

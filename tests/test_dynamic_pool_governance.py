@@ -61,7 +61,10 @@ def test_agent_topics_resume_at_release_without_scientific_overclaim() -> None:
     release = _normalized(RELEASE)
     tools = _normalized(TOOLS)
 
-    assert "next boundary is Phase 16 Task 16.2" in current
+    assert "final software release verification are complete" in current
+    assert "exact next action is one bounded, instrumented current-policy live run" in (
+        current
+    )
     assert "No strategy is selected or production-defaulted" in current
     assert "zero variants are eligible" in science
     assert "fixture projection" in science
@@ -76,11 +79,9 @@ def test_agent_pack_manifest_matches_every_instruction_file() -> None:
     manifest = _json(PACK_MANIFEST)
 
     assert manifest["observed_main_commit"] == (
-        "845966f0f63c4b38111f3e16468b14c6b674cc09"
+        "98c64ec27e0aaa6aa3da333b3e4d37df3fc1c30b"
     )
-    assert (
-        "Task 16.2 final release verification is next" in manifest["active_goal_note"]
-    )
+    assert "software/fixture goal is complete" in manifest["active_goal_note"]
 
     for item in manifest["files"]:
         path = ROOT / item["path"]
