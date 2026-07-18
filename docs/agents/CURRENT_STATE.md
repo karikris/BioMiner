@@ -10,8 +10,8 @@ at the start of every task.
 - Phase 0 dynamic-pooling design baseline:
   `299914548b407b439cd36d1aa99397b41aa827f1`
 - Latest verified dynamic-pooling implementation commit:
-  `7ba61be8ac376a0d8ebac7023384be0600187555`
-  (`feat(evaluation): update review milestones from evidence`)
+  `12aaaae3249dafa9991581b76c7849c82497fdd6`
+  (`fix(evaluation): balance frozen evaluation splits`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
@@ -41,8 +41,11 @@ at the start of every task.
   through Task 9.1.4. Task 9.2 defines the preregistered review-evidence policy,
   dynamic exact-binomial reference count with explicit weighted/grouped design
   inflation, and immutable adaptive milestone evaluation through Task 9.2.3.
-  Phase 10 leakage-safe calibration and risk-control work is next; no fusion
-  method is selected or production-defaulted.
+  Phase 10 creates transitive reviewed-Flickr source-independence components
+  and freezes balanced calibration/validation/final-test assignments through
+  Task 10.1.2 plus its explicit post-push balance correction. Task 10.2
+  calibrated evidence models is next; no fusion method is selected or
+  production-defaulted.
 - Phase 1 contract alignment remains a completed historical boundary; it is
   not the current next step.
 - Prior adaptive GBIF fast-start phases: 0–13 complete, with the final
@@ -124,6 +127,12 @@ at the start of every task.
     below); the default four-look Bonferroni policy requires 86 under the same
     all-success assumptions; a fixture weight/group/external design effect of
     2.2032 inflates 59 effective reviews to 130 nominal reviews;
+  - Task 10.1 final full regression: 2,985 passed in 104.20 seconds;
+  - Task 10.1 leakage gate: 39 passed in 0.91 seconds;
+  - Task 10.1 fixture: a seven-row identity chain became one atomic component,
+    while unrelated no-geo rows remained independent; 18 independent reviewed
+    components froze to calibration/validation/final-test counts 7/5/6 under
+    40/30/30 weights, with both supported and error outcomes in every split;
   - dynamic-pooling Task 0.2 ADR/audit gate: 17 passed;
   - strict gate: 86 passed;
   - adaptive gate: 65 passed;
