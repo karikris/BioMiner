@@ -11,9 +11,11 @@ from biominer.evaluation.review_evidence import (
     STOPPING_RULE,
     TARGET_METRIC,
     ReviewEvidencePolicy,
+    ReviewEvidenceObservation,
     ReviewGroupingProfile,
     calculate_review_requirements,
     clopper_pearson_lower_bound,
+    update_review_milestones,
 )
 
 
@@ -217,3 +219,188 @@ def test_planner_subtracts_existing_decisive_reviews_from_recommendation() -> No
 
     assert plan.recommended_review_count == 59
     assert plan.additional_decisive_reviews_needed == 39
+
+
+def _sha(character: str) -> str:
+    return f"sha256:{character * 64}"
+
+
+def _review(
+    sequence: int,
+    *,
+    supported: bool | None = True,
+    purpose: str = "representative_audit",
+    eligible: bool = True,
+    weight: float | None = 1.0,
+    stratum: str = "stratum-1",
+    owner: str | None = None,
+    duplicate: str | None = None,
+) -> ReviewEvidenceObservation:
+    digit = format(sequence % 16, "x")
+    return ReviewEvidenceObservation(
+        review_sequence=sequence,
+        review_unit_id=f"review-{sequence}",
+        source_record_hash=_sha(digit),
+        review_decision_fingerprint=_sha(format((sequence + 1) % 16, "x")),
+        stratum_id=stratum,
+        reviewer_group_id=f"reviewer-{sequence}",
+        owner_group_id=owner or f"owner-{sequence}",
+        duplicate_group_id=duplicate or f"duplicate-{sequence}",
+        observation_group_id=f"observation-{sequence}",
+        sampling_purpose=purpose,
+        representative_estimation_eligible=eligible,
+        human_supported=supported,
+        sampling_weight=weight,
+    )
+
+
+def _one_look_plan():
+    policy = ReviewEvidencePolicy(
+        maximum_review_budget=200,
+        milestone_information_fractions=(1.0,),
+    )
+    plan = calculate_review_requirements(policy, anticipated_error_rate=0.0)
+    return policy, plan
+
+
+def test_milestone_stops_only_when_preregistered_59_record_bound_passes() -> None:
+    policy, plan = _one_look_plan()
+    before = update_review_milestones(
+        policy,
+        plan,
+        [_review(sequence) for sequence in range(1, 59)],
+    )
+    reached = update_review_milestones(
+        policy,
+        plan,
+        [_review(sequence) for sequence in range(1, 60)],
+    )
+
+    assert before.decision == "continue_to_next_milestone"
+    assert before.additional_decisive_reviews_to_next_milestone == 1
+    assert not before.stop_authorized
+    assert reached.decision == "stop_objective_met"
+    assert reached.stop_authorized
+    assert reached.representative_support_authorized
+    assert not reached.occurrence_release_authorized
+    assert reached.milestones[0].precision_lower_bound >= 0.95
+    assert reached.milestones[0].interval_semantics == (
+        "exact_one_sided_clopper_pearson"
+    )
+
+
+def test_failed_final_milestone_requests_replanning_from_observed_error() -> None:
+    policy, plan = _one_look_plan()
+    reviews = [_review(sequence) for sequence in range(1, 60)]
+    reviews[-1] = _review(59, supported=False)
+
+    update = update_review_milestones(policy, plan, reviews)
+
+    assert update.eligible_error_reviews == 1
+    assert update.observed_weighted_error_rate == pytest.approx(1 / 59)
+    assert update.decision == "replan_from_observed_error"
+    assert not update.stop_authorized
+    assert not update.milestones[0].lower_bound_objective_met
+
+
+def test_targeted_and_nondecisive_events_do_not_advance_audit_milestone() -> None:
+    policy, plan = _one_look_plan()
+    reviews = [_review(sequence) for sequence in range(1, 58)]
+    reviews.extend(
+        [
+            _review(
+                58,
+                purpose="targeted_failure_discovery",
+                eligible=False,
+                weight=None,
+            ),
+            _review(59, supported=None),
+            _review(
+                60,
+                purpose="occurrence_release_review",
+                eligible=False,
+                weight=None,
+            ),
+        ]
+    )
+
+    update = update_review_milestones(policy, plan, reviews)
+
+    assert update.total_review_events == 60
+    assert update.eligible_decisive_reviews == 57
+    assert update.targeted_events_excluded == 1
+    assert update.nondecisive_events_excluded == 1
+    assert update.other_ineligible_events_excluded == 1
+    assert update.next_milestone_count == 59
+
+
+def test_represented_strata_gate_can_block_an_otherwise_passing_bound() -> None:
+    policy = ReviewEvidencePolicy(
+        minimum_represented_strata=2,
+        minimum_decisive_reviews_per_stratum=2,
+        maximum_review_budget=200,
+        milestone_information_fractions=(1.0,),
+    )
+    plan = calculate_review_requirements(
+        policy,
+        anticipated_error_rate=0.0,
+        required_stratum_count=2,
+    )
+    reviews = [_review(sequence, stratum="only-stratum") for sequence in range(1, 60)]
+
+    update = update_review_milestones(policy, plan, reviews)
+
+    assert update.milestones[0].lower_bound_objective_met
+    assert not update.milestones[0].represented_strata_met
+    assert not update.stop_authorized
+
+
+def test_weighted_grouped_milestone_uses_conservative_effective_count() -> None:
+    policy = ReviewEvidencePolicy(
+        maximum_review_budget=500,
+        milestone_information_fractions=(1.0,),
+    )
+    grouping = ReviewGroupingProfile(
+        owner_cluster_sizes=(2, 2),
+        owner_intraclass_correlation=0.25,
+    )
+    plan = calculate_review_requirements(
+        policy,
+        anticipated_error_rate=0.0,
+        sampling_weights=(1.0, 3.0),
+        grouping_profile=grouping,
+    )
+    count = plan.recommended_review_count
+    reviews = [
+        _review(
+            sequence,
+            weight=1.0 if sequence % 2 else 3.0,
+            owner=f"owner-{sequence // 2}",
+        )
+        for sequence in range(1, count + 1)
+    ]
+
+    update = update_review_milestones(
+        policy,
+        plan,
+        reviews,
+        grouping_profile=grouping,
+    )
+    milestone = update.milestones[0]
+
+    assert milestone.combined_design_effect > 1.0
+    assert milestone.effective_decisive_reviews < count
+    assert milestone.interval_semantics.startswith(
+        "conservative_integer_effective_sample"
+    )
+
+
+def test_milestone_update_is_event_order_independent_but_sequence_bound() -> None:
+    policy, plan = _one_look_plan()
+    reviews = [_review(sequence) for sequence in range(1, 60)]
+    first = update_review_milestones(policy, plan, reviews)
+    second = update_review_milestones(policy, plan, list(reversed(reviews)))
+
+    assert first == second
+    with pytest.raises(ValueError, match="review_sequence must be unique"):
+        update_review_milestones(policy, plan, [reviews[0], _review(1)])

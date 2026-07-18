@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import math
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
@@ -13,6 +14,8 @@ REVIEW_EVIDENCE_POLICY_SCHEMA_VERSION = "review-evidence-policy-v1.0.0"
 REVIEW_EVIDENCE_POLICY_FILE = "review_evidence_policy.json"
 REVIEW_REQUIREMENT_PLAN_SCHEMA_VERSION = "review-requirement-plan-v1.0.0"
 REVIEW_REQUIREMENT_PLAN_FILE = "review_requirement_plan.json"
+REVIEW_MILESTONE_UPDATE_SCHEMA_VERSION = "review-milestone-update-v1.0.0"
+REVIEW_MILESTONE_UPDATE_FILE = "review_milestone_update.json"
 
 TARGET_METRIC = "precision_of_selected_occurrence_candidates"
 INTERVAL_METHOD = "one_sided_clopper_pearson"
@@ -261,6 +264,138 @@ class ReviewRequirementPlan:
     interval_semantics: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewEvidenceObservation:
+    """One effective, source-bound review outcome for audit planning."""
+
+    review_sequence: int
+    review_unit_id: str
+    source_record_hash: str
+    review_decision_fingerprint: str
+    stratum_id: str
+    reviewer_group_id: str
+    owner_group_id: str
+    duplicate_group_id: str
+    observation_group_id: str
+    sampling_purpose: str
+    representative_estimation_eligible: bool
+    human_supported: bool | None
+    sampling_weight: float | None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.review_sequence, int)
+            or isinstance(self.review_sequence, bool)
+            or self.review_sequence < 1
+        ):
+            raise ValueError("review_sequence must be a positive integer")
+        for field in (
+            "review_unit_id",
+            "stratum_id",
+            "reviewer_group_id",
+            "owner_group_id",
+            "duplicate_group_id",
+            "observation_group_id",
+        ):
+            object.__setattr__(
+                self, field, _required_text(getattr(self, field), field=field)
+            )
+        for field in ("source_record_hash", "review_decision_fingerprint"):
+            object.__setattr__(self, field, _sha256(getattr(self, field), field=field))
+        purpose = _required_text(self.sampling_purpose, field="sampling_purpose")
+        if purpose not in {
+            "representative_audit",
+            "targeted_failure_discovery",
+            "occurrence_release_review",
+        }:
+            raise ValueError(f"unsupported sampling_purpose: {purpose}")
+        object.__setattr__(self, "sampling_purpose", purpose)
+        if not isinstance(self.representative_estimation_eligible, bool):
+            raise TypeError("representative_estimation_eligible must be a boolean")
+        if self.human_supported is not None and not isinstance(
+            self.human_supported, bool
+        ):
+            raise TypeError("human_supported must be a boolean or null")
+        weight = self.sampling_weight
+        if weight is not None:
+            weight = _positive_float(weight, field="sampling_weight")
+            object.__setattr__(self, "sampling_weight", weight)
+        if self.representative_estimation_eligible:
+            if purpose != "representative_audit":
+                raise ValueError(
+                    "only representative_audit evidence can be estimation eligible"
+                )
+            if weight is None:
+                raise ValueError(
+                    "representative audit evidence requires a sampling weight"
+                )
+        elif purpose == "representative_audit":
+            raise ValueError(
+                "representative_audit evidence must be estimation eligible"
+            )
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_semantic_fingerprint(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewMilestoneEvaluation:
+    """One preregistered information-fraction evaluation."""
+
+    information_fraction: float
+    target_decisive_reviews: int
+    status: str
+    decisive_reviews_evaluated: int
+    supported_reviews: int | None
+    error_reviews: int | None
+    weighted_precision: float | None
+    weighted_error_rate: float | None
+    represented_strata: int | None
+    required_strata: int
+    weight_design_effect: float | None
+    grouping_dimension_design_effects: tuple[tuple[str, float], ...]
+    grouping_design_effect: float | None
+    external_design_effect: float
+    combined_design_effect: float | None
+    effective_decisive_reviews: int | None
+    effective_supported_reviews: int | None
+    confidence_level: float
+    precision_lower_bound: float | None
+    interval_semantics: str | None
+    target_precision_met: bool
+    lower_bound_objective_met: bool
+    represented_strata_met: bool
+    stop_authorized: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewMilestoneUpdate:
+    """Current evidence state across every preregistered milestone."""
+
+    schema_version: str
+    update_fingerprint: str
+    policy_fingerprint: str
+    requirement_plan_fingerprint: str
+    evidence_fingerprint: str
+    total_review_events: int
+    eligible_decisive_reviews: int
+    eligible_supported_reviews: int
+    eligible_error_reviews: int
+    targeted_events_excluded: int
+    nondecisive_events_excluded: int
+    other_ineligible_events_excluded: int
+    observed_weighted_error_rate: float | None
+    milestones: tuple[ReviewMilestoneEvaluation, ...]
+    decision: str
+    decision_reason: str
+    next_milestone_count: int | None
+    additional_decisive_reviews_to_next_milestone: int
+    stop_authorized: bool
+    representative_support_authorized: bool
+    occurrence_release_authorized: bool
+
+
 def clopper_pearson_lower_bound(
     successes: int,
     trials: int,
@@ -428,6 +563,308 @@ def calculate_review_requirements(
     )
 
 
+def update_review_milestones(
+    policy: ReviewEvidencePolicy,
+    requirement_plan: ReviewRequirementPlan,
+    evidence: Sequence[ReviewEvidenceObservation],
+    *,
+    grouping_profile: ReviewGroupingProfile | None = None,
+) -> ReviewMilestoneUpdate:
+    """Evaluate immutable evidence prefixes only at preregistered milestones."""
+
+    if not isinstance(policy, ReviewEvidencePolicy):
+        raise TypeError("policy must be a ReviewEvidencePolicy")
+    if not isinstance(requirement_plan, ReviewRequirementPlan):
+        raise TypeError("requirement_plan must be a ReviewRequirementPlan")
+    if requirement_plan.policy_fingerprint != policy.fingerprint:
+        raise ValueError("requirement plan references a different review policy")
+    profile = grouping_profile or ReviewGroupingProfile()
+    if not isinstance(profile, ReviewGroupingProfile):
+        raise TypeError("grouping_profile must be a ReviewGroupingProfile")
+    if requirement_plan.grouping_profile_fingerprint != profile.fingerprint:
+        raise ValueError("grouping profile does not match the requirement plan")
+    observations = tuple(evidence)
+    if any(not isinstance(item, ReviewEvidenceObservation) for item in observations):
+        raise TypeError("evidence must contain ReviewEvidenceObservation values")
+    sequences = [item.review_sequence for item in observations]
+    unit_ids = [item.review_unit_id for item in observations]
+    if len(sequences) != len(set(sequences)):
+        raise ValueError("review_sequence must be unique")
+    if len(unit_ids) != len(set(unit_ids)):
+        raise ValueError("review_unit_id must be unique effective evidence")
+    ordered = tuple(sorted(observations, key=lambda item: item.review_sequence))
+    eligible = tuple(
+        item
+        for item in ordered
+        if item.representative_estimation_eligible
+        and item.sampling_purpose == "representative_audit"
+        and item.human_supported is not None
+    )
+    targeted_excluded = sum(
+        item.sampling_purpose == "targeted_failure_discovery" for item in ordered
+    )
+    nondecisive_excluded = sum(
+        item.sampling_purpose != "targeted_failure_discovery"
+        and item.human_supported is None
+        for item in ordered
+    )
+    other_ineligible_excluded = sum(
+        item.human_supported is not None
+        and item.sampling_purpose != "targeted_failure_discovery"
+        and not item.representative_estimation_eligible
+        for item in ordered
+    )
+    weighted_error_rate = _weighted_error_rate(eligible)
+    milestone_targets: list[tuple[float, int]] = []
+    seen_targets: set[int] = set()
+    for fraction in policy.milestone_information_fractions:
+        target = max(
+            1,
+            math.ceil(requirement_plan.recommended_review_count * fraction),
+        )
+        if target not in seen_targets:
+            milestone_targets.append((fraction, target))
+            seen_targets.add(target)
+    evaluations = tuple(
+        _evaluate_milestone(
+            information_fraction=fraction,
+            target=target,
+            eligible=eligible,
+            policy=policy,
+            requirement_plan=requirement_plan,
+            grouping_profile=profile,
+        )
+        for fraction, target in milestone_targets
+    )
+    supported = next(
+        (evaluation for evaluation in evaluations if evaluation.stop_authorized),
+        None,
+    )
+    next_milestone = next(
+        (
+            evaluation.target_decisive_reviews
+            for evaluation in evaluations
+            if evaluation.status == "pending"
+        ),
+        None,
+    )
+    if supported is not None:
+        decision = "stop_objective_met"
+        reason = (
+            "precision_point_lower_bound_and_required_strata_met_at_"
+            "preregistered_milestone"
+        )
+        next_milestone = None
+    elif len(eligible) >= policy.maximum_review_budget:
+        decision = "budget_exhausted_without_support"
+        reason = "maximum_review_budget_reached_without_stopping_criterion"
+        next_milestone = None
+    elif next_milestone is not None:
+        decision = (
+            "await_decisive_evidence" if not eligible else "continue_to_next_milestone"
+        )
+        reason = "next_preregistered_milestone_not_yet_reached"
+    else:
+        decision = "replan_from_observed_error"
+        reason = "final_planned_milestone_failed_stopping_criterion"
+    additional_to_next = (
+        0 if next_milestone is None else max(0, next_milestone - len(eligible))
+    )
+    evidence_fingerprint = canonical_semantic_fingerprint(
+        {
+            "ordered_observations": [item.fingerprint for item in ordered],
+        }
+    )
+    semantic_update = {
+        "schema_version": REVIEW_MILESTONE_UPDATE_SCHEMA_VERSION,
+        "policy_fingerprint": policy.fingerprint,
+        "requirement_plan_fingerprint": requirement_plan.plan_fingerprint,
+        "evidence_fingerprint": evidence_fingerprint,
+        "total_review_events": len(ordered),
+        "eligible_decisive_reviews": len(eligible),
+        "eligible_supported_reviews": sum(
+            item.human_supported is True for item in eligible
+        ),
+        "eligible_error_reviews": sum(
+            item.human_supported is False for item in eligible
+        ),
+        "targeted_events_excluded": targeted_excluded,
+        "nondecisive_events_excluded": nondecisive_excluded,
+        "other_ineligible_events_excluded": other_ineligible_excluded,
+        "observed_weighted_error_rate": weighted_error_rate,
+        "milestones": tuple(asdict(evaluation) for evaluation in evaluations),
+        "decision": decision,
+        "decision_reason": reason,
+        "next_milestone_count": next_milestone,
+        "additional_decisive_reviews_to_next_milestone": additional_to_next,
+        "stop_authorized": supported is not None,
+        "representative_support_authorized": supported is not None,
+        "occurrence_release_authorized": False,
+    }
+    return ReviewMilestoneUpdate(
+        **{key: value for key, value in semantic_update.items() if key != "milestones"},
+        milestones=evaluations,
+        update_fingerprint=canonical_semantic_fingerprint(semantic_update),
+    )
+
+
+def _evaluate_milestone(
+    *,
+    information_fraction: float,
+    target: int,
+    eligible: tuple[ReviewEvidenceObservation, ...],
+    policy: ReviewEvidencePolicy,
+    requirement_plan: ReviewRequirementPlan,
+    grouping_profile: ReviewGroupingProfile,
+) -> ReviewMilestoneEvaluation:
+    common = {
+        "information_fraction": information_fraction,
+        "target_decisive_reviews": target,
+        "required_strata": requirement_plan.required_stratum_count,
+        "external_design_effect": requirement_plan.external_design_effect,
+        "confidence_level": policy.per_milestone_confidence_level,
+    }
+    if len(eligible) < target:
+        return ReviewMilestoneEvaluation(
+            **common,
+            status="pending",
+            decisive_reviews_evaluated=0,
+            supported_reviews=None,
+            error_reviews=None,
+            weighted_precision=None,
+            weighted_error_rate=None,
+            represented_strata=None,
+            weight_design_effect=None,
+            grouping_dimension_design_effects=(),
+            grouping_design_effect=None,
+            combined_design_effect=None,
+            effective_decisive_reviews=None,
+            effective_supported_reviews=None,
+            precision_lower_bound=None,
+            interval_semantics=None,
+            target_precision_met=False,
+            lower_bound_objective_met=False,
+            represented_strata_met=False,
+            stop_authorized=False,
+        )
+    prefix = eligible[:target]
+    weights = tuple(float(item.sampling_weight) for item in prefix)
+    total_weight = math.fsum(weights)
+    supported_weight = math.fsum(
+        weight
+        for item, weight in zip(prefix, weights, strict=True)
+        if item.human_supported
+    )
+    precision = supported_weight / total_weight
+    weight_effect = _weight_design_effect(weights)
+    observed_grouping = _observed_grouping_profile(prefix, grouping_profile)
+    combined_effect = (
+        weight_effect
+        * observed_grouping.design_effect
+        * requirement_plan.external_design_effect
+    )
+    effective_trials = math.floor(target / combined_effect + 1e-12)
+    supported_count = sum(item.human_supported is True for item in prefix)
+    error_count = target - supported_count
+    stratum_counts = Counter(item.stratum_id for item in prefix)
+    represented_strata = sum(
+        count >= policy.minimum_decisive_reviews_per_stratum
+        for count in stratum_counts.values()
+    )
+    if effective_trials < 1:
+        lower_bound = None
+        effective_supported = None
+        interval_semantics = "insufficient_effective_sample"
+        status = "insufficient_effective_evidence"
+    else:
+        effective_supported = min(
+            effective_trials,
+            math.floor(precision * effective_trials + 1e-12),
+        )
+        lower_bound = clopper_pearson_lower_bound(
+            effective_supported,
+            effective_trials,
+            confidence_level=policy.per_milestone_confidence_level,
+        )
+        independent = (
+            math.isclose(combined_effect, 1.0, rel_tol=0.0, abs_tol=1e-12)
+            and len(set(weights)) == 1
+        )
+        interval_semantics = (
+            "exact_one_sided_clopper_pearson"
+            if independent
+            else (
+                "conservative_integer_effective_sample_clopper_pearson_"
+                "approximation_for_weighted_grouped_design"
+            )
+        )
+        status = "evaluated"
+    target_met = precision >= policy.target_precision
+    lower_met = lower_bound is not None and lower_bound >= policy.lower_bound_objective
+    strata_met = represented_strata >= requirement_plan.required_stratum_count
+    stop = target_met and lower_met and strata_met
+    if status == "evaluated":
+        status = "evaluated_supported" if stop else "evaluated_not_supported"
+    return ReviewMilestoneEvaluation(
+        **common,
+        status=status,
+        decisive_reviews_evaluated=target,
+        supported_reviews=supported_count,
+        error_reviews=error_count,
+        weighted_precision=precision,
+        weighted_error_rate=1.0 - precision,
+        represented_strata=represented_strata,
+        weight_design_effect=weight_effect,
+        grouping_dimension_design_effects=(observed_grouping.dimension_design_effects),
+        grouping_design_effect=observed_grouping.design_effect,
+        combined_design_effect=combined_effect,
+        effective_decisive_reviews=effective_trials,
+        effective_supported_reviews=effective_supported,
+        precision_lower_bound=lower_bound,
+        interval_semantics=interval_semantics,
+        target_precision_met=target_met,
+        lower_bound_objective_met=lower_met,
+        represented_strata_met=strata_met,
+        stop_authorized=stop,
+    )
+
+
+def _observed_grouping_profile(
+    evidence: tuple[ReviewEvidenceObservation, ...],
+    assumption: ReviewGroupingProfile,
+) -> ReviewGroupingProfile:
+    cluster_sizes: dict[str, tuple[int, ...]] = {}
+    for dimension in ("reviewer", "owner", "duplicate", "observation"):
+        counts = Counter(getattr(item, f"{dimension}_group_id") for item in evidence)
+        cluster_sizes[dimension] = tuple(sorted(counts.values()))
+    return ReviewGroupingProfile(
+        reviewer_cluster_sizes=cluster_sizes["reviewer"],
+        owner_cluster_sizes=cluster_sizes["owner"],
+        duplicate_cluster_sizes=cluster_sizes["duplicate"],
+        observation_cluster_sizes=cluster_sizes["observation"],
+        reviewer_intraclass_correlation=(assumption.reviewer_intraclass_correlation),
+        owner_intraclass_correlation=assumption.owner_intraclass_correlation,
+        duplicate_intraclass_correlation=(assumption.duplicate_intraclass_correlation),
+        observation_intraclass_correlation=(
+            assumption.observation_intraclass_correlation
+        ),
+    )
+
+
+def _weighted_error_rate(
+    evidence: tuple[ReviewEvidenceObservation, ...],
+) -> float | None:
+    if not evidence:
+        return None
+    total = math.fsum(float(item.sampling_weight) for item in evidence)
+    errors = math.fsum(
+        float(item.sampling_weight)
+        for item in evidence
+        if item.human_supported is False
+    )
+    return errors / total
+
+
 def _binomial_upper_tail(successes: int, trials: int, probability: float) -> float:
     if probability <= 0.0:
         return 0.0
@@ -500,6 +937,26 @@ def _finite_at_least_one(value: object, *, field: str) -> float:
     return normalized
 
 
+def _positive_float(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field} must be numeric")
+    normalized = float(value)
+    if not math.isfinite(normalized) or normalized <= 0.0:
+        raise ValueError(f"{field} must be finite and positive")
+    return normalized
+
+
+def _sha256(value: object, *, field: str) -> str:
+    text = _required_text(value, field=field).casefold()
+    if not text.startswith("sha256:") or len(text) != 71:
+        raise ValueError(f"{field} must be a sha256 fingerprint")
+    try:
+        int(text.removeprefix("sha256:"), 16)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be a sha256 fingerprint") from exc
+    return text
+
+
 def _required_text(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be nonempty text")
@@ -543,13 +1000,19 @@ __all__ = [
     "MILESTONE_POLICY",
     "REVIEW_EVIDENCE_POLICY_FILE",
     "REVIEW_EVIDENCE_POLICY_SCHEMA_VERSION",
+    "REVIEW_MILESTONE_UPDATE_FILE",
+    "REVIEW_MILESTONE_UPDATE_SCHEMA_VERSION",
     "REVIEW_REQUIREMENT_PLAN_FILE",
     "REVIEW_REQUIREMENT_PLAN_SCHEMA_VERSION",
     "STOPPING_RULE",
     "TARGET_METRIC",
     "ReviewEvidencePolicy",
+    "ReviewEvidenceObservation",
     "ReviewGroupingProfile",
+    "ReviewMilestoneEvaluation",
+    "ReviewMilestoneUpdate",
     "ReviewRequirementPlan",
     "calculate_review_requirements",
     "clopper_pearson_lower_bound",
+    "update_review_milestones",
 ]
