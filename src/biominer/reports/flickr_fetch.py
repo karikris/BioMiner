@@ -121,7 +121,6 @@ def build_step1_fetch_report(
             "total_artifact_bytes": raw_bytes + evidence_bytes + state_bytes,
         },
         "distributions": {
-            "bucket_counts": "not_instrumented",
             "category_counts": "not_instrumented",
             "life_stage_counts": "not_instrumented",
         },

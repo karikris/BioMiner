@@ -17,5 +17,7 @@ calibration, risk controls, and downstream-owned release decisions separate.
 Historical `occurrence_bin` fields and committed bucket reports remain
 unchanged for audit. The generic source-record extractor may continue to emit
 its non-authoritative historical default where required by that versioned
-schema, but no runtime promotes or re-triages it. There is no compatibility
-fallback and no row-level migration into current target-aware evidence.
+schema, but no runtime promotes or re-triages it. The unused crop-image loader
+and the uninstrumented `bucket_counts` placeholder were removed with the same
+audit. There is no compatibility fallback and no row-level migration into
+current target-aware evidence.
