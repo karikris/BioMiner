@@ -375,7 +375,10 @@ def test_orchestrator_refuses_support_dependent_stage_before_handler(
         assert kwargs["stage"] is RunStage.FLICKR_DETECTION
         raise SupportDependencyError(
             RunStage.FLICKR_DETECTION,
-            ("regional candidates are missing; run regional_candidate_generation",),
+            (
+                "regional candidates are missing; run 'biominer references "
+                "build-regional-competitor-evidence'",
+            ),
         )
 
     def handler(_plan: object) -> StageExecutionResult:
@@ -390,7 +393,10 @@ def test_orchestrator_refuses_support_dependent_stage_before_handler(
     )
     request = _request(tmp_path, stages=(RunStage.FLICKR_DETECTION,))
 
-    with pytest.raises(SupportDependencyError, match="run regional_candidate_generation"):
+    with pytest.raises(
+        SupportDependencyError,
+        match="biominer references build-regional-competitor-evidence",
+    ):
         ProductionRunOrchestrator(
             request,
             taxon_scope=_taxon_scope(),

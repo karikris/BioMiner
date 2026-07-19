@@ -42,6 +42,12 @@ the workstore or running acquisition and model code. Reference-pool and matrix
 identities are independently versioned, so pool changes reuse compatible
 Flickr and reference embeddings.
 
+`RunStage` contains exactly this adaptive graph. Concrete `biominer references`
+commands report their command identity and are not mirrored as phantom run
+stages. The two protected human stages are Flickr verification and targeted
+reference review. See the
+[stage-vocabulary migration](migrations/adaptive-stage-vocabulary-cutover.md).
+
 Cloud runs require S3-compatible storage and a PostgreSQL-compatible workstore. Local development can use filesystem storage and SQLite. Work claims, retry state, committed shard inventories, and source evidence make runs resumable and idempotent.
 
 ## Adaptive dynamic-pooling contract

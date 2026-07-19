@@ -44,6 +44,7 @@ def test_adaptive_reference_stage_sequence_is_complete_and_pending() -> None:
     }
 
     assert required <= set(ADAPTIVE_REFERENCE_PRODUCTION_STAGES)
+    assert set(RunStage) == set(ADAPTIVE_REFERENCE_PRODUCTION_STAGES)
     assert len(set(ADAPTIVE_REFERENCE_PRODUCTION_STAGES)) == len(
         ADAPTIVE_REFERENCE_PRODUCTION_STAGES
     )

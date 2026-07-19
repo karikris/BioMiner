@@ -278,7 +278,8 @@ def _load_regional_candidates(
     except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
         issues.append(
             "regional candidates are missing or invalid: "
-            f"{exc}; rerun regional_candidate_generation"
+            f"{exc}; rerun 'biominer references "
+            "build-regional-competitor-evidence'"
         )
         return None
 
@@ -397,7 +398,8 @@ def _load_embeddings(
     except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
         issues.append(
             "reference embeddings are stale, missing, or invalid: "
-            f"{exc}; rebuild reference_embeddings from the current readiness permit"
+            f"{exc}; rerun 'biominer references build-support-embeddings' from "
+            "the current readiness permit"
         )
         return None
 
