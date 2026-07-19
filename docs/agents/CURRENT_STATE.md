@@ -18,8 +18,8 @@ at the start of every task.
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Active post-uplift simplification head:
-  `cfd377708eeee37fcfacae84553c2940c03fc5a6`
-  (`refactor(vision): remove cascade and crop runtime`)
+  `3340bdce7a308d8767d803ff0cf17ece01f63045`
+  (`refactor(evaluation): remove hierarchical compatibility stack`)
 - Post-uplift simplification completed and pushed through that head:
   - `eef126a`: removed an inert classification switch and no-op registry
     wrappers; 81 focused tests passed;
@@ -44,11 +44,20 @@ at the start of every task.
   - `cfd3777`: removed the classification-v3 cascade, crop generator/scorer,
     bucket/evidence join, direct cloud wrappers, rolling worker, and phantom
     runtime profile while retaining null historical crop schema fields. Ruff
-    passed and the full repository gate passed: 2,807 tests in 141.31 seconds.
+    passed and the full repository gate passed: 2,807 tests in 141.31 seconds;
+    and
+  - `3340bdc`: removed the self-contained hierarchical metrics, reports,
+    charts, visual QA, heuristic review queue, threshold policy, Xie adapter,
+    classification-mode aliases, path-cascade calibration exceptions, and
+    their synthetic compatibility tests. Target sampling, target calibration,
+    target verification, dynamic-pool audits, and statistical/release gates
+    remain. Ruff passed and the full repository gate passed: 2,734 tests in
+    143.91 seconds.
 - `a76781a` records the post-uplift architecture audit. The current coherent
   cutover removes the callable cascade/crop/bucket/cloud/rolling runtime,
-  retains the stable detection schema and full-frame adaptive contracts, and
-  replaces built-in legacy stage execution with explicit stage ownership.
+  removes its generic hierarchical evaluation compatibility surface, retains
+  the stable detection schema and full-frame adaptive contracts, and replaces
+  built-in legacy stage execution with explicit stage ownership.
 - GitHits is disabled by the user's current directive for every remaining
   cleanup task. Use repository history, exact committed sibling objects,
   schemas, manifests, and tests; never fabricate a GitHits result.
