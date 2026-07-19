@@ -50,7 +50,7 @@ def build_gbif_source_snapshot_from_occurrence_archive(
     source_version: str | None = None,
     source_url: str | None = None,
     source_parquet: str | Path | None = None,
-    delete_download_after: bool = False,
+    delete_download_after: bool = True,
     archive_batch_size: int = GBIF_DOWNLOAD_CHUNK_SIZE,
     progress_every: int = 50_000,
 ) -> dict[str, Any]:

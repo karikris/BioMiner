@@ -251,7 +251,18 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--source-json")
     registry_build.add_argument("--gbif-occurrence-archive", help="GBIF SIMPLE_PARQUET zip archive path")
     registry_build.add_argument("--gbif-source-parquet", help="Output path for parsed GBIF occurrence parquet")
-    registry_build.add_argument("--delete-gbif-download", action="store_true", help="Delete GBIF archive after parquet extraction")
+    registry_build.add_argument(
+        "--delete-gbif-download",
+        action="store_true",
+        default=True,
+        help="Delete GBIF archive after parquet extraction (default: true)",
+    )
+    registry_build.add_argument(
+        "--keep-gbif-download",
+        action="store_false",
+        dest="delete_gbif_download",
+        help="Keep GBIF archive after parquet extraction",
+    )
     registry_build.add_argument("--col-xr-archive", help="Pinned CoL XR Darwin Core archive for dataset 315557")
     registry_build.add_argument(
         "--col-xr-parquet-source",
@@ -340,7 +351,18 @@ def build_parser() -> argparse.ArgumentParser:
     registry_fetch_taxonomy.add_argument("--retrieved-at")
     registry_fetch_taxonomy.add_argument("--gbif-occurrence-archive", help="GBIF SIMPLE_PARQUET zip archive path")
     registry_fetch_taxonomy.add_argument("--gbif-source-parquet", help="Output path for parsed GBIF occurrence parquet")
-    registry_fetch_taxonomy.add_argument("--delete-gbif-download", action="store_true", help="Delete GBIF archive after parquet extraction")
+    registry_fetch_taxonomy.add_argument(
+        "--delete-gbif-download",
+        action="store_true",
+        default=True,
+        help="Delete GBIF archive after parquet extraction (default: true)",
+    )
+    registry_fetch_taxonomy.add_argument(
+        "--keep-gbif-download",
+        action="store_false",
+        dest="delete_gbif_download",
+        help="Keep GBIF archive after parquet extraction",
+    )
     registry_enrich_sources = dev_registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
     registry_enrich_sources.add_argument("--sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
