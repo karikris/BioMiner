@@ -92,9 +92,10 @@ candidates and are excluded from all cleanup commits.
    artifacts and Git revisions; do not migrate them in place.
 
    The callable model-free cascade benchmark and its synthetic fixture have now
-   been removed. The production cascade cutover remains a separate gated
-   subtask because it is intertwined with the old cloud runner and evidence
-   join.
+   been removed. The classification-v3 text-cache builder and the remaining
+   plumbing, rolling, and M5Pro crop/cascade benchmark harnesses have also been
+   removed. The production cascade cutover remains a separate gated subtask
+   because it is intertwined with the old cloud runner and evidence join.
 
 4. **Legacy/default/reference-first workflow layers.** After adaptive handlers
    are connected, remove alternate workflow selectors, aliases, configuration

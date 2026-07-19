@@ -59,5 +59,8 @@ geographic evidence is unknown evidence, not a hard-negative range assertion.
 uv run biominer registry build --output-dir data/registry/build --registry-version COL26.6-XR
 uv run biominer registry audit --registry-dir data/registry/build --report-dir reports
 uv run biominer registry publish --registry-dir data/registry/build --output-dir data/registry/current --replace-existing
-uv run biominer dev vision build-text-embedding-cache --registry-dir data/registry/current --output data/cache/taxonomy/current/classification_text_embeddings.parquet
 ```
+
+The retired classification-v3 staged-rank embedding-cache command is preserved
+only in history. Current reference and Flickr embeddings are built by their
+own full-frame, content-addressed contracts.

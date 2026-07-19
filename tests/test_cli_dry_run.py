@@ -188,79 +188,6 @@ def test_production_vision_runtime_honours_profile_model_without_target_resize(
     assert created["crop_scorer"]["model_id"] == "imageomics/bioclip-2.5-vith14"
 
 
-def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tmp_path, monkeypatch, capsys) -> None:
-    runtime_python = tmp_path / "python"
-    runtime_python.touch()
-    closed: list[bool] = []
-    runtime = SimpleNamespace(
-        model=SimpleNamespace(model_name="imageomics/bioclip", checkpoint="revision-1"),
-        package_version="3.3.0",
-    )
-
-    class FakePersistent:
-        def __init__(self, **_kwargs):
-            self.runtime = runtime
-
-        def embed_text_labels(self, labels):  # noqa: ANN001, ANN201
-            return [[1.0, 0.0] for _label in labels]
-
-        def close(self) -> None:
-            closed.append(True)
-
-    store = SimpleNamespace(
-        classification_fingerprint="sha256:classification",
-        hierarchy_fingerprint="sha256:hierarchy",
-    )
-    frame = pl.DataFrame([{"embedding_cache_fingerprint": "sha256:cache"}])
-    builder_calls: list[tuple[object, str, str, int]] = []
-
-    def fake_build_cache(
-        taxonomy_store,
-        *,
-        model_id,
-        model_checkpoint,
-        embed_labels,
-        batch_size,
-    ):  # noqa: ANN001, ANN201 - dependency-boundary fake.
-        assert callable(embed_labels)
-        builder_calls.append((taxonomy_store, model_id, model_checkpoint, batch_size))
-        return frame
-
-    monkeypatch.setattr("biominer.bioclip.bioclip.PersistentBioClipScorer", FakePersistent)
-    monkeypatch.setattr(
-        "biominer.bioclip.path_taxonomy_store.PathTaxonomyStore.read",
-        lambda _path: store,
-    )
-    monkeypatch.setattr(
-        "biominer.bioclip.taxonomy_embedding_cache.build_taxonomy_text_embedding_cache",
-        fake_build_cache,
-    )
-    output = tmp_path / "text-embeddings.parquet"
-    args = build_parser().parse_args(
-        [
-            "dev",
-            "vision",
-            "build-text-embedding-cache",
-            "--registry-dir",
-            str(tmp_path / "taxonomy"),
-            "--output",
-            str(output),
-            "--runtime-python",
-            str(runtime_python),
-        ]
-    )
-
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert output.exists()
-    assert payload["embedding_cache_fingerprint"] == "sha256:cache"
-    assert payload["classification_fingerprint"] == "sha256:classification"
-    assert payload["hierarchy_fingerprint"] == "sha256:hierarchy"
-    assert "taxonomy_fingerprint" not in payload
-    assert builder_calls == [(store, "imageomics/bioclip", "revision-1", 256)]
-    assert closed == [True]
-
-
 def test_registry_public_cli_exposes_only_build_and_audit() -> None:
     parser = build_parser()
     commands = parser._subparsers._group_actions[0].choices  # noqa: SLF001 - parser surface regression test.
@@ -1360,6 +1287,14 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
         parser.parse_args(["dev", "vision", "yoloe26-prototype-run"])
     with pytest.raises(SystemExit):
         parser.parse_args(["dev", "vision", "benchmark-cascade"])
+    for removed in (
+        "build-text-embedding-cache",
+        "benchmark-plumbing",
+        "benchmark-rolling-matrix",
+        "benchmark-live-m5pro",
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["dev", "vision", removed])
 
 
 def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
@@ -1372,8 +1307,6 @@ def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
         "yoloe26-prefetch",
         "yoloe26-smoke",
         "yoloe26-prototype-run",
-        "benchmark-plumbing",
-        "benchmark-live-m5pro",
         "crop-preview",
         "eval",
     ):

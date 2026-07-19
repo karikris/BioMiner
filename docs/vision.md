@@ -40,14 +40,10 @@ transformations are a separate versioned stage. This mode does not write or
 reinterpret legacy `object_bioclip_scores` artifacts and is not yet the
 production default.
 
-BioCLIP 2.5 runs as a persistent worker. Build text embeddings from reviewed
-rank prompts with `biominer dev vision build-text-embedding-cache`, then pass
-the Parquet artifact to production with `--taxonomy-text-embedding-cache`.
-Production validates the cache against classification version, prompt version,
-hierarchy fingerprint, complete staged-label set, model ID, model checkpoint,
-embedding dimensions, and cache fingerprint. Image embeddings are batched and
-compared with normalized cached text embeddings. A missing, stale, incomplete,
-or model-mismatched cache fails the hierarchical production stage.
+The classification-v3 text-cache builder was retired with the cascade
+diagnostic surface. Adaptive scoring persists immutable full-frame image and
+reference embeddings through the owning embedding contracts; it does not build
+or consume the old staged-rank prompt cache.
 
 ## Butterfly family/genus/species funnel
 
@@ -79,18 +75,18 @@ is used.
 
 Classifier output remains screening evidence. Open classifications enter `in_review`; GBIF and reviewed registry evidence define identity.
 
-## Runtime profiles and benchmarks
+## Runtime checks
 
 Production visual settings flow from the selected runtime profile into detection, crop materialization, and BioCLIP. The Mac profile is `config/vision_profiles/mac_m5pro_64gb.json`.
 
-Developer-only checks and benchmarks live under `biominer dev vision`:
+Developer-only runtime checks live under `biominer dev vision`:
 
 ```bash
 uv run biominer dev vision bioclip-runtime-check --device mps
 uv run biominer dev vision yoloe26-runtime-check --device mps
-uv run biominer dev vision benchmark-plumbing --records 1000 --output-dir reports/vision_benchmarks/plumbing
-uv run biominer dev vision benchmark-rolling-matrix --records 1000 --output-dir reports/vision_benchmarks/rolling
 ```
 
-Benchmarks measure plumbing and throughput, not biological accuracy. Accuracy
-evaluation uses reviewed labels through `biominer evaluation classify`.
+The retired plumbing, rolling, and M5Pro benchmark harnesses measured the old
+crop/cascade runtime and were not adaptive scientific evidence. Historical
+artifacts remain available in Git. Accuracy evaluation requires reviewed
+labels; runtime smoke evidence is not biological accuracy.
