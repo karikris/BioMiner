@@ -134,8 +134,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         frame = frame.with_columns(pl.lit("GBIF").alias("source"))
     if "sourceSnapshotVersion" not in frame.columns:
         frame = frame.with_columns(pl.lit(args.source_snapshot_version).alias("sourceSnapshotVersion"))
-    if "acceptedTaxonKey" not in frame.columns and args.accepted_taxon_key:
-        frame = frame.with_columns(pl.lit(args.accepted_taxon_key).alias("acceptedTaxonKey"))
 
     output = Path(args.output)
     written = write_parquet(frame, output, compression="zstd")
@@ -158,7 +156,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "physical_bytes": written.stat().st_size,
             "expected_row_count": args.expected_records,
             "source_snapshot_version": args.source_snapshot_version,
-            "accepted_taxon_key": args.accepted_taxon_key,
         },
     }
     return manifest
@@ -176,7 +173,6 @@ def _parser() -> argparse.ArgumentParser:
         "--source-snapshot-version",
         default="gbif-papilionoidea-australia-2026-07-18",
     )
-    parser.add_argument("--accepted-taxon-key", default="gbif:1938069")
     parser.add_argument("--expected-records", type=int, default=571_755)
     parser.add_argument("--force", action="store_true")
     return parser
