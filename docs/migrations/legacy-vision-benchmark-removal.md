@@ -16,7 +16,9 @@ None produced an input consumed by the geography-conditioned dynamic-pool
 workflow. Keeping them callable made the diagnostic crop/cascade architecture
 look like a supported production alternative.
 
-BioCLIP and YOLOE runtime checks and the explicit full-frame prototype smoke
-remain available. Historical benchmark artifacts, reports, and Git revisions
-remain immutable and may be used only as historical plumbing evidence—not
-biological accuracy, current throughput, or production readiness.
+BioCLIP and YOLOE runtime checks remain available. The later
+[Build Week command-stack removal](build-week-command-stack-removal.md) also
+retired the combined prototype smoke and one-off experiment wrappers.
+Historical benchmark artifacts, reports, and Git revisions remain immutable
+and may be used only as historical plumbing evidence—not biological accuracy,
+current throughput, or production readiness.

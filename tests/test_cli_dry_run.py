@@ -49,7 +49,7 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert "references" in commands
     assert "storage" in commands
     assert "workstore" in commands
-    assert "bioclip" in commands
+    assert "bioclip" not in commands
     assert "detect" not in commands
     assert "species" not in commands
     assert "dev" in commands
@@ -911,9 +911,18 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
         "benchmark-plumbing",
         "benchmark-rolling-matrix",
         "benchmark-live-m5pro",
+        "prototype-smoke",
+        "prototype-smoke-five",
+        "prototype-build-embeddings",
+        "prototype-staged-flickr",
+        "prototype-benchmark-matrix",
+        "prototype-select-policy",
     ):
         with pytest.raises(SystemExit):
             parser.parse_args(["dev", "vision", removed])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["bioclip", "prototype-evidence"])
 
 
 def test_public_vision_surface_excludes_debug_runtime_commands() -> None:

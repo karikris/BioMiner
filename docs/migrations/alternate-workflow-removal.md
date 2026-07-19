@@ -13,6 +13,8 @@ callers select obsolete crop/cascade semantics beside the adaptive graph.
 may still select a bounded subset with `--stages`; `all` means the adaptive
 graph. Historical Build Week reports and research documentation remain in Git
 as evidence of the earlier experiment, not as executable production inputs.
+The later [Build Week command-stack removal](build-week-command-stack-removal.md)
+also removes the developer benchmark/report commands that sat outside `run`.
 
 There is no fallback. A removed mode or workflow argument is rejected by the
 CLI. Current target-preserving work uses the adaptive full-frame contracts and

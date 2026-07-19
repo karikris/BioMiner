@@ -9,7 +9,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 from typing import Any
 
@@ -242,10 +241,6 @@ def build_parser() -> argparse.ArgumentParser:
     references_readiness.add_argument("--reference-bank-version", required=True)
     references_readiness.add_argument("--output-dir", required=True)
     references_readiness.add_argument("--run-id")
-    bioclip = subparsers.add_parser("bioclip")
-    bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
-    bioclip_evidence = bioclip_subparsers.add_parser("prototype-evidence")
-    bioclip_evidence.add_argument("--config", required=True)
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -517,20 +512,6 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
     yoloe26_smoke.add_argument("--image")
     yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
-    prototype_smoke = subparsers.add_parser(
-        "prototype-smoke",
-        aliases=("prototype-smoke-five",),
-        help="run local YOLOE and BioCLIP smoke evidence over any non-empty image set",
-    )
-    prototype_smoke.add_argument("--config", required=True)
-    prototype_embeddings = subparsers.add_parser("prototype-build-embeddings")
-    prototype_embeddings.add_argument("--config", required=True)
-    prototype_staged = subparsers.add_parser("prototype-staged-flickr")
-    prototype_staged.add_argument("--config", required=True)
-    prototype_benchmark = subparsers.add_parser("prototype-benchmark-matrix")
-    prototype_benchmark.add_argument("--config", required=True)
-    prototype_policy = subparsers.add_parser("prototype-select-policy")
-    prototype_policy.add_argument("--config", required=True)
     detect_eval = subparsers.add_parser("eval")
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
@@ -554,48 +535,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_prefetch(args)
         if args.vision_command == "yoloe26-smoke":
             return _run_yoloe26_smoke(args)
-        if args.vision_command in {"prototype-smoke", "prototype-smoke-five"}:
-            return _run_prototype_vision_smoke(args)
-        if args.vision_command == "prototype-build-embeddings":
-            return _run_prototype_support_embeddings(args)
-        if args.vision_command == "prototype-staged-flickr":
-            return _run_prototype_staged_flickr(args)
-        if args.vision_command == "prototype-benchmark-matrix":
-            return _run_prototype_benchmark_matrix(args)
-        if args.vision_command == "prototype-select-policy":
-            return _run_prototype_policy_selection(args)
         if args.vision_command == "eval":
             return _run_detect_eval(args)
-        return 2
-    if args.command == "bioclip":
-        if args.bioclip_command == "prototype-evidence":
-            from biominer.reports.prototype_evidence import (
-                PrototypeEvidenceConfig,
-                build_prototype_evidence_outputs,
-            )
-
-            try:
-                result = build_prototype_evidence_outputs(
-                    PrototypeEvidenceConfig.read_json(args.config)
-                )
-            except (FileNotFoundError, TypeError, ValueError) as exc:
-                print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-                return 2
-            print(
-                json.dumps(
-                    {
-                        "dashboard": str(result.dashboard_path),
-                        "regional_competitors": str(result.competitors_path),
-                        "nearest_references": str(result.references_path),
-                        "report": str(result.report_path),
-                        "summary": str(result.summary_path),
-                        "status": result.report["status"],
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
         return 2
     if args.command == "evaluation":
         return _run_evaluation_command(args)
@@ -1660,186 +1601,6 @@ def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
         print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
         return 2
     print(result.stdout.strip())
-    return 0
-
-
-def _run_prototype_vision_smoke(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_vision_smoke import (
-        PrototypeVisionSmokeConfig,
-        run_prototype_vision_smoke,
-    )
-
-    try:
-        result = run_prototype_vision_smoke(
-            PrototypeVisionSmokeConfig.read_json(args.config)
-        )
-    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "image_count": result.report["image_count"],
-                "report": str(result.report_path),
-                "summary": str(result.summary_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_support_embeddings(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_support_embeddings import (
-        PrototypeSupportEmbeddingConfig,
-        run_prototype_support_embedding_job,
-    )
-
-    try:
-        result = run_prototype_support_embedding_job(
-            PrototypeSupportEmbeddingConfig.read_json(args.config)
-        )
-    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "embeddings": str(result.embeddings_path),
-                "prototypes": str(result.prototypes_path),
-                "visual_neighbours": (
-                    str(result.visual_neighbours_path)
-                    if result.visual_neighbours_path is not None
-                    else None
-                ),
-                "failures": (
-                    str(result.failures_path)
-                    if result.failures_path is not None
-                    else None
-                ),
-                "report": str(result.report_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_benchmark_matrix(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_benchmark_matrix import (
-        PrototypeBenchmarkConfig,
-        run_prototype_benchmark_matrix,
-    )
-
-    try:
-        result = run_prototype_benchmark_matrix(
-            PrototypeBenchmarkConfig.read_json(args.config)
-        )
-    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "records_scored": result.report["counts"]["records_scored"],
-                "records_skipped": result.report["counts"]["records_skipped"],
-                "predictions": str(result.predictions_path),
-                "experiment_summary": str(result.experiment_summary_path),
-                "report": str(result.report_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_policy_selection(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_policy_selection import (
-        PrototypePolicySelectionConfig,
-        select_prototype_policy,
-    )
-
-    try:
-        result = select_prototype_policy(
-            PrototypePolicySelectionConfig.read_json(args.config)
-        )
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        RuntimeError,
-        pl.exceptions.PolarsError,
-    ) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "policy_status": result.policy["policy_status"],
-                "selected_experiment_id": result.policy["selected_policy"][
-                    "experiment_id"
-                ],
-                "policy": str(result.policy_path),
-                "report": str(result.report_path),
-                "policy_fingerprint": result.policy["policy_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_staged_flickr(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_staged_flickr import (
-        PrototypeStagedFlickrConfig,
-        run_prototype_staged_flickr,
-    )
-
-    try:
-        result = run_prototype_staged_flickr(
-            PrototypeStagedFlickrConfig.read_json(args.config)
-        )
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        RuntimeError,
-        sqlite3.Error,
-        pl.exceptions.PolarsError,
-    ) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "counts": result.report["counts"],
-                "stages": result.report["stages"],
-                "results": str(result.results_path),
-                "candidates": str(result.candidates_path),
-                "failures": (
-                    str(result.failures_path)
-                    if result.failures_path is not None
-                    else None
-                ),
-                "report": str(result.report_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
     return 0
 
 
