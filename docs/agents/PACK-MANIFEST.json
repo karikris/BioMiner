@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "The geography-conditioned dynamic-pooling software/fixture phases are complete through Phase 16 Task 16.2. The post-uplift simplification is complete through implementation commit 4999907: one 31-stage adaptive production graph remains, obsolete runtime and compatibility layers are removed, and current TaxaLens and ButterflyLens consumer pins are verified. Live execution, human review, statistical support, default selection and release remain pending and fail closed. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled GitHits for the entire remainder of this cleanup goal.",
+  "active_goal_note": "The geography-conditioned dynamic-pooling software/fixture phases are complete through Phase 16 Task 16.2. The active post-uplift simplification is complete through implementation commit 4999907: one 31-stage adaptive production graph remains, obsolete runtime and compatibility layers are removed, and current TaxaLens and ButterflyLens consumer pins are verified. Live execution, human review, statistical support, default selection and release remain pending and fail closed. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled GitHits for the entire remainder of this cleanup goal.",
   "files": [
     {
       "bytes": 7417,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "cc307bb",
+  "observed_main_commit": "fc86adea2b6fde0235e02794869f24dda274b961",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"
