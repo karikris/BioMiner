@@ -23,14 +23,6 @@ from biominer.candidates.regional_union import (
 )
 from biominer.references.admission import default_reference_admission_policy
 from biominer.run.adaptive_config import AdaptiveReferenceSettings
-from biominer.run.stages import (
-    ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
-    DEFAULT_PRODUCTION_STAGES,
-    MANUAL_REVIEW_STAGES,
-    REFERENCE_FIRST_PRODUCTION_STAGES,
-)
-
-
 ROOT = Path(__file__).resolve().parents[1]
 JSON_REPORT = ROOT / "reports/geo_dynamic_pooling/current_baseline.json"
 MARKDOWN_REPORT = ROOT / "reports/geo_dynamic_pooling/current_baseline.md"
@@ -114,21 +106,75 @@ def test_dynamic_pooling_baseline_stage_graph_and_evidence_state_are_truthful() 
     pilot = report["pilot_and_human_review_state"]
     tests = report["baseline_tests"]
 
+    # This report is the frozen pre-implementation baseline. Comparing it with
+    # mutable runtime constants would rewrite history whenever production stages
+    # are retired or added.
     assert graph["default_production"] == [
-        stage.value for stage in DEFAULT_PRODUCTION_STAGES
+        "resolve_taxon_scope",
+        "build_registry",
+        "compile_queries",
+        "enqueue_flickr_work",
+        "poll_flickr",
+        "detect_objects",
+        "score_bioclip",
+        "join_evidence",
+        "summarize",
+        "queue_comment_review",
+        "review_comments",
+        "apply_comment_review",
     ]
     assert graph["reference_first_production"] == [
-        stage.value for stage in REFERENCE_FIRST_PRODUCTION_STAGES
+        "resolve_taxon_scope",
+        "build_registry",
+        "geographic_spread",
+        "compile_queries",
+        "enqueue_flickr_work",
+        "poll_flickr",
+        "flickr_geo_clustering",
+        "regional_candidate_generation",
+        "reference_metadata",
+        "reference_media",
+        "reference_review",
+        "reference_embeddings",
+        "reference_prototypes",
+        "classifier_training",
+        "classifier_calibration",
+        "reference_readiness",
+        "flickr_detection",
+        "flickr_embedding",
+        "target_aware_scoring",
+        "evidence",
+        "evaluation",
     ]
-    adaptive_now = [stage.value for stage in ADAPTIVE_REFERENCE_PRODUCTION_STAGES]
-    assert [
-        stage
-        for stage in adaptive_now
-        if stage in graph["adaptive_reference_production"]
-    ] == graph["adaptive_reference_production"]
-    assert graph["manual_review_stages"] == sorted(
-        stage.value for stage in MANUAL_REVIEW_STAGES
-    )
+    assert graph["adaptive_reference_production"] == [
+        "resolve_taxon_scope",
+        "build_registry",
+        "geographic_spread",
+        "compile_queries",
+        "enqueue_flickr_work",
+        "poll_flickr",
+        "flickr_geo_clustering",
+        "regional_candidate_generation",
+        "reference_metadata",
+        "reference_media",
+        "reference_deduplication",
+        "reference_quality_routing",
+        "reference_admission",
+        "reference_embeddings",
+        "reference_prototypes",
+        "provisional_flickr_scoring",
+        "flickr_human_verification",
+        "statistical_reference_audit",
+        "targeted_reference_review",
+        "affected_reference_rebuild",
+        "affected_record_rescore",
+        "final_quality_gate",
+    ]
+    assert graph["manual_review_stages"] == [
+        "flickr_human_verification",
+        "reference_review",
+        "targeted_reference_review",
+    ]
     assert pilot["live_status"] == "not_executed_missing_local_artifacts"
     assert pilot["flickr_labels_reviewed"] == 0
     assert pilot["required_review_queue_records"] == 50

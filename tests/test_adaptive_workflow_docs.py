@@ -14,7 +14,7 @@ def test_fast_start_documentation_covers_complete_production_lifecycle() -> None
     assert (
         "canonical target-aware model input is the full frame" in normalized_production
     )
-    assert "live operation adapters deliberately fail closed" in normalized_production
+    assert "fail closed when their live adapter initializes" in normalized_production
     required = (
         "Reference acquisition and admission",
         "Review and readiness",
