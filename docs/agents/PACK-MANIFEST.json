@@ -1,5 +1,5 @@
 {
-  "active_goal_note": "The geography-conditioned dynamic-pooling software/fixture phases are complete through Phase 16 Task 16.2. The active post-uplift simplification has removed disconnected cascade/crop runtime and its hierarchical evaluation compatibility stack, and is auditing remaining stage vocabulary before bounded live execution. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled GitHits for every remaining cleanup task.",
+  "active_goal_note": "The geography-conditioned dynamic-pooling software/fixture phases are complete through Phase 16 Task 16.2. The post-uplift simplification is complete through implementation commit 4999907: one 31-stage adaptive production graph remains, obsolete runtime and compatibility layers are removed, and current TaxaLens and ButterflyLens consumer pins are verified. Live execution, human review, statistical support, default selection and release remain pending and fail closed. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled GitHits for the entire remainder of this cleanup goal.",
   "files": [
     {
       "bytes": 7417,
@@ -8,10 +8,10 @@
       "sha256": "35a9379d654d5e8e6dba894c9be75ae3d516a73643cb0ae821704de94877683e"
     },
     {
-      "bytes": 31502,
-      "lines": 578,
+      "bytes": 33734,
+      "lines": 611,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "4e40e7af03107f3254f9d2083ded10873ca8adc9c9e433b06cbff5d601eb9c4b"
+      "sha256": "040bf7545c77fb70eaaa71d2244211483982dd2327b9bd10d84e09c682c94983"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "fc86adea2b6fde0235e02794869f24dda274b961",
+  "observed_main_commit": "cc307bb",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"
