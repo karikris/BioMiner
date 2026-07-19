@@ -582,9 +582,10 @@ calibrated probability, completed human review, statistical-support result or
 new release-ready occurrence is claimed by the completed phases.
 
 - as of 2026-07-19T18:40:46+10:00 local (workspace check), this subtask is
-  wrapped up: no local BioMiner process is active (all prior run PIDs are gone), and
-  only historical metadata-only Flickr polling artifacts are present; no media,
-  download, or score stages are running. The 18 July 2026 GBIF provenance remains
+  wrapped up for this goal segment: BioMiner is still only active in metadata-only
+  Flickr polling, and no media download, scoring, or publication stages have been
+  observed at this boundary. User-reported state notes 50,000 unique Flickr
+  metadata images remaining to complete. The 18 July 2026 GBIF provenance remains
   stored as parquet at `data/reference/gbif_occurrences.parquet` (571,755 rows)
   with manifest `data/reference/gbif_occurrence_manifest.json` (DOI:
   `https://doi.org/10.15468/dl.7uut3k`).
