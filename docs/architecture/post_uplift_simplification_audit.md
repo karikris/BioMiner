@@ -1,40 +1,40 @@
 # Post-uplift architecture and simplification audit
 
 Date: 2026-07-19  
-Status: implementation baseline; no live scientific result is claimed
+Status: architecture simplification complete; no live scientific result is claimed
 
 ## Decision summary
 
 The geography-conditioned dynamic-pooling uplift added the right scientific
-boundaries, but it did not finish the production cutover. Between baseline
-`c7eaa9bf3696a25a0c8229837819dccec4fb9d66` and the first cleanup commit
-`eef126a1fa0ecc61d512e8b1cdde50244b9165ef`, the repository changed 278 files,
-adding 79,336 lines and deleting 359. It added 62 Python source modules while
-deleting none. The current tree contains 201,769 physical Python source lines
-and 111,221 physical Python test lines.
+boundaries beside an older cascade, bucket and comment-promotion application.
+The cleanup has now completed the architecture cutover: BioMiner exposes one
+adaptive full-frame production graph, explicit manual-review stops, and
+immutable TaxaLens and ButterflyLens handoffs. Historical implementations
+remain recoverable from Git and frozen artifacts, not callable as compatibility
+paths.
 
-The implementation therefore accumulated the new adaptive contracts beside
-the old cascade, bucket and comment-promotion application instead of replacing
-it. This is not just excess code:
+Against the pre-cleanup commit
+`ae6a18509b7be48da5c6ca69ab0caacf4632cc70`, the final code implementation
+commit `499990779131518f8bf6a712a7010e83c2f1a321` changes 224 files, with 2,193
+insertions and 59,356 deletions (net -57,163 lines). Production Python changes
+by +423/-34,315 (net -33,892) and tests by +510/-24,522 (net -24,012).
+Production modules fall from 309 to 256 and test modules from 288 to 230;
+physical Python lines fall from 201,841 to 167,949 in `src/biominer` and from
+111,286 to 87,274 in `tests`.
 
-- the main adaptive workflow declares 31 stages, but the built-in orchestrator
-  implements only five of them (`resolve_taxon_scope`, `build_registry`,
-  `compile_queries`, `enqueue_flickr_work`, and `poll_flickr`);
-- the remaining non-manual adaptive stages fail with
-  `stage_handler_not_configured` unless a caller injects a handler;
-- the seven dynamic-pooling CLI operations rejected non-dry-run execution,
-  described their adapter as `not_connected`, and declared several bindings
-  that differed from the owning Parquet contracts;
-- the old default workflow still executes detector-crop, cascade scoring,
-  bucket summarisation, and Flickr-comment promotion;
-- the initial BioMiner ButterflyLens consumer pin predated 62 committed
-  ButterflyLens changes and did not cover the newer quality,
-  occurrence-release, sensitive-location, Darwin Core, or ALA contribution
-  contracts; the current pin audit now closes that mismatch.
+The cutover removes the old detector/crop/cascade and bucket authority,
+comment-based occurrence promotion, disconnected planning and Build Week
+command stacks, hierarchical evaluation compatibility, alternate workflow
+plans, obsolete readiness migration, implicit prompt provenance, test-only
+facades, and orphan cloud/worker/model-state layers. The 31-value `RunStage`
+enum now equals the 31-node adaptive graph exactly; concrete reference commands
+self-identify instead of borrowing phantom production-stage labels.
 
-The production direction is one adaptive full-frame workflow with explicit
-manual-review stops and immutable product handoffs. Compatibility code must not
-remain callable merely because it has tests.
+Live stage handlers beyond the five built-in orchestration operations remain
+explicitly injected. Missing handlers fail closed with
+`stage_handler_not_configured`; manual stages cannot be auto-completed. This is
+an honest external integration boundary, not a fallback to the deleted runtime
+and not evidence that a live scientific run has occurred.
 
 ## Evidence and method
 
@@ -57,18 +57,18 @@ candidates and are excluded from all cleanup commits.
 
 | Phase group | What is sound | What remains incomplete or misleading | Required action |
 |---|---|---|---|
-| 0–3: contracts and geographic units | Explicit geography, canonical Flickr units, immutable identities, and missing-geography semantics are appropriate. | These are primarily contracts and pure transformations, not an executed production route. | Retain; connect them through the single runtime. |
-| 4–5: candidates and pools | Target-preserving candidates, bounded expansion, source axes, and explicit fallback reasons are scientifically sound. | Fixture strategy selection is not evidence that one strategy is empirically superior. | Retain all auditable strategies; do not label one scientifically selected without live evidence. |
-| 6–8: vision, scoring, caching | Full-frame routing, separate raw components, reusable embeddings/matrices, and explicit efficiency accounting are appropriate. | The old detector-crop/cascade runtime remains the implemented production path. | Remove old runtime after adaptive execution coverage exists. |
-| 9–12: review, evaluation, and selective rebuild | Representative versus targeted review, source independence, grouped quality, and dependency fingerprints are strong boundaries. | Many modules are fixture-tested but have no production adapter or orchestrator execution. | Connect immutable inputs/outputs and preserve manual-review stops. |
-| 13: orchestration | The 31-stage topological graph correctly names the intended boundaries. | Most graph nodes are declarations only. A skipped/failed node cannot be reported as an executed phase. | Implement concrete dispatch and fail closed on absent artifacts. |
-| 14: downstream handoffs | Product-specific, immutable, fail-closed handoff manifests are a sound boundary. | TaxaLens was already current; ButterflyLens had expanded its contract surface and retired fingerprint v1.0. | The current committed consumers are now pinned; preserve v1.1-only fingerprints and downstream-owned release controls. |
-| 15: pilot | Deterministic fixture coverage and ablation mechanics are useful software evidence. | Fixture outputs are not live Flickr/GBIF/YOLOE/BioCLIP evidence and cannot select a release strategy. | Keep as regression fixtures; label empirical outcomes unavailable. |
-| 16: release report | The report correctly preserves the fixture-only limitation. | Calling the workflow complete obscures disconnected adapters and unhandled stages. | Replace completion language with software-contract/fixture completion and runtime readiness gates. |
+| 0–3: contracts and geographic units | Explicit geography, canonical Flickr units, immutable identities, and missing-geography semantics are appropriate. | Live acquisition remains an operator-owned action. | Retained as the single contract surface; missing live inputs fail closed. |
+| 4–5: candidates and pools | Target-preserving candidates, bounded expansion, source axes, and explicit fallback reasons are scientifically sound. | Fixture strategy selection is not evidence that one strategy is empirically superior. | All auditable strategies retained; none is labelled empirically selected. |
+| 6–8: vision, scoring, caching | Full-frame routing, separate raw components, reusable embeddings/matrices, and explicit efficiency accounting are appropriate. | Live model execution remains pending. | Old detector/crop/cascade production and benchmark paths removed; current durable caches retained. |
+| 9–12: review, evaluation, and selective rebuild | Representative versus targeted review, source independence, grouped quality, and dependency fingerprints are strong boundaries. | Human review and sufficient live statistical evidence remain unavailable. | Immutable review gates retained; old heuristic review and hierarchical compatibility removed. |
+| 13: orchestration | The 31-stage topological graph correctly names the intended boundaries. | Most live handlers are application-injected rather than built in. | Stage enum and graph now match exactly; absent handlers and artifacts fail closed. |
+| 14: downstream handoffs | Product-specific, immutable, fail-closed handoff manifests are a sound boundary. | Product-owned review/release evidence cannot be manufactured by BioMiner. | Exact current TaxaLens and ButterflyLens consumer pins and authority-boundary tests retained. |
+| 15: pilot | Deterministic fixture coverage and ablation mechanics are useful software evidence. | Fixture outputs are not live Flickr/GBIF/YOLOE/BioCLIP evidence and cannot select a release strategy. | Current regression fixtures retained; one-off Build Week replay/report commands removed. |
+| 16: release report | The report preserves the fixture-only limitation and fail-closed release. | Live execution, review and scientific selection remain pending. | Software/fixture completion is explicit and separated from scientific completion. |
 
 ## Layer disposition
 
-### Remove
+### Removed
 
 1. **Comment-to-occurrence promotion.** `flickr_comments/comment_review.py`
    infers species/date/location from unverified comment text and can mutate
@@ -98,18 +98,33 @@ candidates and are excluded from all cleanup commits.
    cloud wrappers, and rolling worker are now removed as one coherent cutover;
    the stable detector schema retains nullable historical crop fields.
 
-4. **Legacy/default/reference-first workflow layers.** Completed on
+4. **Alternate/default/reference-first workflow layers.** Completed on
    2026-07-19: the alternate workflow selector, legacy/default and
    reference-first stage plans, and one-off Build Week runtime configuration
    and permit wrappers were removed. `run` now resolves one adaptive graph.
-   Concrete reference-command stage labels remain outside the adaptive plan
-   until that vocabulary is separated from production orchestration.
+   `RunStage` now contains exactly the adaptive graph nodes. Concrete reference
+   commands identify themselves by executable command rather than a second
+   display-only stage vocabulary.
 
 5. **Inert switches and forwarding helpers.** The first cleanup removed the
    hidden registry `--skip-classification` switch, two no-op wrappers, and stale
    manifest/report fields (143 lines removed). Continue removing only helpers
    proven to forward without adding validation, identity, resource ownership,
-   or a consumer boundary.
+   or a consumer boundary. Later passes removed the test-only reference-work
+   facade, registry query forwarder, bucket triage policy, crop image loader,
+   and unused artifact-path declarations.
+
+6. **Historical command and infrastructure layers.** The one-off Build Week
+   benchmark/report command stack, standalone cloud poller, storage compactor,
+   duplicate shard-path helper, and model-worker state wrapper had no current
+   application caller. Their current invariants remain owned by the reference
+   commands, metadata poller, evidence-shard path, WorkStore and embedding
+   cache respectively.
+
+7. **Compatibility defaults and upgrades.** The v2 support-manifest upgrader
+   and implicit `PromptVariant` provenance defaults were used only by their own
+   compatibility tests. Current manifests and prompt variants now require
+   explicit versioned identity.
 
 ### Retain
 
@@ -129,6 +144,11 @@ candidates and are excluded from all cleanup commits.
 - Explicit configuration values that change scientific identity or resource
   limits. Remove only aliases, inferred fallbacks, duplicate defaults, and
   values belonging exclusively to deleted architectures.
+- The `ExecutorFactory` protocol in the current detection pipeline. It is an
+  actual resource-injection seam used to bound executor ownership and test
+  concurrency; it is not a constructor wrapper or alternate architecture.
+- The on-wire label `reference-first-run-artifacts-v1.0.0`. It versions an
+  immutable artifact layout and is not a selectable reference-first workflow.
 
 ## Cross-repository alignment baseline
 
@@ -157,6 +177,8 @@ not by importing product implementation code.
 
 ### A. Remove misleading legacy authority
 
+Status: complete.
+
 1. Remove comment enrichment/review and all automatic promotion.
 2. Remove frozen cascade-specific evaluation compatibility after confirming no
    current report or consumer depends on it.
@@ -168,6 +190,9 @@ science, CLI, and orchestrator tests pass; migration documentation states how
 to retain historical artifacts without reinterpretation.
 
 ### B. Connect the adaptive runtime
+
+Status: software and fixture contracts complete; live application handlers and
+human inputs remain external and deliberately fail closed.
 
 1. Remove the disconnected plan-only dynamic command layer; use the concrete
    `references` application commands for artifact work.
@@ -183,6 +208,10 @@ claimed.
 
 ### C. Align product consumers
 
+Status: complete at TaxaLens pin
+`e845dd98493979f37b04dbb6538e0d7b8758ca11` and ButterflyLens pin
+`1ca6d9e15b03147df26a15deb309d32aed7ea9f7`.
+
 1. Re-audit TaxaLens current committed consumer and preserve its exact pin.
 2. Preserve the exact ButterflyLens pin and committed-object parity tests for
    every BioMiner-owned export role and downstream-owned release gate.
@@ -194,6 +223,9 @@ boundaries fail closed under mutation.
 
 ### D. Consolidate and release
 
+Status: architecture cleanup complete; scientific release remains a non-goal
+until live evidence and human review exist.
+
 1. Re-run import/dead-code/duplication audits after removals.
 2. Consolidate only exact repeated validators where ownership and error
    semantics remain clear.
@@ -204,6 +236,21 @@ boundaries fail closed under mutation.
 Gate: the repository exposes one production architecture; documentation and
 tests do not describe deleted compatibility paths; every incomplete live-data
 or human-review dependency is explicit.
+
+## Final verification
+
+- The implementation-only regression gate passed 2,622 tests with the one
+  agent-pack manifest consistency test deferred until this report and current
+  state were hashed (138.22 seconds).
+- Ruff and Vulture at 90% confidence report no findings on the cleaned source
+  tree; a production-source search has zero whole-word `legacy` matches.
+- Exact committed-object tests cover both sibling consumer pins. No sibling
+  implementation code was copied and no sibling worktree was modified.
+- Migration notes document each deleted runtime boundary. Historical reports,
+  caches, checkpoints and user-owned runtime/configuration paths were not
+  rewritten or deleted.
+- GitHits was not called, in accordance with the user's directive; each task
+  provenance record states `skipped_user_directive` and has no solution ID.
 
 ## Non-goals
 

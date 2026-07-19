@@ -17,20 +17,21 @@ at the start of every task.
   (`docs(provenance): record task 16.1 push`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
-- Active post-uplift simplification head:
-  `3340bdce7a308d8767d803ff0cf17ece01f63045`
-  (`refactor(evaluation): remove hierarchical compatibility stack`)
-- Post-uplift simplification completed and pushed through that head:
+- Post-uplift simplification implementation head:
+  `499990779131518f8bf6a712a7010e83c2f1a321`
+  (`refactor(vision): remove bucket runtime residue`)
+- Post-uplift simplification completed and pushed through that implementation
+  head:
   - `eef126a`: removed an inert classification switch and no-op registry
     wrappers; 81 focused tests passed;
   - `aa9382e`: removed autonomous Flickr comment fetching, enrichment, review,
     and promotion; 247 focused tests passed;
   - `c348a4c`: removed the disconnected seven-command dynamic-pooling planning
     CLI; 78 focused tests passed;
-  - `0155b39`: moved the ButterflyLens consumer pin to exact committed head
-    `3d6486da87f32136c35e29aeed6cb6291da66a17`, preserving v1.1-only
-    fingerprints and downstream-owned release controls; 80 focused handoff,
-    export, and publish tests passed; and
+  - `2fce295`: moved the ButterflyLens consumer pin to exact committed head
+    `1ca6d9e15b03147df26a15deb309d32aed7ea9f7` after proving the contract,
+    Flickr-policy, migration and database-fixture Git trees unchanged across
+    the 16-commit consumer delta; 62 focused tests passed;
   - `fc86ade`: removed the model-free synthetic path-cascade benchmark and its
     fixture/acceptance harness; 101 adjacent tests passed;
   - `bb5d04c`: removed the classification-v3 text-cache command and the
@@ -52,9 +53,32 @@ at the start of every task.
     their synthetic compatibility tests. Target sampling, target calibration,
     target verification, dynamic-pool audits, and statistical/release gates
     remain. Ruff passed and the full repository gate passed: 2,734 tests in
-    143.91 seconds.
-- `a76781a` records the post-uplift architecture audit. The current coherent
-  cutover removes the callable cascade/crop/bucket/cloud/rolling runtime,
+    143.91 seconds;
+  - `fc33b2e`: made the 31-value production stage enum equal the 31-node
+    adaptive graph, removed phantom display stages, and made reference commands
+    self-identifying; 2,733 tests passed;
+  - `91ffe11` and `c1add93`: removed the test-only support-manifest v2 upgrader
+    and implicit prompt-provenance defaults, requiring current explicit
+    identities;
+  - `d9b5b86`: removed seven one-off Build Week benchmark/report modules, their
+    command stack and wrapper/static-artifact tests while retaining current
+    reference and adaptive contracts; 126 focused tests passed;
+  - `e2bae68` and `08e970d`: removed the test-only reference-work facade,
+    five unowned artifact paths and a registry forwarding wrapper;
+  - `beb3fc6`: removed orphan cloud-poller, compaction, shard-path and
+    model-worker-state layers while retaining current storage, metadata poller,
+    WorkStore and embedding durability; 245 focused tests passed; and
+  - `3fe8c23` and `4999907`: removed residual Gold/Silver/Bronze triage
+    authority, crop-loader residue and an uninstrumented bucket report field.
+- Measured from pre-cleanup `ae6a185` through `4999907`: 224 files changed,
+  +2,193/-59,356 lines (net -57,163); production Python is net -33,892 lines
+  and 53 modules, while test Python is net -24,012 lines and 58 modules. The
+  implementation-only regression gate passed 2,622 tests with the agent-pack
+  hash test deferred until this current-state update (138.22 seconds). Ruff,
+  Vulture at 90% confidence and the final complete gate are release checks.
+- `a76781a` introduced the post-uplift architecture audit; its final measured
+  outcome is in `docs/architecture/post_uplift_simplification_audit.md`. The
+  coherent cutover removes the callable cascade/crop/bucket/cloud/rolling runtime,
   removes its generic hierarchical evaluation compatibility surface, retains
   the stable detection schema and full-frame adaptive contracts, and replaces
   built-in legacy stage execution with explicit stage ownership.
@@ -573,7 +597,7 @@ src/biominer/geography/         cells, distance, validation
 src/biominer/candidates/        regional and visual candidate unions
 src/biominer/references/        acquisition, QA, admission, review, readiness
 src/biominer/detection/         detector interfaces and routing policy
-src/biominer/vision/            full-frame inputs, gates, rolling/cloud work
+src/biominer/vision/            full-frame inputs, batching and gates
 src/biominer/bioclip/           embeddings, prototypes, ranking, scoring
 src/biominer/ml/                classifiers, calibration, non-match policy
 src/biominer/evaluation/        labels, splits, metrics, sampling, reports
