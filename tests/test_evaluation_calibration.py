@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 
 import polars as pl
 import pytest
@@ -10,31 +9,9 @@ from polars.testing import assert_frame_equal
 from biominer.evaluation.calibration import (
     TARGET_CALIBRATION_RELIABILITY_SCHEMA,
     TARGET_THRESHOLD_OPERATING_POINT_SCHEMA,
-    add_uncertainty_fields,
     build_target_calibration_diagnostics,
-    score_margin,
-    topk_entropy,
     validate_target_calibration_diagnostics,
 )
-
-
-def test_topk_entropy_is_higher_for_flat_scores_than_peaked_scores() -> None:
-    flat = topk_entropy([1.0, 1.0, 1.0])
-    peaked = topk_entropy([0.98, 0.01, 0.01])
-
-    assert flat is not None
-    assert peaked is not None
-    assert flat > peaked
-
-
-def test_score_margin_uses_ordered_top_two_scores() -> None:
-    assert score_margin({"species_top5_scores": [0.8, 0.55, 0.1]}) == pytest.approx(
-        0.25
-    )
-    assert score_margin(
-        {"species_top5_scores": json.dumps([0.9, 0.4])}
-    ) == pytest.approx(0.5)
-    assert score_margin({"species_top5_scores": [0.9]}) is None
 
 
 def test_target_calibration_bins_and_operating_points_are_weighted() -> None:
@@ -141,48 +118,6 @@ def test_target_calibration_rejects_invalid_provenance() -> None:
     invalid["calibration_method"] = "raw_cosine"
     with pytest.raises(ValueError, match="calibration_method"):
         build_target_calibration_diagnostics(pl.DataFrame([invalid]))
-
-
-def test_add_uncertainty_fields_marks_low_margin_and_family_conflict() -> None:
-    frame = add_uncertainty_fields(
-        pl.DataFrame(
-            [
-                {
-                    "species_top5_scores": [0.51, 0.50, 0.10],
-                    "family_top3_scores": [0.80, 0.20],
-                    "selected_family_key": "gbif:9417",
-                    "species_candidate_family_key": "gbif:7017",
-                }
-            ]
-        ),
-        low_margin_threshold=0.05,
-    )
-    row = frame.to_dicts()[0]
-
-    assert row["species_top1_margin"] == pytest.approx(0.01)
-    assert row["family_margin"] == pytest.approx(0.60)
-    assert row["species_top5_entropy"] is not None
-    assert row["low_margin_flag"] is True
-    assert row["family_species_conflict_flag"] is True
-
-
-def test_path_cascade_raw_cosines_do_not_produce_probability_entropy() -> None:
-    frame = add_uncertainty_fields(
-        pl.DataFrame(
-            [
-                {
-                    "classifier_schema_version": "butterfly-cascade-output-v1.0.0",
-                    "species_top5_scores": [0.20, -0.10, -0.30],
-                    "species_top1_margin": 0.30,
-                    "selected_family": "Papilionidae",
-                }
-            ]
-        )
-    )
-
-    row = frame.to_dicts()[0]
-    assert row["species_top5_entropy"] is None
-    assert row["family_species_conflict_flag"] is False
 
 
 def _calibration_row(

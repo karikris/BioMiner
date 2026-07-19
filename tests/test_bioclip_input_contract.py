@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from biominer.bioclip.classification_modes import TARGET_AWARE_FEW_SHOT_CLASSIFICATION
+from biominer.bioclip.target_aware_scoring import TARGET_AWARE_CLASSIFICATION_MODE
 from biominer.vision.bioclip_input_contract import (
     DYNAMIC_POOL_VISUAL_MODE,
     TARGET_AWARE_VISUAL_MODE,
@@ -20,7 +20,7 @@ from biominer.vision.full_frame_attention import (
     "mode",
     [
         TARGET_AWARE_VISUAL_MODE,
-        TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
+        TARGET_AWARE_CLASSIFICATION_MODE,
         DYNAMIC_POOL_VISUAL_MODE,
     ],
 )

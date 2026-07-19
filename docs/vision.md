@@ -37,10 +37,13 @@ release authority remain separate contracts.
 
 The classification-v3 staged-rank cache, hierarchical cascade, 0.90 genus
 shortcut, bucket rules, object-evidence join, cloud rolling worker, and their
-production dispatch have been removed. Frozen historical evaluation fixtures
-may still describe old row shapes, but no adaptive run can select or fall back
-to that implementation. See
-[cascade and crop runtime removal](migrations/cascade-crop-runtime-removal.md).
+production dispatch have been removed. Their generic hierarchical metrics,
+visual-QA, review-queue, charts, Xie adapter, row compatibility branches, and
+classification-mode aliases are also absent. Current evaluation is
+target-aware and dynamic-pool-specific; no adaptive run can select or fall
+back to the retired implementation. See
+[cascade and crop runtime removal](migrations/cascade-crop-runtime-removal.md)
+and [hierarchical evaluation runtime removal](migrations/hierarchical-evaluation-runtime-removal.md).
 
 Developer-only model installation checks remain under `biominer dev vision`:
 

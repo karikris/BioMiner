@@ -47,5 +47,12 @@ media download and evaluation were retained because they are still invoked to
 upgrade durable artifacts safely. The optional `segment_anything` import is an
 availability probe, not a dead import.
 
+Update (2026-07-19): this retained boundary was superseded after the production
+cascade/crop runtime was removed. The generic hierarchical evaluation modules,
+CLI routes, compatibility modes, synthetic fixtures, and path-cascade
+calibration exceptions are no longer callable. Historical comparison evidence
+remains available in Git; current comparisons use target-verifier and
+dynamic-pool contracts.
+
 Run-artifact URI/path properties were retained as the declared future-state
 artifact inventory even where individual stages are not wired yet.

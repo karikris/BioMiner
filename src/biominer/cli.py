@@ -5,7 +5,6 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 import hashlib
-import io
 import json
 import logging
 import os
@@ -18,19 +17,10 @@ import polars as pl
 
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.detection.evaluate import evaluate_xie_style
-from biominer.evaluation.labels import (
-    normalize_reviewed_label_frame,
-    read_reviewed_labels,
-    validate_reviewed_label_frame,
-)
-from biominer.evaluation.review_queue import build_hierarchical_review_queue
-from biominer.evaluation.reports import write_evaluation_report, write_evaluation_report_to_storage
 from biominer.evaluation.sampling import (
     EvaluationSamplingConfig,
     materialize_evaluation_sampling_frame,
 )
-from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUATION_PROFILE
-from biominer.evaluation.xie_style import evaluate_xie_style_hierarchical
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_fetch.australia import (
     AUSTRALIA_FLICKR_BBOX,
@@ -106,12 +96,9 @@ from biominer.storage.handoff import (
     receive_handoff_bundle,
     upload_handoff_bundle,
 )
-from biominer.storage.parquet import write_parquet
-from biominer.storage.uri import is_cloud_uri, join_uri, normalize_local_uri
+from biominer.storage.uri import is_cloud_uri, join_uri
 
 
-STANDARD_EVALUATION_PROFILE = "standard"
-XIE_STYLE_METRICS_FILE = "xie_style_metrics.json"
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
 BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
 BIOCLIP_OPENCLIP_VERSION = "3.3.0"
@@ -190,25 +177,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     evaluation = subparsers.add_parser("evaluation")
     evaluation_subparsers = evaluation.add_subparsers(dest="evaluation_command")
-    evaluation_classify = evaluation_subparsers.add_parser("classify")
-    evaluation_input = evaluation_classify.add_mutually_exclusive_group(required=True)
-    evaluation_input.add_argument("--object-scores")
-    evaluation_input.add_argument("--object-evidence")
-    evaluation_classify.add_argument("--reviewed-labels", required=True)
-    evaluation_classify.add_argument("--output-dir", required=True)
-    evaluation_classify.add_argument("--storage-backend", choices=("local", "s3"), default="local")
-    evaluation_classify.add_argument("--config")
-    evaluation_classify.add_argument("--write-charts", action="store_true")
-    evaluation_classify.add_argument(
-        "--evaluation-profile",
-        choices=(STANDARD_EVALUATION_PROFILE, XIE_STYLE_EVALUATION_PROFILE),
-        default=STANDARD_EVALUATION_PROFILE,
-    )
-    evaluation_review_queue = evaluation_subparsers.add_parser("review-queue")
-    evaluation_review_queue.add_argument("--object-evidence", required=True)
-    evaluation_review_queue.add_argument("--photo-summary")
-    evaluation_review_queue.add_argument("--output", required=True)
-    evaluation_review_queue.add_argument("--max-rows", type=int)
     evaluation_sampling = evaluation_subparsers.add_parser("build-sampling-frame")
     evaluation_sampling.add_argument("--candidates", required=True)
     evaluation_sampling.add_argument("--geo-assignments", required=True)
@@ -964,10 +932,6 @@ def _run_australia_live(args: argparse.Namespace) -> int:
 
 
 def _run_evaluation_command(args: argparse.Namespace) -> int:
-    if args.evaluation_command == "classify":
-        return _run_evaluation_classify(args)
-    if args.evaluation_command == "review-queue":
-        return _run_evaluation_review_queue(args)
     if args.evaluation_command == "build-sampling-frame":
         return _run_evaluation_sampling_frame(args)
     return 2
@@ -1192,139 +1156,6 @@ def _read_reference_json(path: str | Path, *, artifact: str) -> dict[str, object
     return payload
 
 
-def _run_evaluation_classify(args: argparse.Namespace) -> int:
-    input_uri = str(args.object_scores or args.object_evidence)
-    input_kind = "object_scores" if args.object_scores else "object_evidence"
-    labels_uri = str(args.reviewed_labels)
-    storage_backend = str(getattr(args, "storage_backend", "local") or "local")
-    try:
-        storage = None
-        if storage_backend == "local":
-            object_scores = _read_local_evaluation_parquet(input_uri, input_kind)
-            reviewed_labels = _read_local_reviewed_labels(labels_uri)
-        elif storage_backend == "s3":
-            if bool(getattr(args, "write_charts", False)):
-                raise ValueError("--write-charts is currently supported only for local evaluation outputs")
-            storage = _evaluation_storage_from_config(args)
-            object_scores = _read_storage_evaluation_parquet(storage, input_uri, input_kind)
-            reviewed_labels = _read_storage_reviewed_labels(storage, labels_uri)
-            _require_s3_uri("output-dir", args.output_dir)
-        else:
-            raise ValueError(f"unsupported evaluation storage backend: {storage_backend}")
-    except (ConfigError, FileNotFoundError, RuntimeError, ValueError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": _redact_cloud_error(str(exc), args)}, indent=2, sort_keys=True))
-        return 2
-
-    label_findings = validate_reviewed_label_frame(reviewed_labels)
-    fatal_findings = [finding for finding in label_findings if finding.get("severity") == "fatal"]
-    if fatal_findings:
-        print(
-            json.dumps(
-                {
-                    "error": "reviewed labels failed validation",
-                    "fatal_findings": fatal_findings,
-                    "finding_count": len(label_findings),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-
-    if storage is None:
-        output_dir = _local_evaluation_output_dir(args.output_dir)
-        paths = write_evaluation_report(
-            object_scores=object_scores,
-            reviewed_labels=reviewed_labels,
-            output_dir=output_dir,
-            write_charts=bool(getattr(args, "write_charts", False)),
-        )
-        metrics = json.loads(Path(paths["metrics"]).read_text(encoding="utf-8"))
-    else:
-        paths = write_evaluation_report_to_storage(
-            object_scores=object_scores,
-            reviewed_labels=reviewed_labels,
-            output_dir=args.output_dir,
-            storage=storage,
-            write_charts=bool(getattr(args, "write_charts", False)),
-        )
-        metrics = storage.read_json(paths["metrics"])
-    evaluation_profile = str(getattr(args, "evaluation_profile", STANDARD_EVALUATION_PROFILE))
-    if evaluation_profile == XIE_STYLE_EVALUATION_PROFILE:
-        xie_metrics = evaluate_xie_style_hierarchical(
-            object_scores=object_scores,
-            reviewed_labels=reviewed_labels,
-        )
-        if storage is None:
-            xie_path = str(output_dir / XIE_STYLE_METRICS_FILE)
-            xie_output = Path(xie_path)
-            xie_output.parent.mkdir(parents=True, exist_ok=True)
-            xie_output.write_text(json.dumps(xie_metrics, indent=2, sort_keys=True), encoding="utf-8")
-        else:
-            xie_path = join_uri(args.output_dir, XIE_STYLE_METRICS_FILE)
-            storage.write_json(xie_path, xie_metrics)
-        paths["xie_style_metrics"] = xie_path
-    payload = {
-        "status": "complete",
-        "storage_backend": storage_backend,
-        "input_kind": input_kind,
-        "input_path": input_uri,
-        "reviewed_labels": labels_uri,
-        "output_dir": str(args.output_dir),
-        "evaluation_profile": evaluation_profile,
-        "write_charts": bool(getattr(args, "write_charts", False)),
-        "paths": paths,
-        "metrics": {
-            "evaluated_objects": metrics["metrics"].get("evaluated_objects"),
-            "family_top1_accuracy": metrics["metrics"].get("family_top1_accuracy"),
-            "family_top3_recall": metrics["metrics"].get("family_top3_recall"),
-            "species_top1_accuracy": metrics["metrics"].get("species_top1_accuracy"),
-            "species_top5_recall": metrics["metrics"].get("species_top5_recall"),
-            "species_top20_recall": metrics["metrics"].get("species_top20_recall"),
-            "species_mrr": metrics["metrics"].get("species_mrr"),
-        },
-        "label_validation": {
-            "finding_count": len(label_findings),
-            "warning_count": sum(1 for finding in label_findings if finding.get("severity") == "warning"),
-        },
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0
-
-
-def _run_evaluation_review_queue(args: argparse.Namespace) -> int:
-    try:
-        if args.max_rows is not None and args.max_rows < 0:
-            raise ValueError("--max-rows must be non-negative")
-        object_evidence = _read_local_evaluation_parquet(str(args.object_evidence), "object-evidence")
-        photo_summary = None
-        if args.photo_summary:
-            photo_summary = _read_local_evaluation_parquet(str(args.photo_summary), "photo-summary")
-        _raise_if_cloud_uri_for_local_backend("output", str(args.output))
-        output = normalize_local_uri(args.output)
-        queue = build_hierarchical_review_queue(
-            object_evidence=object_evidence,
-            photo_summary=photo_summary,
-            max_rows=args.max_rows,
-        )
-        write_parquet(queue, output)
-    except (FileNotFoundError, RuntimeError, ValueError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-
-    payload = {
-        "status": "complete",
-        "input_path": str(args.object_evidence),
-        "photo_summary": str(args.photo_summary) if args.photo_summary else None,
-        "output": str(output),
-        "review_queue_rows": queue.height,
-        "review_priority_counts": _value_counts(queue, "review_priority"),
-        "review_reason_counts": _value_counts(queue, "review_reason"),
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0
-
-
 def _run_evaluation_sampling_frame(args: argparse.Namespace) -> int:
     try:
         if args.object_scores and not args.competitor_taxa:
@@ -1372,70 +1203,6 @@ def _run_evaluation_sampling_frame(args: argparse.Namespace) -> int:
         )
     )
     return 0
-
-
-def _read_local_evaluation_parquet(uri: str, input_kind: str) -> pl.DataFrame:
-    _raise_if_cloud_uri_for_local_backend(input_kind, uri)
-    path = normalize_local_uri(uri)
-    if not path.exists():
-        raise FileNotFoundError(f"{input_kind} path does not exist: {path}")
-    return pl.read_parquet(path)
-
-
-def _read_local_reviewed_labels(uri: str) -> pl.DataFrame:
-    _raise_if_cloud_uri_for_local_backend("reviewed-labels", uri)
-    path = normalize_local_uri(uri)
-    if not path.exists():
-        raise FileNotFoundError(f"reviewed-labels path does not exist: {path}")
-    return read_reviewed_labels(path)
-
-
-def _local_evaluation_output_dir(uri: str) -> Path:
-    _raise_if_cloud_uri_for_local_backend("output-dir", uri)
-    return normalize_local_uri(uri)
-
-
-def _read_storage_evaluation_parquet(storage: object, uri: str, input_kind: str) -> pl.DataFrame:
-    _require_s3_uri(input_kind, uri)
-    if not storage.exists(uri):
-        raise FileNotFoundError(f"{input_kind} path does not exist: {uri}")
-    return storage.read_parquet(uri)
-
-
-def _read_storage_reviewed_labels(storage: object, uri: str) -> pl.DataFrame:
-    _require_s3_uri("reviewed-labels", uri)
-    if not storage.exists(uri):
-        raise FileNotFoundError(f"reviewed-labels path does not exist: {uri}")
-    suffix = Path(uri).suffix.casefold()
-    if suffix == ".parquet":
-        frame = storage.read_parquet(uri)
-    elif suffix in {".jsonl", ".ndjson"}:
-        frame = pl.read_ndjson(
-            io.BytesIO(storage.read_text(uri).encode("utf-8"))
-        )
-    elif suffix == ".json":
-        frame = pl.read_json(io.BytesIO(storage.read_text(uri).encode("utf-8")))
-    else:
-        raise ValueError(
-            f"unsupported reviewed-label format: {suffix or '<none>'}"
-        )
-    return normalize_reviewed_label_frame(frame)
-
-
-def _evaluation_storage_from_config(args: argparse.Namespace) -> object:
-    config = load_biominer_config(args.config)
-    config = replace(config, storage=replace(config.storage, backend="s3"))
-    return create_storage_backend(config.storage)
-
-
-def _raise_if_cloud_uri_for_local_backend(name: str, uri: str) -> None:
-    if is_cloud_uri(uri):
-        raise ValueError(f"{name} is a cloud URI; use --storage-backend s3: {uri}")
-
-
-def _require_s3_uri(name: str, uri: str) -> None:
-    if not is_cloud_uri(uri):
-        raise ValueError(f"{name} must be an s3:// URI when --storage-backend s3 is used: {uri}")
 
 
 def _run_storage_command(args: argparse.Namespace) -> int:

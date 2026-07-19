@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from biominer.bioclip.classification_modes import TARGET_AWARE_FEW_SHOT_CLASSIFICATION
+from biominer.bioclip.target_aware_scoring import TARGET_AWARE_CLASSIFICATION_MODE
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.vision.full_frame_attention import (
     FOCUSED_FULL_FRAME_KIND,
@@ -28,7 +28,7 @@ FULL_FRAME_BIOCLIP_VISUAL_INPUT_KINDS = (
 _TARGET_AWARE_MODES = frozenset(
     {
         TARGET_AWARE_VISUAL_MODE,
-        TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
+        TARGET_AWARE_CLASSIFICATION_MODE,
     }
 )
 

@@ -81,9 +81,10 @@ For target-aware work:
 - do not delete species because a family/genus text rank was weak;
 - higher-rank evidence is diagnostic or derived after species scoring.
 
-The hierarchical cascade implementation has been removed. Historical fixtures
-may still describe its rows, but production and diagnostics must not recreate
-it as a fallback.
+The hierarchical cascade implementation and its generic metrics, review queue,
+visual QA, charts, Xie adapter, row-compatibility branches, and mode aliases
+have been removed. Production and diagnostics must not recreate them as a
+fallback. Use target-verification and dynamic-pool evaluation contracts.
 
 ## Reference acquisition and admission
 
