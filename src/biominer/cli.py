@@ -35,6 +35,7 @@ from biominer.registry.col_xr import extract_col_xr_snapshot
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.gbif_occurrence_source import build_gbif_source_snapshot_from_occurrence_archive
 from biominer.registry.hierarchy_enrichment import (
     harvest_gbif_genus_evidence,
     harvest_open_tree_genus_evidence,
@@ -248,6 +249,9 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--registry-version", required=True)
     registry_build.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_build.add_argument("--source-json")
+    registry_build.add_argument("--gbif-occurrence-archive", help="GBIF SIMPLE_PARQUET zip archive path")
+    registry_build.add_argument("--gbif-source-parquet", help="Output path for parsed GBIF occurrence parquet")
+    registry_build.add_argument("--delete-gbif-download", action="store_true", help="Delete GBIF archive after parquet extraction")
     registry_build.add_argument("--col-xr-archive", help="Pinned CoL XR Darwin Core archive for dataset 315557")
     registry_build.add_argument(
         "--col-xr-parquet-source",
@@ -334,6 +338,9 @@ def build_parser() -> argparse.ArgumentParser:
     registry_fetch_taxonomy.add_argument("--output-json", required=True)
     registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_fetch_taxonomy.add_argument("--retrieved-at")
+    registry_fetch_taxonomy.add_argument("--gbif-occurrence-archive", help="GBIF SIMPLE_PARQUET zip archive path")
+    registry_fetch_taxonomy.add_argument("--gbif-source-parquet", help="Output path for parsed GBIF occurrence parquet")
+    registry_fetch_taxonomy.add_argument("--delete-gbif-download", action="store_true", help="Delete GBIF archive after parquet extraction")
     registry_enrich_sources = dev_registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
     registry_enrich_sources.add_argument("--sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
@@ -601,11 +608,20 @@ def run(args: argparse.Namespace) -> int:
             return 0
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
-            snapshot = build_gbif_source_snapshot(
-                GBIFClient(),
-                load_scope(args.scope_json),
-                retrieved_at=retrieved_at,
-            )
+            if args.gbif_occurrence_archive:
+                snapshot = build_gbif_source_snapshot_from_occurrence_archive(
+                    args.gbif_occurrence_archive,
+                    load_scope(args.scope_json),
+                    retrieved_at=retrieved_at,
+                    source_parquet=args.gbif_source_parquet,
+                    delete_download_after=args.delete_gbif_download,
+                )
+            else:
+                snapshot = build_gbif_source_snapshot(
+                    GBIFClient(),
+                    load_scope(args.scope_json),
+                    retrieved_at=retrieved_at,
+                )
             output = Path(args.output_json)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
@@ -701,6 +717,9 @@ def run(args: argparse.Namespace) -> int:
                     registry_version=args.registry_version,
                     scope_path=args.scope_json,
                     source_json=source_json,
+                    gbif_occurrence_archive=args.gbif_occurrence_archive,
+                    gbif_source_parquet=args.gbif_source_parquet,
+                    delete_gbif_download_after=args.delete_gbif_download,
                     reuse_source_json=reuse_source_json,
                     report_dir=args.report_dir,
                     retrieved_at=args.retrieved_at,
