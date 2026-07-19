@@ -581,7 +581,7 @@ run. No strategy is empirically superior, and no live dynamic pool, live score,
 calibrated probability, completed human review, statistical-support result or
 new release-ready occurrence is claimed by the completed phases.
 
-- as of 2026-07-19T18:04:51+10:00 local (workspace check), no local live
+- as of 2026-07-19T18:08:09+10:00 local (workspace check), no local live
   BioMiner process is active; metadata-only Flickr polling artifacts are complete
   and no media/download/score stages are active. The prior overlap was strictly
   metadata-only fetching. Recent `run`/`logs`/`data/state` artifacts are complete
