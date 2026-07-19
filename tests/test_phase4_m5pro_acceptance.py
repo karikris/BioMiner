@@ -8,6 +8,17 @@ import pytest
 from biominer.bioclip.prompt_templates import PromptVariant, aggregate_prompt_scores
 
 
+def _prompt_variant(label: str, taxon_key: str, prompt_kind: str) -> PromptVariant:
+    return PromptVariant(
+        label=label,
+        taxon_key=taxon_key,
+        prompt_kind=prompt_kind,
+        prompt_version="test-prompt-v1",
+        template_id=f"test-{prompt_kind}-v1",
+        evidence_kind="test_fixture",
+    )
+
+
 def test_phase4_species_prompt_variants_rank_by_best_two_not_best_single_prompt() -> (
     None
 ):
@@ -21,28 +32,28 @@ def test_phase4_species_prompt_variants_rank_by_best_two_not_best_single_prompt(
             "a close-up photo of Papilio machaon butterfly": 0.50,
         },
         variants=[
-            PromptVariant(
+            _prompt_variant(
                 "a photo of Papilio demoleus", "Papilio demoleus", "scientific"
             ),
-            PromptVariant(
+            _prompt_variant(
                 "a field photo of Papilio demoleus adult butterfly",
                 "Papilio demoleus",
                 "field_adult",
             ),
-            PromptVariant(
+            _prompt_variant(
                 "a close-up photo of Papilio demoleus butterfly",
                 "Papilio demoleus",
                 "close_adult",
             ),
-            PromptVariant(
+            _prompt_variant(
                 "a photo of Papilio machaon", "Papilio machaon", "scientific"
             ),
-            PromptVariant(
+            _prompt_variant(
                 "a field photo of Papilio machaon adult butterfly",
                 "Papilio machaon",
                 "field_adult",
             ),
-            PromptVariant(
+            _prompt_variant(
                 "a close-up photo of Papilio machaon butterfly",
                 "Papilio machaon",
                 "close_adult",

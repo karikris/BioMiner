@@ -22,6 +22,17 @@ def _sha(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
+def _prompt_variant(label: str, taxon_key: str, prompt_kind: str) -> PromptVariant:
+    return PromptVariant(
+        label=label,
+        taxon_key=taxon_key,
+        prompt_kind=prompt_kind,
+        prompt_version="test-prompt-v1",
+        template_id=f"test-{prompt_kind}-v1",
+        evidence_kind="test_fixture",
+    )
+
+
 def _context() -> AcceptedTaxonPromptContext:
     return AcceptedTaxonPromptContext(
         accepted_taxon_key="gbif:6432573",
@@ -236,22 +247,22 @@ def test_aggregate_prompt_scores_uses_best_two_by_default_and_keeps_evidence() -
     assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean_best_two"
 
     variants = [
-        PromptVariant(
+        _prompt_variant(
             label="a photo of Papilio demoleus",
             taxon_key="Papilio demoleus",
             prompt_kind="scientific",
         ),
-        PromptVariant(
+        _prompt_variant(
             label="a photo of lime butterfly",
             taxon_key="Papilio demoleus",
             prompt_kind="common",
         ),
-        PromptVariant(
+        _prompt_variant(
             label="a weak generic prompt",
             taxon_key="Papilio demoleus",
             prompt_kind="generic",
         ),
-        PromptVariant(
+        _prompt_variant(
             label="a photo of Papilio machaon",
             taxon_key="Papilio machaon",
             prompt_kind="scientific",
@@ -284,17 +295,17 @@ def test_aggregate_prompt_scores_uses_best_two_by_default_and_keeps_evidence() -
 
 def test_aggregate_prompt_scores_supports_explicit_max() -> None:
     variants = [
-        PromptVariant(
+        _prompt_variant(
             label="a photo of Papilio demoleus",
             taxon_key="Papilio demoleus",
             prompt_kind="scientific",
         ),
-        PromptVariant(
+        _prompt_variant(
             label="a photo of lime butterfly",
             taxon_key="Papilio demoleus",
             prompt_kind="common",
         ),
-        PromptVariant(
+        _prompt_variant(
             label="a photo of Papilio machaon",
             taxon_key="Papilio machaon",
             prompt_kind="scientific",

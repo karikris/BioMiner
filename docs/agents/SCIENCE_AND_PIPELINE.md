@@ -178,6 +178,8 @@ producers must leave them null and `not_created`.
 ## BioCLIP
 
 - Keep BioCLIP frozen.
+- Require every prompt variant to state its prompt version, template ID, and
+  evidence kind; never invent unversioned or legacy prompt provenance.
 - Load once per persistent worker.
 - Embed each content/input/model/preprocessing fingerprint once.
 - Reuse embeddings across candidate sets and reruns.

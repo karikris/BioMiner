@@ -21,6 +21,7 @@ from biominer.bioclip.bioclip_worker import (
     preprocessing_attestation_fingerprint,
 )
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
+from biominer.bioclip.prompt_templates import PromptVariant
 
 
 REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
@@ -38,6 +39,17 @@ PREPROCESSING_CONFIG: dict[str, object] = {
     "std": [0.26862954, 0.26130258, 0.27577711],
 }
 _MISSING = object()
+
+
+def _prompt_variant(label: str, taxon_key: str, prompt_kind: str) -> PromptVariant:
+    return PromptVariant(
+        label=label,
+        taxon_key=taxon_key,
+        prompt_kind=prompt_kind,
+        prompt_version="test-prompt-v1",
+        template_id=f"test-{prompt_kind}-v1",
+        evidence_kind="test_fixture",
+    )
 
 
 def _image_embedding_worker_metadata(
@@ -1305,7 +1317,6 @@ def test_bioclip_classifier_builds_species_and_triage_prediction_with_label_sets
 def test_bioclip_classifier_ranks_species_prompt_variants_by_best_two_mean() -> None:
     from biominer.bioclip.prompt_templates import (
         SPECIES_PROMPT_AGGREGATION_DEFAULT,
-        PromptVariant,
     )
 
     assert SPECIES_PROMPT_AGGREGATION_DEFAULT == "mean_best_two"
@@ -1344,15 +1355,15 @@ def test_bioclip_classifier_ranks_species_prompt_variants_by_best_two_mean() -> 
             "triage": ["a photo of an adult butterfly"],
         },
         species_prompt_variants=[
-            PromptVariant(
+            _prompt_variant(
                 "a photo of Papilio demoleus", "Papilio demoleus", "scientific"
             ),
-            PromptVariant(
+            _prompt_variant(
                 "a field photo of Papilio demoleus adult butterfly",
                 "Papilio demoleus",
                 "field_adult",
             ),
-            PromptVariant(
+            _prompt_variant(
                 "a photo of Papilio machaon", "Papilio machaon", "scientific"
             ),
         ],

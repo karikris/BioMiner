@@ -370,12 +370,12 @@ class PromptVariant:
     label: str
     taxon_key: str
     prompt_kind: str
+    prompt_version: str
+    template_id: str
+    evidence_kind: str
     accepted_taxon_key: str = ""
-    prompt_version: str = "legacy-unversioned"
-    template_id: str = "legacy"
     route: str = "adult_field"
     life_stage: str | None = None
-    evidence_kind: str = "legacy"
     evidence_id: str | None = None
     evidence_source: str | None = None
     trust_tier: str | None = None
