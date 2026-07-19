@@ -2124,7 +2124,8 @@ In particular:
   as target-aware candidate deletion evidence;
 - completion of legacy work keys is not completion evidence for target-aware
   work;
-- old triage buckets and thresholds keep their historical meaning.
+- old triage buckets and thresholds keep their historical meaning; no current
+  runtime writer or promotion path remains.
 
 An analytical version-aware union may expose a small common identity projection
 only. It must add `score_schema_family`, `source_schema_version`,
