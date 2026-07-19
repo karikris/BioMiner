@@ -18,8 +18,8 @@ at the start of every task.
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Active post-uplift simplification head:
-  `fc86adea2b6fde0235e02794869f24dda274b961`
-  (`refactor(benchmarks): remove synthetic cascade harness`)
+  `d9e78bc43744e83bb85b6707fb72602427ff7ab7`
+  (`test(regression): freeze historical contract assertions`)
 - Post-uplift simplification completed and pushed through that head:
   - `eef126a`: removed an inert classification switch and no-op registry
     wrappers; 81 focused tests passed;
@@ -32,7 +32,13 @@ at the start of every task.
     fingerprints and downstream-owned release controls; 80 focused handoff,
     export, and publish tests passed; and
   - `fc86ade`: removed the model-free synthetic path-cascade benchmark and its
-    fixture/acceptance harness; 101 adjacent tests passed.
+    fixture/acceptance harness; 101 adjacent tests passed;
+  - `bb5d04c`: removed the classification-v3 text-cache command and the
+    plumbing, rolling-matrix, and live M5Pro crop/cascade benchmark harnesses;
+    150 adjacent tests passed; and
+  - `d9e78bc`: froze historical baseline assertions and rebound ButterflyLens
+    database invariants to their exact owning objects at the pinned consumer
+    commit. The full repository gate passed: 3,192 tests in 150.00 seconds.
 - `a76781a` records the post-uplift architecture audit. The remaining cutover
   work is to remove the callable cascade/crop/bucket runtime and alternate
   workflow plans, retain the full-frame adaptive contracts, then run broad
