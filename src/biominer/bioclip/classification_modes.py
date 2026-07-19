@@ -16,7 +16,6 @@ ClassificationMode = Literal[
     "target_scope_object_screening",
     "hierarchical_butterfly_classification",
     "target_aware_few_shot_classification",
-    "build_week_target_aware_prototype",
 ]
 
 TARGET_SCOPE_OBJECT_SCREENING: ClassificationMode = "target_scope_object_screening"
@@ -25,9 +24,6 @@ HIERARCHICAL_BUTTERFLY_CLASSIFICATION: ClassificationMode = (
 )
 TARGET_AWARE_FEW_SHOT_CLASSIFICATION: ClassificationMode = (
     "target_aware_few_shot_classification"
-)
-BUILD_WEEK_TARGET_AWARE_PROTOTYPE: ClassificationMode = (
-    "build_week_target_aware_prototype"
 )
 DEFAULT_CLASSIFICATION_MODE: ClassificationMode = TARGET_SCOPE_OBJECT_SCREENING
 # Promote this to the default only after the frozen pilot satisfies its acceptance policy.
@@ -40,7 +36,6 @@ SUPPORTED_CLASSIFICATION_MODES: tuple[ClassificationMode, ...] = (
     TARGET_SCOPE_OBJECT_SCREENING,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
 )
 
 CLASSIFICATION_MODE_ALIASES: dict[str, ClassificationMode] = {
@@ -51,25 +46,20 @@ CLASSIFICATION_MODE_ALIASES: dict[str, ClassificationMode] = {
     "target_aware": TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
     "target_aware_few_shot": TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
     "target_aware_few_shot_classification": TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-    "build_week_prototype": BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
-    "build_week_target_aware": BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
-    "build_week_target_aware_prototype": BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
 }
 
 
 @dataclass(frozen=True, slots=True)
 class ClassificationModeContract:
     classification_mode: ClassificationMode
-    deployment_status: Literal["diagnostic", "production", "prototype"]
+    deployment_status: Literal["diagnostic", "production"]
     target_always_scored: bool
     complete_regional_candidate_union_required: bool
     hierarchy_pruning_permitted: bool
     spatial_crop_permitted: bool
     visual_input: str
-    prototype_readiness_required: bool
-    prototype_support_bank_required: bool
     silent_fallback_permitted: bool
-    output_status: Literal["diagnostic", "production", "prototype"]
+    output_status: Literal["diagnostic", "production"]
     diagnostic_baselines: tuple[str, ...]
 
 
@@ -77,25 +67,6 @@ def classification_mode_contract(
     mode: str | None,
 ) -> ClassificationModeContract:
     normalized = normalize_classification_mode(mode)
-    if normalized == BUILD_WEEK_TARGET_AWARE_PROTOTYPE:
-        return ClassificationModeContract(
-            classification_mode=normalized,
-            deployment_status="prototype",
-            target_always_scored=True,
-            complete_regional_candidate_union_required=True,
-            hierarchy_pruning_permitted=False,
-            spatial_crop_permitted=False,
-            visual_input="raw_full_image",
-            prototype_readiness_required=True,
-            prototype_support_bank_required=True,
-            silent_fallback_permitted=False,
-            output_status="prototype",
-            diagnostic_baselines=(
-                TARGET_SCOPE_OBJECT_SCREENING,
-                HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-                "B0",
-            ),
-        )
     if normalized == TARGET_AWARE_FEW_SHOT_CLASSIFICATION:
         return ClassificationModeContract(
             classification_mode=normalized,
@@ -105,8 +76,6 @@ def classification_mode_contract(
             hierarchy_pruning_permitted=False,
             spatial_crop_permitted=False,
             visual_input="raw_full_image",
-            prototype_readiness_required=False,
-            prototype_support_bank_required=False,
             silent_fallback_permitted=False,
             output_status="production",
             diagnostic_baselines=(
@@ -125,8 +94,6 @@ def classification_mode_contract(
         ),
         spatial_crop_permitted=True,
         visual_input="detector_crop",
-        prototype_readiness_required=False,
-        prototype_support_bank_required=False,
         silent_fallback_permitted=False,
         output_status="diagnostic",
         diagnostic_baselines=(),
@@ -155,26 +122,11 @@ def is_hierarchical_classification(
 
 def is_target_aware_classification(
     mode: str | None,
-) -> TypeGuard[
-    Literal[
-        "target_aware_few_shot_classification",
-        "build_week_target_aware_prototype",
-    ]
-]:
-    return normalize_classification_mode(mode) in {
-        TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-        BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
-    }
-
-
-def is_build_week_prototype_classification(
-    mode: str | None,
-) -> TypeGuard[Literal["build_week_target_aware_prototype"]]:
-    return normalize_classification_mode(mode) == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
+) -> TypeGuard[Literal["target_aware_few_shot_classification"]]:
+    return normalize_classification_mode(mode) == TARGET_AWARE_FEW_SHOT_CLASSIFICATION
 
 
 __all__ = [
-    "BUILD_WEEK_TARGET_AWARE_PROTOTYPE",
     "CLASSIFICATION_MODE_ALIASES",
     "ClassificationModeContract",
     "DEFAULT_CLASSIFICATION_MODE",
@@ -191,7 +143,6 @@ __all__ = [
     "TARGET_FAMILY_REPORT_TOP_K",
     "ClassificationMode",
     "classification_mode_contract",
-    "is_build_week_prototype_classification",
     "is_hierarchical_classification",
     "is_target_aware_classification",
     "normalize_classification_mode",

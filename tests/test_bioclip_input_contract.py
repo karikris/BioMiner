@@ -5,10 +5,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from biominer.bioclip.classification_modes import (
-    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
-    TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-)
+from biominer.bioclip.classification_modes import TARGET_AWARE_FEW_SHOT_CLASSIFICATION
 from biominer.vision.bioclip_input_contract import (
     DYNAMIC_POOL_VISUAL_MODE,
     LEGACY_OBJECT_VISUAL_MODE,
@@ -27,7 +24,6 @@ from biominer.vision.score_inputs import materialize_bioclip_score_inputs
     [
         TARGET_AWARE_VISUAL_MODE,
         TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-        BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
         DYNAMIC_POOL_VISUAL_MODE,
     ],
 )

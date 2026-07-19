@@ -90,10 +90,6 @@ uv run biominer registry publish \
   --output-dir data/registry/current \
   --replace-existing
 
-uv run biominer dev vision build-text-embedding-cache \
-  --registry-dir data/registry/current \
-  --output data/cache/taxonomy/current/classification_text_embeddings.parquet
-
 uv run biominer run --help
 uv run biominer references --help
 ```

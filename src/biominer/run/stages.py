@@ -59,44 +59,6 @@ class StageStatus(StrEnum):
     SKIPPED = "skipped"
 
 
-DEFAULT_PRODUCTION_STAGES: tuple[RunStage, ...] = (
-    RunStage.RESOLVE_TAXON_SCOPE,
-    RunStage.BUILD_REGISTRY,
-    RunStage.COMPILE_QUERIES,
-    RunStage.ENQUEUE_FLICKR_WORK,
-    RunStage.POLL_FLICKR,
-    RunStage.DETECT_OBJECTS,
-    RunStage.SCORE_BIOCLIP,
-    RunStage.JOIN_EVIDENCE,
-    RunStage.SUMMARIZE,
-)
-
-
-REFERENCE_FIRST_PRODUCTION_STAGES: tuple[RunStage, ...] = (
-    RunStage.RESOLVE_TAXON_SCOPE,
-    RunStage.BUILD_REGISTRY,
-    RunStage.GEOGRAPHIC_SPREAD,
-    RunStage.COMPILE_QUERIES,
-    RunStage.ENQUEUE_FLICKR_WORK,
-    RunStage.POLL_FLICKR,
-    RunStage.FLICKR_GEO_CLUSTERING,
-    RunStage.REGIONAL_CANDIDATE_GENERATION,
-    RunStage.REFERENCE_METADATA,
-    RunStage.REFERENCE_MEDIA,
-    RunStage.REFERENCE_REVIEW,
-    RunStage.REFERENCE_EMBEDDINGS,
-    RunStage.REFERENCE_PROTOTYPES,
-    RunStage.CLASSIFIER_TRAINING,
-    RunStage.CLASSIFIER_CALIBRATION,
-    RunStage.REFERENCE_READINESS,
-    RunStage.FLICKR_DETECTION,
-    RunStage.FLICKR_EMBEDDING,
-    RunStage.TARGET_AWARE_SCORING,
-    RunStage.EVIDENCE,
-    RunStage.EVALUATION,
-)
-
-
 ADAPTIVE_REFERENCE_PRODUCTION_STAGES: tuple[RunStage, ...] = (
     RunStage.RESOLVE_TAXON_SCOPE,
     RunStage.BUILD_REGISTRY,
@@ -179,6 +141,6 @@ class StageRecord:
 
 
 def default_stage_records(
-    stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES,
+    stages: tuple[RunStage, ...] = ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
 ) -> tuple[StageRecord, ...]:
     return tuple(StageRecord(stage=stage) for stage in stages)

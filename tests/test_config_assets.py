@@ -19,7 +19,7 @@ def test_authoritative_unified_registry_docs_exist() -> None:
         assert path.exists(), path
 
 
-def test_authoritative_examples_separate_base_overlay_cache_and_run_roots() -> None:
+def test_authoritative_examples_separate_registry_and_run_roots() -> None:
     text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (Path("README.md"), Path("docs/registry.md"), Path("docs/production.md"))
@@ -27,12 +27,13 @@ def test_authoritative_examples_separate_base_overlay_cache_and_run_roots() -> N
 
     for required in (
         "--output-dir data/registry/current",
-        "--registry-dir data/registry/current",
-        "--output data/cache/taxonomy/current/classification_text_embeddings.parquet",
-        "--taxonomy-text-embedding-cache s3://biominer/cache/taxonomy/current/classification_text_embeddings.parquet",
+        "--registry-dir data/registry/build",
+        "--output-prefix s3://biominer/runs/current",
     ):
         assert required in text
     for forbidden in (
+        "build-text-embedding-cache",
+        "classification_text_embeddings.parquet",
         "--taxonomy-text-embedding-cache data/registry/butterflies-v2",
         "--taxonomy-text-embedding-cache s3://biominer/registry/butterflies-v2",
     ):

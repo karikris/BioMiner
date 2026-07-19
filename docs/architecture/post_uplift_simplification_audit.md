@@ -97,10 +97,12 @@ candidates and are excluded from all cleanup commits.
    removed. The production cascade cutover remains a separate gated subtask
    because it is intertwined with the old cloud runner and evidence join.
 
-4. **Legacy/default/reference-first workflow layers.** After adaptive handlers
-   are connected, remove alternate workflow selectors, aliases, configuration
-   fields, and stage plans. One canonical production graph is easier to audit
-   and cannot silently fall back to obsolete scientific semantics.
+4. **Legacy/default/reference-first workflow layers.** Completed on
+   2026-07-19: the alternate workflow selector, legacy/default and
+   reference-first stage plans, and one-off Build Week runtime configuration
+   and permit wrappers were removed. `run` now resolves one adaptive graph.
+   Legacy stage enum members remain only until the intertwined cascade runner
+   is removed.
 
 5. **Inert switches and forwarding helpers.** The first cleanup removed the
    hidden registry `--skip-classification` switch, two no-op wrappers, and stale

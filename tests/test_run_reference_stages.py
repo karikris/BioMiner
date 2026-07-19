@@ -6,7 +6,6 @@ import pytest
 
 from biominer.run import (
     MANUAL_REVIEW_STAGES,
-    REFERENCE_FIRST_PRODUCTION_STAGES,
     ProductionRunOrchestrator,
     ProductionRunRequest,
     RunManifest,
@@ -19,30 +18,7 @@ from biominer.run.stages import default_stage_records
 from biominer.species.context import SpeciesContext
 
 
-def test_reference_first_production_stages_are_explicit_and_ordered() -> None:
-    assert tuple(stage.value for stage in REFERENCE_FIRST_PRODUCTION_STAGES) == (
-        "resolve_taxon_scope",
-        "build_registry",
-        "geographic_spread",
-        "compile_queries",
-        "enqueue_flickr_work",
-        "poll_flickr",
-        "flickr_geo_clustering",
-        "regional_candidate_generation",
-        "reference_metadata",
-        "reference_media",
-        "reference_review",
-        "reference_embeddings",
-        "reference_prototypes",
-        "classifier_training",
-        "classifier_calibration",
-        "reference_readiness",
-        "flickr_detection",
-        "flickr_embedding",
-        "target_aware_scoring",
-        "evidence",
-        "evaluation",
-    )
+def test_manual_review_stages_are_explicit() -> None:
     assert MANUAL_REVIEW_STAGES == frozenset(
         {
             RunStage.REFERENCE_REVIEW,

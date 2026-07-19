@@ -22,7 +22,6 @@ from biominer.cli import (
     run,
 )
 from biominer.bioclip.classification_modes import (
-    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -407,36 +406,6 @@ def test_run_cli_accepts_explicit_target_aware_few_shot_mode() -> None:
     )
 
     assert args.classification_mode == TARGET_AWARE_FEW_SHOT_CLASSIFICATION
-
-
-def test_run_cli_accepts_explicit_build_week_prototype_config() -> None:
-    args = build_parser().parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "data/registry/current",
-            "--output-prefix",
-            "runs/papilio_demoleus_build_week",
-            "--storage-backend",
-            "local",
-            "--workstore-backend",
-            "sqlite",
-            "--workflow",
-            "reference-first",
-            "--classification-mode",
-            "build-week-prototype",
-            "--classification-config",
-            "config/pilot/papilio_demoleus_build_week_target_aware_prototype.json",
-        ]
-    )
-
-    assert args.classification_mode == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
-    assert args.classification_config.endswith("papilio_demoleus_build_week_target_aware_prototype.json")
-    assert args.storage_backend == "local"
-    assert args.workstore_backend == "sqlite"
-    assert args.workflow == "reference-first"
 
 
 def test_registry_build_parses_regional_and_static_source_options() -> None:

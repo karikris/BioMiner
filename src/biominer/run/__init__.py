@@ -32,7 +32,6 @@ from biominer.run.reference_work import (
 from biominer.run.stages import (
     ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
     MANUAL_REVIEW_STAGES,
-    REFERENCE_FIRST_PRODUCTION_STAGES,
     RunStage,
     StageRecord,
     StageStatus,
@@ -59,7 +58,6 @@ __all__ = [
     "StageExecutionResult",
     "RunManifest",
     "MANUAL_REVIEW_STAGES",
-    "REFERENCE_FIRST_PRODUCTION_STAGES",
     "REFERENCE_FIRST_ARTIFACT_KEYS",
     "REFERENCE_FIRST_WORK_KINDS",
     "REFERENCE_FIRST_WORK_SCHEMA_VERSION",

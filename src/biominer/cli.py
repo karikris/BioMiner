@@ -21,7 +21,6 @@ from biominer.bioclip.classification_modes import (
     DEFAULT_CLASSIFICATION_MODE,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     SUPPORTED_CLASSIFICATION_MODES,
-    is_build_week_prototype_classification,
     normalize_classification_mode,
 )
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
@@ -105,7 +104,6 @@ from biominer.reference_workflow_cli import (
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import (
     ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
-    REFERENCE_FIRST_PRODUCTION_STAGES,
     ProductionRunOrchestrator,
     ProductionRunRequest,
     RunStage,
@@ -116,7 +114,6 @@ from biominer.run.adaptive_config import (
     DEFAULT_REFERENCE_SOURCE,
     REFERENCE_ADMISSION_MODES,
 )
-from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
 from biominer.config import ConfigError, create_storage_backend, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
@@ -493,13 +490,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_CLASSIFICATION_MODES,
         default=DEFAULT_CLASSIFICATION_MODE,
     )
-    production_run.add_argument(
-        "--classification-config",
-        help=(
-            "explicit local configuration for an opt-in classification mode; "
-            "required by build_week_target_aware_prototype"
-        ),
-    )
     production_run.add_argument("--taxonomy-text-embedding-cache")
     production_run.add_argument("--regional-candidates")
     production_run.add_argument("--reference-embeddings")
@@ -567,12 +557,6 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--parquet-compression")
     production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
     production_run.add_argument("--stages")
-    production_run.add_argument(
-        "--workflow",
-        choices=("adaptive", "legacy", "reference-first"),
-        default="adaptive",
-        help="production stage contract (default: adaptive GBIF fast-start)",
-    )
     production_run.add_argument("--dry-run", action="store_true")
     production_run.add_argument("--build-registry-if-missing", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
@@ -1829,30 +1813,7 @@ def _classification_mode_arg(value: str) -> str:
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
     try:
-        stages = _parse_run_stages(args.stages, workflow=args.workflow)
-        prototype_config = None
-        if args.classification_config:
-            from biominer.bioclip.prototype_mode import BuildWeekPrototypeConfig
-
-            prototype_config = BuildWeekPrototypeConfig.read_json(
-                args.classification_config
-            )
-        if is_build_week_prototype_classification(args.classification_mode):
-            if args.workflow != "reference-first":
-                raise ValueError(
-                    "build_week_target_aware_prototype requires "
-                    "--workflow reference-first"
-                )
-            if prototype_config is None:
-                raise ValueError(
-                    "build_week_target_aware_prototype requires "
-                    "--classification-config"
-                )
-        elif prototype_config is not None:
-            raise ValueError(
-                "--classification-config is only valid with "
-                "build_week_target_aware_prototype"
-            )
+        stages = _parse_run_stages(args.stages)
         if (
             not args.dry_run
             and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
@@ -1908,8 +1869,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             vision_profile=args.vision_profile,
             vision_settings=vision_settings,
             classification_mode=args.classification_mode,
-            classification_config_path=args.classification_config,
-            build_week_prototype_config=prototype_config,
             taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
             reference_bank_readiness=args.reference_bank_readiness,
             reference_bank_readiness_sha256=(
@@ -2026,26 +1985,16 @@ def _create_production_vision_runtime(
 
 def _parse_run_stages(
     value: str | None,
-    *,
-    workflow: str = "adaptive",
 ) -> tuple[RunStage, ...]:
-    workflows = {
-        "adaptive": ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
-        "legacy": DEFAULT_PRODUCTION_STAGES,
-        "reference-first": REFERENCE_FIRST_PRODUCTION_STAGES,
-    }
-    if workflow not in workflows:
-        raise ValueError("workflow must be adaptive, legacy, or reference-first")
-    workflow_stages = workflows[workflow]
     if not value:
-        return workflow_stages
+        return ADAPTIVE_REFERENCE_PRODUCTION_STAGES
     stages: list[RunStage] = []
     for raw_part in value.split(","):
         part = raw_part.strip().casefold()
         if not part:
             continue
         if part == "all":
-            return workflow_stages
+            return ADAPTIVE_REFERENCE_PRODUCTION_STAGES
         stage = RUN_STAGE_ALIASES.get(part)
         if stage is None:
             try:
@@ -2055,7 +2004,7 @@ def _parse_run_stages(
                 raise ValueError(f"unknown run stage {raw_part!r}; expected one of: {allowed}") from exc
         if stage not in stages:
             stages.append(stage)
-    return tuple(stages) or workflow_stages
+    return tuple(stages) or ADAPTIVE_REFERENCE_PRODUCTION_STAGES
 
 
 def _run_bioclip_runtime_check(args: argparse.Namespace) -> int:

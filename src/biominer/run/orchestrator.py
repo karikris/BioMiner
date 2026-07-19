@@ -21,7 +21,6 @@ from biominer.bioclip.classification_modes import (
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     ClassificationMode,
     classification_mode_contract,
-    is_build_week_prototype_classification,
     normalize_classification_mode,
 )
 from biominer.bioclip.object_runner import (
@@ -30,12 +29,6 @@ from biominer.bioclip.object_runner import (
     object_score_audit_metrics,
 )
 from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
-from biominer.bioclip.prototype_mode import BuildWeekPrototypeConfig
-from biominer.bioclip.prototype_support import (
-    MetadataQualifiedPrototypePermit,
-    PrototypeReadinessPermit,
-    validate_metadata_qualified_prototype_support,
-)
 from biominer.bioclip.taxonomy_embedding_cache import TaxonomyTextEmbeddingIndex
 from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings
 from biominer.evidence.cloud_work import (
@@ -146,21 +139,6 @@ StageHandler = Callable[[Any], StageExecutionResult]
 VisionRuntimeFactory = Callable[[], tuple[Any, Callable[[dict[str, Any]], Any], Any, list[Any]]]
 
 
-def _set_or_validate_prototype_artifact(
-    request: ProductionRunRequest,
-    *,
-    field_name: str,
-    expected: object,
-) -> None:
-    current = getattr(request, field_name)
-    if current is None:
-        object.__setattr__(request, field_name, expected)
-        return
-    values_match = Path(current) == Path(expected) if field_name in {"reference_bank_readiness", "reference_embeddings"} else current == expected
-    if not values_match:
-        raise ValueError(f"{field_name} conflicts with the frozen Build Week prototype configuration")
-
-
 @dataclass(frozen=True)
 class ProductionRunRequest:
     taxon: str
@@ -175,8 +153,6 @@ class ProductionRunRequest:
     vision_profile: str | None = None
     vision_settings: VisionRuntimeSettings = field(default_factory=VisionRuntimeSettings)
     classification_mode: ClassificationMode = DEFAULT_CLASSIFICATION_MODE
-    classification_config_path: str | Path | None = None
-    build_week_prototype_config: BuildWeekPrototypeConfig | None = None
     taxonomy_text_embedding_cache: str | Path | None = None
     reference_bank_readiness: str | Path | None = None
     reference_bank_readiness_sha256: str | None = None
@@ -243,54 +219,6 @@ class ProductionRunRequest:
                 f"unsupported support_scoring_mode: {self.support_scoring_mode!r}"
             )
         object.__setattr__(self, "support_scoring_mode", scoring_mode)
-        prototype_config = self.build_week_prototype_config
-        if is_build_week_prototype_classification(classification_mode):
-            if prototype_config is None:
-                raise ValueError("build_week_target_aware_prototype requires an explicit Build Week prototype configuration")
-            if self.classification_config_path is None:
-                raise ValueError("build_week_target_aware_prototype requires classification_config_path for provenance")
-            if is_cloud_uri(str(self.classification_config_path)):
-                raise ValueError("Build Week prototype configuration must be local")
-            configured_prototype = BuildWeekPrototypeConfig.read_json(self.classification_config_path)
-            if configured_prototype.fingerprint != prototype_config.fingerprint:
-                raise ValueError("classification_config_path conflicts with the supplied Build Week prototype configuration")
-            configured_prototype.verify_artifacts()
-            prototype_config = configured_prototype
-            object.__setattr__(
-                self,
-                "build_week_prototype_config",
-                configured_prototype,
-            )
-            if self.storage_backend != "local" or self.workstore_backend != "sqlite":
-                raise ValueError("Build Week prototype mode currently requires local storage and a SQLite workstore")
-            if is_cloud_uri(str(self.output_root)):
-                raise ValueError("Build Week prototype output_root must be local")
-            if RunStage.TARGET_AWARE_SCORING not in self.stages:
-                raise ValueError("Build Week prototype mode requires target_aware_scoring")
-            legacy_stages = {
-                RunStage.DETECT_OBJECTS,
-                RunStage.SCORE_BIOCLIP,
-            }.intersection(self.stages)
-            if legacy_stages:
-                names = ", ".join(sorted(stage.value for stage in legacy_stages))
-                raise ValueError(f"Build Week prototype mode cannot use legacy vision stages: {names}")
-            _set_or_validate_prototype_artifact(
-                self,
-                field_name="reference_bank_readiness",
-                expected=prototype_config.reference_bank_readiness,
-            )
-            _set_or_validate_prototype_artifact(
-                self,
-                field_name="reference_bank_readiness_sha256",
-                expected=prototype_config.reference_bank_readiness_sha256,
-            )
-            _set_or_validate_prototype_artifact(
-                self,
-                field_name="reference_embeddings",
-                expected=prototype_config.reference_embeddings,
-            )
-        elif prototype_config is not None or self.classification_config_path is not None:
-            raise ValueError("Build Week prototype configuration is only valid with build_week_target_aware_prototype")
         settings = validate_production_cascade_settings(
             beam_strategy=self.beam_strategy,
             rank_beam_width=self.rank_beam_width,
@@ -340,7 +268,6 @@ class ProductionRunPlan:
                 "vision_profile": self.request.vision_profile,
                 "vision_settings": asdict(self.request.vision_settings),
                 "classification_mode": self.request.classification_mode,
-                "classification_config_path": (str(self.request.classification_config_path) if self.request.classification_config_path else None),
                 "registry_taxonomy": self.request.registry_dir,
                 "taxonomy_text_embedding_cache": str(self.request.taxonomy_text_embedding_cache) if self.request.taxonomy_text_embedding_cache else None,
                 "reference_bank_readiness": str(self.request.reference_bank_readiness) if self.request.reference_bank_readiness else None,
@@ -383,12 +310,6 @@ class ProductionRunPlan:
 
 
 def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) -> ProductionRunPlan:
-    prototype_config = request.build_week_prototype_config
-    if prototype_config is not None:
-        if taxon_scope.accepted_rank != "species":
-            raise ValueError("Build Week prototype target scope must resolve to species")
-        if taxon_scope.accepted_taxon_key != prototype_config.target_accepted_taxon_key or taxon_scope.accepted_scientific_name != prototype_config.target_scientific_name:
-            raise ValueError("Build Week prototype target does not match the resolved registry taxon identity")
     run_id = request.resolved_run_id()
     paths = RunPaths.from_root(request.output_root, run_id=run_id)
     artifact_uris = RunArtifactUris.from_prefix(request.output_root, run_id=run_id)
@@ -408,19 +329,8 @@ def build_run_plan(request: ProductionRunRequest, *, taxon_scope: TaxonScope) ->
             "vision_settings": asdict(request.vision_settings),
             "classification_mode": request.classification_mode,
             "classification_contract": asdict(classification_mode_contract(request.classification_mode)),
-            "classification_config": (
-                {
-                    "path": str(request.classification_config_path),
-                    "fingerprint": prototype_config.fingerprint,
-                    "validation_status": "sha256_pins_verified",
-                    "configuration": prototype_config.to_manifest(),
-                }
-                if prototype_config is not None
-                else None
-            ),
-            "deployment_status": (prototype_config.deployment_status if prototype_config is not None else classification_mode_contract(request.classification_mode).deployment_status),
+            "deployment_status": classification_mode_contract(request.classification_mode).deployment_status,
             "output_status": classification_mode_contract(request.classification_mode).output_status,
-            "limitations": (list(prototype_config.limitations) if prototype_config is not None else []),
             "registry_taxonomy": request.registry_dir,
             "taxonomy_text_embedding_cache": str(request.taxonomy_text_embedding_cache) if request.taxonomy_text_embedding_cache else None,
             "reference_bank_readiness": (
@@ -528,8 +438,8 @@ class ProductionRunOrchestrator:
         self._vision_runtime_initialized = False
         self._vision_runtime_resources: list[Any] = []
         self._vision_runtime_resources_closed = False
-        self._reference_bank_readiness_permit: ReferenceBankReadinessPermit | PrototypeReadinessPermit | None = None
-        self._support_dependency_permit: SupportDependencyPermit | MetadataQualifiedPrototypePermit | None = None
+        self._reference_bank_readiness_permit: ReferenceBankReadinessPermit | None = None
+        self._support_dependency_permit: SupportDependencyPermit | None = None
 
     def _resolve_species_candidate_path(
         self,
@@ -684,28 +594,22 @@ class ProductionRunOrchestrator:
         plan: ProductionRunPlan,
         *,
         stage: RunStage,
-    ) -> SupportDependencyPermit | MetadataQualifiedPrototypePermit:
+    ) -> SupportDependencyPermit:
         if self._support_dependency_permit is not None:
             return self._support_dependency_permit
-        if is_build_week_prototype_classification(self.request.classification_mode):
-            config = self.request.build_week_prototype_config
-            if config is None:
-                raise ValueError("Build Week prototype configuration is missing")
-            permit = validate_metadata_qualified_prototype_support(config)
-        else:
-            permit = validate_support_readiness_dependencies(
-                stage=stage,
-                regional_candidates=self.request.regional_candidates,
-                reference_bank_readiness=self.request.reference_bank_readiness,
-                reference_bank_readiness_sha256=(self.request.reference_bank_readiness_sha256),
-                reference_embeddings=self.request.reference_embeddings,
-                classifier_artifact=self.request.classifier_artifact,
-                calibrator_artifact=self.request.calibrator_artifact,
-                expected_registry_version=plan.manifest.taxon_scope.registry_version,
-                expected_target_accepted_taxon_key=(plan.manifest.taxon_scope.accepted_taxon_key),
-                expected_model_name=self.request.bioclip_model,
-                scoring_mode=self.request.support_scoring_mode,
-            )
+        permit = validate_support_readiness_dependencies(
+            stage=stage,
+            regional_candidates=self.request.regional_candidates,
+            reference_bank_readiness=self.request.reference_bank_readiness,
+            reference_bank_readiness_sha256=(self.request.reference_bank_readiness_sha256),
+            reference_embeddings=self.request.reference_embeddings,
+            classifier_artifact=self.request.classifier_artifact,
+            calibrator_artifact=self.request.calibrator_artifact,
+            expected_registry_version=plan.manifest.taxon_scope.registry_version,
+            expected_target_accepted_taxon_key=(plan.manifest.taxon_scope.accepted_taxon_key),
+            expected_model_name=self.request.bioclip_model,
+            scoring_mode=self.request.support_scoring_mode,
+        )
         self._support_dependency_permit = permit
         self._reference_bank_readiness_permit = permit.readiness
         return permit

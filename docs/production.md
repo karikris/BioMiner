@@ -72,15 +72,15 @@ support, occurrence-release maturity, and downstream handoff maturity are
 separate contracts. Unreviewed Flickr records cannot enter the verified
 occurrence export.
 
-The family/genus cascade, the strictly-above-0.90 genus shortcut, per-detection
-crop materialization, and bucketed visual modes remain supported only as
-explicit `legacy`/compatibility workflows. Existing hierarchical artifacts
-still require validated species paths and a matching taxonomy text-embedding
-cache, for example
-`--taxonomy-text-embedding-cache s3://biominer/cache/taxonomy/current/classification_text_embeddings.parquet`.
-That cache is a legacy hierarchical input, not an adaptive dynamic-pool
-selection or release artifact. Those paths must not silently substitute for
-adaptive full-frame dynamic-pool output.
+The alternate `legacy` and `reference-first` workflow selectors and the
+one-off Build Week runtime mode were removed on 2026-07-19. The family/genus
+cascade, the strictly-above-0.90 genus shortcut, per-detection crop
+materialization, and bucketed visual modes remain temporarily in source while
+their intertwined runner is removed; they are not supported fallbacks and are
+not part of the adaptive stage graph. Existing historical hierarchical
+artifacts remain in Git. They must not substitute for adaptive full-frame
+dynamic-pool output. See the
+[migration note](migrations/alternate-workflow-removal.md).
 
 ## Example
 
@@ -90,7 +90,6 @@ uv run biominer --config config/biominer.cloud.example.toml run \
   --rank family \
   --registry-dir s3://biominer/registry/butterflies-v2 \
   --output-prefix s3://biominer/runs/current \
-  --workflow adaptive \
   --classification-mode target_aware_few_shot_classification \
   --reference-admission-mode adaptive_gbif_fast_start \
   --reference-source gbif \

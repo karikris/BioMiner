@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from biominer.bioclip.classification_modes import (
-    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
     HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
     TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -41,7 +40,6 @@ _TARGET_AWARE_MODES = frozenset(
     {
         TARGET_AWARE_VISUAL_MODE,
         TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-        BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
     }
 )
 _LEGACY_MODES = frozenset(

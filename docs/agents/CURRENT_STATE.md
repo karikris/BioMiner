@@ -492,12 +492,15 @@ At the current cleanup head:
   target-preserving dynamic pooling as the production direction;
 - Flickr comment promotion, the disconnected dynamic-pooling plan CLI, and the
   synthetic cascade benchmark have been removed with migration notes;
+- the one-off Build Week runtime mode and the alternate `legacy` and
+  `reference-first` run selectors have been removed; `run` now exposes only
+  the adaptive stage graph;
 - the family/genus cascade, crop and bucket production implementation still
   exists but is a pending removal target, not a supported fallback;
 - `src/biominer/run/orchestrator.py` retains legacy cascade and visual-mode
   compatibility fields alongside adaptive defaults.
-- `src/biominer/run/stages.py` retains legacy, strict reference-first, and
-  adaptive stage plans.
+- `src/biominer/run/stages.py` retains only the adaptive stage plan; legacy
+  stage enum members remain temporarily until their runner code is removed.
 
 Therefore:
 
