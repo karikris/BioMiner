@@ -1055,7 +1055,7 @@ identity, and `network_requests = 0`. A failed validation or publication leaves
 the output directory uncommitted and attempts to persist a sibling
 `.failed.json` audit with the original error and timing metadata.
 
-### 5.6 Frozen support and readiness
+### Frozen support and readiness
 
 `reference_bank_split_assignments.parquet` has schema version
 `reference-bank-split-assignments-v1.0.0`. It assigns each media item explicitly
