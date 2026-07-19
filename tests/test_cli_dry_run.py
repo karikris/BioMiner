@@ -1358,6 +1358,8 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     assert smoke.image == "manual.jpg"
     with pytest.raises(SystemExit):
         parser.parse_args(["dev", "vision", "yoloe26-prototype-run"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dev", "vision", "benchmark-cascade"])
 
 
 def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
@@ -1371,7 +1373,6 @@ def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
         "yoloe26-smoke",
         "yoloe26-prototype-run",
         "benchmark-plumbing",
-        "benchmark-cascade",
         "benchmark-live-m5pro",
         "crop-preview",
         "eval",

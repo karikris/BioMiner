@@ -76,10 +76,9 @@ schema.
 | Visual mode | unavailable | Not recorded in the historical schema |
 | Threshold configuration | unavailable | No versioned threshold policy in the run summary |
 
-The current model-free cascade benchmark in
-`reports/vision_benchmarks/cascade/benchmark_metrics.json` is not a substitute:
-it explicitly uses synthetic taxonomy and cannot support biological target
-metrics.
+The retired model-free cascade benchmark is not a substitute: it used synthetic
+taxonomy and cannot support biological target metrics. Its historical artifact
+and verification record remain available without retaining a callable runtime.
 
 ## Baseline boundary
 

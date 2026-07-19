@@ -91,6 +91,11 @@ candidates and are excluded from all cleanup commits.
    production architecture after full-frame dynamic pooling. Preserve old
    artifacts and Git revisions; do not migrate them in place.
 
+   The callable model-free cascade benchmark and its synthetic fixture have now
+   been removed. The production cascade cutover remains a separate gated
+   subtask because it is intertwined with the old cloud runner and evidence
+   join.
+
 4. **Legacy/default/reference-first workflow layers.** After adaptive handlers
    are connected, remove alternate workflow selectors, aliases, configuration
    fields, and stage plans. One canonical production graph is easier to audit

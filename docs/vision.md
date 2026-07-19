@@ -90,9 +90,7 @@ uv run biominer dev vision bioclip-runtime-check --device mps
 uv run biominer dev vision yoloe26-runtime-check --device mps
 uv run biominer dev vision benchmark-plumbing --records 1000 --output-dir reports/vision_benchmarks/plumbing
 uv run biominer dev vision benchmark-rolling-matrix --records 1000 --output-dir reports/vision_benchmarks/rolling
-uv run biominer dev vision benchmark-cascade --output-dir reports/vision_benchmarks/cascade
 ```
 
-Benchmarks measure plumbing, throughput, and deterministic cascade invariants,
-not biological accuracy. Accuracy evaluation uses reviewed labels through
-`biominer evaluation classify`.
+Benchmarks measure plumbing and throughput, not biological accuracy. Accuracy
+evaluation uses reviewed labels through `biominer evaluation classify`.
