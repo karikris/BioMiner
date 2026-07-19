@@ -42,12 +42,7 @@ class RunStage(StrEnum):
     AFFECTED_REFERENCE_REBUILD = "affected_reference_rebuild"
     AFFECTED_RECORD_RESCORE = "affected_record_rescore"
     FINAL_QUALITY_GATE = "final_quality_gate"
-    EVIDENCE = "evidence"
     EVALUATION = "evaluation"
-    DETECT_OBJECTS = "detect_objects"
-    SCORE_BIOCLIP = "score_bioclip"
-    JOIN_EVIDENCE = "join_evidence"
-    SUMMARIZE = "summarize"
 
 
 class StageStatus(StrEnum):

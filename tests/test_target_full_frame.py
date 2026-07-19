@@ -7,7 +7,6 @@ import pytest
 
 from biominer.vision import target_full_frame
 from biominer.detection.detector_base import DecodedImage
-from biominer.detection.policy import DetectionRunPolicy
 from biominer.vision.bioclip_input_contract import (
     BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION,
     bioclip_visual_input_contract,
@@ -24,7 +23,6 @@ from biominer.vision.target_full_frame import (
     encode_target_full_frame_plan,
     full_frame_embedding_id,
     generate_target_full_frame_attention_variants,
-    target_full_frame_detection_run_policy,
 )
 from biominer.vision.full_frame_attention import (
     FOCUSED_FULL_FRAME_KIND,
@@ -407,13 +405,7 @@ def test_content_and_embedding_identities_have_separate_invalidation() -> None:
     )
 
 
-def test_target_full_frame_plan_never_materializes_spatial_crops(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_crop(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("target-aware full-frame mode must not crop")
-
-    monkeypatch.setattr("biominer.detection.cropper.crop_with_padding", fail_crop)
+def test_target_full_frame_plan_never_materializes_spatial_crops() -> None:
     image = _image(b"\x05" * 12, width=2, height=2)
     plan = build_target_full_frame_plan(
         detection_rows=[
@@ -901,39 +893,6 @@ def test_full_frame_encoder_rejects_stale_scoring_identity() -> None:
             model_fingerprint=_MODEL_FINGERPRINT,
             preprocessing_fingerprint=_PREPROCESSING_FINGERPRINT,
         )
-
-
-def test_target_mode_disables_crop_metadata_without_changing_other_run_policy() -> None:
-    base = DetectionRunPolicy(
-        download_workers=7,
-        decode_workers=6,
-        detector_workers=2,
-        max_inflight_images=19,
-        max_inflight_crops=23,
-        detector_batch_size=5,
-        crop_batch_size=11,
-        parquet_batch_rows=101,
-        adaptive_batching=True,
-        min_detector_batch_size=2,
-        create_crop_metadata=True,
-    )
-
-    policy = target_full_frame_detection_run_policy(base)
-
-    assert policy.create_crop_metadata is False
-    assert policy == DetectionRunPolicy(
-        download_workers=7,
-        decode_workers=6,
-        detector_workers=2,
-        max_inflight_images=19,
-        max_inflight_crops=23,
-        detector_batch_size=5,
-        crop_batch_size=11,
-        parquet_batch_rows=101,
-        adaptive_batching=True,
-        min_detector_batch_size=2,
-        create_crop_metadata=False,
-    )
 
 
 def _image(data: bytes, *, width: int, height: int) -> DecodedImage:

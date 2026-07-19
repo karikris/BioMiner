@@ -2,17 +2,21 @@
 
 BioMiner uses one CoL XR identity registry for taxonomy, BioCLIP routing, and Flickr discovery evidence. The pinned primary source is ChecklistBank dataset `315557`, release `COL26.6 XR`, DOI `10.48580/dgy8b`.
 
-## BioCLIP paths
+## Canonical identity paths
 
-Every accepted species has one row in `species_paths.parquet` using the ranks BioCLIP supports:
+Every accepted species has one row in `species_paths.parquet` using the
+canonical ranks shared by registry audit and candidate construction:
 
 ```text
 KINGDOM → PHYLUM → CLASS → ORDER → FAMILY → GENUS → SPECIES
 ```
 
-When an intermediate source rank is absent, the nearest observed parent is carried forward as a routing proxy. Proxy rows retain `target_rank`, their true semantic rank, `candidate_kind=carry_forward_proxy`, and `proxy_source_node_id`. Prompt text uses the semantic rank and never asserts that the parent belongs to the missing rank. A proxy score is routing evidence, not taxonomy.
-
-The classifier reads `species_paths.parquet` directly from `--registry-dir`.
+When an intermediate source rank is absent, the nearest observed parent is
+carried forward as a typed proxy. Proxy rows retain `target_rank`, their true
+semantic rank, `candidate_kind=carry_forward_proxy`, and
+`proxy_source_node_id`; they never manufacture a missing taxonomic rank. The
+removed classification-v3 cascade no longer consumes these rows as staged
+prompt beams.
 
 ## Canonical Flickr keywords
 

@@ -26,7 +26,6 @@ from biominer.vision.target_full_frame import (
     build_target_full_frame_plan,
     encode_target_full_frame_plan,
     generate_target_full_frame_attention_variants,
-    target_full_frame_detection_run_policy,
 )
 
 
@@ -53,15 +52,7 @@ class RecordingFullFrameEncoder:
 
 def test_full_frame_yoloe_domain_routing_is_no_crop_and_reference_symmetric(
     tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail_if_cropped(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("target-aware YOLOE routing must not create spatial crops")
-
-    monkeypatch.setattr(
-        "biominer.detection.pipeline.crop_with_padding",
-        fail_if_cropped,
-    )
     image = _image()
     detector = FakeObjectDetector(
         [
@@ -123,19 +114,14 @@ def test_full_frame_yoloe_domain_routing_is_no_crop_and_reference_symmetric(
         detection_policy=DetectionPolicy(
             backend="fake",
             min_box_area_ratio=0.0,
-            retain_debug_crops=True,
         ),
-        run_policy=target_full_frame_detection_run_policy(
-            DetectionRunPolicy(detector_batch_size=2)
-        ),
+        run_policy=DetectionRunPolicy(detector_batch_size=2),
     )
 
-    assert result.crops_created == 0
     rows = result.frame.to_dicts()
     assert all(row["crop_hash"] is None for row in rows)
     assert "crop_path" not in result.frame.columns
     assert all(row["crop_storage_policy"] == "not_created" for row in rows)
-    assert not (tmp_path / "target_object_detections_debug_crops").exists()
 
     rows_by_prompt = {
         str(row["detector_prompt"]): row

@@ -62,10 +62,11 @@ but selected no production default because reviewed precision, subgroup
 support, comparable runtime, and MPS evidence are unavailable. See the
 [pilot report](reports/geo_dynamic_pooling/pilot/geography_conditioned_pooling_report.md).
 
-The historical family/genus cascade, 0.90 genus shortcut, crop materialization,
-and bucketed visual modes remain explicit `legacy` or compatibility paths for
-existing artifacts. They are not the adaptive production default and must not
-silently control adaptive output.
+The historical family/genus cascade, 0.90 genus shortcut, detector-crop
+materialization, bucketed visual modes, and rolling-worker path have been
+removed from executable source. Historical artifacts remain available through
+Git, but there is no runtime fallback from adaptive full-frame scoring to those
+workflows.
 
 Durable tables are Parquet, analytical QA uses DuckDB, and local operational
 state uses SQLite. Production defaults to S3-compatible storage and a

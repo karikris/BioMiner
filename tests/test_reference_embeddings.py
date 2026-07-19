@@ -38,7 +38,6 @@ from biominer.bioclip.reference_embeddings import (
     validate_reference_embeddings,
     write_reference_embeddings,
 )
-from biominer.bioclip.object_runner import EphemeralCropBioClipScorer
 import biominer.references.readiness as readiness_module
 from biominer.references.readiness import (
     REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
@@ -259,30 +258,6 @@ def test_build_persists_all_eligible_splits_and_reuses_one_scorer(
         expected_paths.append(path_by_visual_input[row["visual_input_id"]])
     assert [path.name for call in scorer.calls for path in call] == expected_paths
     assert scorer.close_calls == 0
-
-
-def test_crop_runtime_binds_loaded_worker_attestation_to_readiness(
-    tmp_path: Path,
-) -> None:
-    manifest = _support_manifest(tmp_path, (("media-a", "support_train"),))
-    permit = _permit(manifest)
-    persistent = FakeScorer({})
-    scorer = EphemeralCropBioClipScorer(
-        scorer=persistent,
-        image_loader=lambda _record: None,
-        temp_dir=tmp_path / "crops",
-        model_id=persistent.model_id,
-        model_version="unbound",
-        model_checkpoint=persistent.model_revision,
-    )
-
-    scorer.bind_reference_readiness(permit)
-
-    assert persistent.attestation_calls == 1
-    assert scorer.checkpoint_sha256 == permit.checkpoint_sha256
-    assert scorer.preprocessing_version == permit.preprocessing_version
-    assert scorer.input_contract_version == permit.input_contract_version
-    assert scorer.model_input_fingerprint == permit.model_input_fingerprint
 
 
 def test_build_is_semantically_deterministic_across_order_batching_and_time(

@@ -117,7 +117,7 @@ Default tests must:
 
 - route separation;
 - full-frame transform identity;
-- no silent crop in target-aware mode;
+- no spatial-crop implementation or callable fallback;
 - one raw embedding per image;
 - cache invalidation;
 - fixed-k and balanced prototypes;

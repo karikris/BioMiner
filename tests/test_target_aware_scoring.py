@@ -168,28 +168,6 @@ def test_target_aware_scoring_rejects_any_missing_candidate_score() -> None:
         score_target_aware_candidate_union(plan, MissingTargetScorer())
 
 
-def test_target_aware_scoring_never_calls_the_legacy_guardrail(monkeypatch) -> None:
-    from biominer.bioclip import path_cascade_classifier
-
-    def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-        raise AssertionError(f"legacy guardrail called with {args!r}, {kwargs!r}")
-
-    monkeypatch.setattr(
-        path_cascade_classifier,
-        "_guardrail_confidence",
-        fail_if_called,
-    )
-    plan = build_target_aware_scoring_plan(
-        _regional_candidate_set(candidate_count=3),
-        known_negative_classes=_known_negatives(),
-        visual_domain_classes=_visual_domains(),
-    )
-
-    result = score_target_aware_candidate_union(plan, _RecordingScorer())
-
-    assert len(result.species_scores) == 3
-
-
 def test_target_aware_plan_requires_versioned_regional_union_identity() -> None:
     candidate_set = _regional_candidate_set(candidate_count=3)
     without_fingerprint = replace(candidate_set, candidate_set_fingerprint=None)

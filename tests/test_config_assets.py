@@ -14,7 +14,6 @@ def test_authoritative_unified_registry_docs_exist() -> None:
         Path("docs/production.md"),
         Path("docs/vision.md"),
         Path("docs/migrations/unified-registry.md"),
-        Path("config/vision_profiles/mac_m5pro_64gb.json"),
     ):
         assert path.exists(), path
 
@@ -40,7 +39,7 @@ def test_authoritative_examples_separate_registry_and_run_roots() -> None:
         assert forbidden not in text
 
 
-def test_production_run_defaults_to_rolling_worker_without_public_switch() -> None:
+def test_production_run_has_no_retired_worker_switch() -> None:
     parser = build_parser()
     args = parser.parse_args(
         [

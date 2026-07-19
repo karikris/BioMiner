@@ -8,10 +8,10 @@
       "sha256": "35a9379d654d5e8e6dba894c9be75ae3d516a73643cb0ae821704de94877683e"
     },
     {
-      "bytes": 30348,
-      "lines": 561,
+      "bytes": 30631,
+      "lines": 565,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "8ef8591c2afc782eb9bf3c4167027be3fcf49d222eedf1ad2e9aa657528b85da"
+      "sha256": "02ae16e8ea288e64902f5aa71f57ec4d0d47c9748873deac746d800345d0fb5d"
     },
     {
       "bytes": 5599,
@@ -32,10 +32,10 @@
       "sha256": "866e619bbd15afa3d3b127df7030dfc769948fdce439029e3071357fb4614aac"
     },
     {
-      "bytes": 9665,
-      "lines": 340,
+      "bytes": 9781,
+      "lines": 332,
       "path": "docs/agents/SCIENCE_AND_PIPELINE.md",
-      "sha256": "b8fb4c8bcae4f3677fa68a67cb55a8bde98457c328ef54220036ded8ad1727a3"
+      "sha256": "fe5c3aaa6df48ec591537858d0ddb70e4e3d830c77c030647430963eb4578673"
     },
     {
       "bytes": 1808,
@@ -44,10 +44,10 @@
       "sha256": "fdee1716105402997b0437e6802ade8c8c12383b963ff9f0348c67af9988c4e7"
     },
     {
-      "bytes": 6916,
+      "bytes": 6932,
       "lines": 233,
       "path": "docs/agents/TESTING_AND_RELEASE.md",
-      "sha256": "991d33a033b60cffa32124f823aa2525966b953bda9fb9809dbe1bb1b80820a0"
+      "sha256": "f8f7e5b1d610ae27aacb970624d7f817a4f650cabba69ede72e98df1112874ca"
     },
     {
       "bytes": 6049,

@@ -18,8 +18,8 @@ at the start of every task.
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Active post-uplift simplification head:
-  `d9e78bc43744e83bb85b6707fb72602427ff7ab7`
-  (`test(regression): freeze historical contract assertions`)
+  `bfdb4b38646f16062d7fb4a6d0f4b0674c8f01dd`
+  (`refactor(run): remove alternate workflow modes`)
 - Post-uplift simplification completed and pushed through that head:
   - `eef126a`: removed an inert classification switch and no-op registry
     wrappers; 81 focused tests passed;
@@ -38,11 +38,13 @@ at the start of every task.
     150 adjacent tests passed; and
   - `d9e78bc`: froze historical baseline assertions and rebound ButterflyLens
     database invariants to their exact owning objects at the pinned consumer
-    commit. The full repository gate passed: 3,192 tests in 150.00 seconds.
-- `a76781a` records the post-uplift architecture audit. The remaining cutover
-  work is to remove the callable cascade/crop/bucket runtime and alternate
-  workflow plans, retain the full-frame adaptive contracts, then run broad
-  dead-code, regression, and measured-reduction gates.
+    commit. The full repository gate passed: 3,192 tests in 150.00 seconds; and
+  - `bfdb4b3`: removed alternate legacy/reference-first stage plans and Build
+    Week runtime wrappers. The full repository gate passed: 3,176 tests.
+- `a76781a` records the post-uplift architecture audit. The current coherent
+  cutover removes the callable cascade/crop/bucket/cloud/rolling runtime,
+  retains the stable detection schema and full-frame adaptive contracts, and
+  replaces built-in legacy stage execution with explicit stage ownership.
 - GitHits is disabled by the user's current directive for every remaining
   cleanup task. Use repository history, exact committed sibling objects,
   schemas, manifests, and tests; never fabricate a GitHits result.
@@ -495,18 +497,20 @@ At the current cleanup head:
 - the one-off Build Week runtime mode and the alternate `legacy` and
   `reference-first` run selectors have been removed; `run` now exposes only
   the adaptive stage graph;
-- the family/genus cascade, crop and bucket production implementation still
-  exists but is a pending removal target, not a supported fallback;
-- `src/biominer/run/orchestrator.py` retains legacy cascade and visual-mode
-  compatibility fields alongside adaptive defaults.
+- the family/genus cascade, crop and bucket production implementation, cloud
+  wrappers, rolling worker, and phantom production runtime profile have been
+  removed in the current cutover;
+- `src/biominer/run/orchestrator.py` owns planning, manifests, dependency
+  preflight, dry-run behavior, and manual-review pauses; live computation is
+  owned by explicit injected stage handlers;
 - `src/biominer/run/stages.py` retains only the adaptive stage plan; legacy
-  stage enum members remain temporarily until their runner code is removed.
+  enum labels used by concrete `biominer references` operations remain outside
+  the production plan until stage vocabulary is separated.
 
 Therefore:
 
 - do not treat explicitly labelled legacy prose as active-goal authority;
-- remove each remaining legacy path only in a coherent migration task with
-  negative surface checks and adjacent regression coverage;
+- keep historical crop columns null/`not_created` and reject removed switches;
 - do not let compatibility paths silently control adaptive output;
 - keep public, schema, governance and agent documentation aligned when a
   versioned contract or accepted default changes.

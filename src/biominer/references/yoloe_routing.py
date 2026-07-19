@@ -23,7 +23,6 @@ from biominer.vision.full_frame_attention import (
     generate_full_frame_attention_variants,
     raw_full_frame_visual_input,
 )
-from biominer.vision.target_full_frame import target_full_frame_detection_run_policy
 
 
 REFERENCE_YOLOE_ROUTING_SCHEMA_VERSION = "reference-yoloe-routing-v1.0.0"
@@ -126,7 +125,7 @@ def run_reference_yoloe_routing(
         output_path=detections_path,
         image_loader=load,
         detection_policy=detection_policy,
-        run_policy=target_full_frame_detection_run_policy(run_policy),
+        run_policy=run_policy,
     )
     routes = compile_reference_yoloe_routes(
         source_rows=source_rows,

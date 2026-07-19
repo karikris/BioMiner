@@ -3,11 +3,6 @@ from biominer.detection.pipeline import DetectionPipelineResult, run_detection_p
 from biominer.detection.policy import (
     DetectionPolicy,
     DetectionRunPolicy,
-    RuntimeProfile,
-    VisionRuntimeSettings,
-    runtime_profile,
-    validate_vision_runtime_settings,
-    vision_runtime_settings,
 )
 from biominer.detection.routing import (
     BIOCLIP_ROUTES,
@@ -40,14 +35,9 @@ __all__ = [
     "DETECTOR_ROUTE_CONTRACT_SCHEMA_VERSION",
     "FakeObjectDetector",
     "ObjectDetector",
-    "RuntimeProfile",
     "ROUTING_ACTIONS",
     "ROUTING_PRIORITIES",
-    "VisionRuntimeSettings",
     "build_detector_route_contract",
     "run_detection_pipeline",
     "route_detection",
-    "runtime_profile",
-    "validate_vision_runtime_settings",
-    "vision_runtime_settings",
 ]

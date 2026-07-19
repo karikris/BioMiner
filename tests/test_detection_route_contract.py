@@ -7,10 +7,6 @@ import json
 
 import pytest
 
-from biominer.detection.cloud_work import (
-    detection_work_item,
-    run_cloud_detection_batch,
-)
 from biominer.detection.detector_base import DecodedImage, FakeObjectDetector
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy
@@ -111,50 +107,6 @@ def test_local_pipeline_rejects_backend_drift_and_reports_contract(tmp_path) -> 
     assert result.detector_route_contract_version == expected.contract_version
     assert result.detector_execution_mode == "injected"
     assert result.detector_model_load_count == 0
-
-
-def test_cloud_batch_fails_closed_on_queued_detector_or_policy_drift() -> None:
-    payload = detection_work_item(
-        {
-            "source": "flickr",
-            "flickr_photo_id": "photo-1",
-            "source_record_hash": "sha256:source-1",
-            "image_url": "memory://photo-1",
-        },
-        run_id="run-1",
-        source_shard_uri="s3://bucket/source.parquet",
-        detector={
-            "backend": "fake",
-            "model_id": "fake-detector",
-            "model_version": "test",
-            "checkpoint": "fake-checkpoint",
-        },
-        detection_policy=DetectionPolicy(backend="fake"),
-    )
-    work_item = {"work_key": payload["work_key"], "payload": payload}
-
-    assert payload["detector_route_contract"]["contract_fingerprint"]
-
-    class DriftedDetector(FakeObjectDetector):
-        checkpoint = "different-checkpoint"
-
-    with pytest.raises(ValueError, match="differs from queued work"):
-        run_cloud_detection_batch(
-            work_items=[work_item],
-            detector=DriftedDetector(),
-            image_loader=lambda _record: _image(),
-            detection_policy=DetectionPolicy(backend="fake"),
-        )
-
-    with pytest.raises(ValueError, match="differs from queued work"):
-        run_cloud_detection_batch(
-            work_items=[work_item],
-            detector=FakeObjectDetector(),
-            image_loader=lambda _record: _image(),
-            detection_policy=DetectionPolicy(
-                backend="fake", box_score_threshold=0.25
-            ),
-        )
 
 
 def _image() -> DecodedImage:

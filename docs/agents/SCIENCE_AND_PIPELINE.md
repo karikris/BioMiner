@@ -81,8 +81,9 @@ For target-aware work:
 - do not delete species because a family/genus text rank was weak;
 - higher-rank evidence is diagnostic or derived after species scoring.
 
-Legacy hierarchical cascade behavior may remain behind explicit modes for
-regression or diagnostics. Do not let it control adaptive target-aware output.
+The hierarchical cascade implementation has been removed. Historical fixtures
+may still describe its rows, but production and diagnostics must not recreate
+it as a fallback.
 
 ## Reference acquisition and admission
 
@@ -169,8 +170,9 @@ multi_object_full_frame
 Do not silently spatially crop or manufacture detail. If the subject is too
 small, lower evidence, abstain, or route to review.
 
-Legacy detector-crop modes may remain only when explicitly selected and clearly
-labelled.
+Detector-crop modes have been removed. The stable detection schema retains
+nullable historical crop columns only for consumer compatibility; current
+producers must leave them null and `not_created`.
 
 ## BioCLIP
 
@@ -318,23 +320,13 @@ scientific publication
 
 Every public or report field must disclose the correct maturity.
 
-## Legacy compatibility
+## Removed legacy paths
 
-The repository still contains older:
-
-- family-first hierarchy;
-- genus shortcut;
-- crop path;
-- Gold/Silver/Bronze/Bin buckets;
-- comment promotion;
-- direct detection/scoring stages.
-
-Do not:
-
-- make them adaptive defaults;
-- cite them as current scientific policy;
-- remove them casually;
-- restore them to satisfy stale tests.
+The family-first hierarchy, genus shortcut, detector-crop path,
+Gold/Silver/Bronze/Bin buckets, comment promotion, direct cloud scoring, and
+rolling worker have been deleted. Preserve historical evidence in Git and
+frozen reports; do not restore executable compatibility wrappers to satisfy a
+stale test or artifact.
 
 Migration requires explicit mode boundaries, artifact compatibility, replacement
 tests, and updated docs.

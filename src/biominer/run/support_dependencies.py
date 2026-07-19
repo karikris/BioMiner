@@ -27,7 +27,7 @@ SUPPORT_DEPENDENT_STAGES: frozenset[RunStage] = frozenset(
     {
         RunStage.FLICKR_DETECTION,
         RunStage.FLICKR_EMBEDDING,
-        RunStage.TARGET_AWARE_SCORING,
+        RunStage.DYNAMIC_POOL_SCORING,
     }
 )
 SUPPORT_SCORING_MODES = frozenset(

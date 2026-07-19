@@ -2,8 +2,6 @@ from biominer.vision.bioclip_input_contract import (
     BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION,
     DYNAMIC_POOL_VISUAL_MODE,
     FULL_FRAME_BIOCLIP_VISUAL_INPUT_KINDS,
-    LEGACY_BIOCLIP_VISUAL_INPUT_KINDS,
-    LEGACY_OBJECT_VISUAL_MODE,
     BioClipVisualInputContract,
     bioclip_visual_input_contract,
 )
@@ -35,11 +33,6 @@ from biominer.vision.full_frame_attention import (
     generate_full_frame_attention_variants,
     raw_full_frame_visual_input,
 )
-from biominer.vision.score_inputs import (
-    BIOCLIP_SCORE_INPUT_SCHEMA,
-    MaterializedBioClipScoreInputs,
-    materialize_bioclip_score_inputs,
-)
 from biominer.vision.memory_aware_batching import (
     ImageBatchAttempt,
     MemoryAwareImageBatchMetrics,
@@ -70,7 +63,6 @@ from biominer.vision.target_full_frame import (
     encode_target_full_frame_plan,
     full_frame_embedding_id,
     generate_target_full_frame_attention_variants,
-    target_full_frame_detection_run_policy,
 )
 from biominer.vision.flickr_embeddings import (
     FLICKR_EMBEDDING_BINDINGS_FILE,
@@ -90,7 +82,6 @@ from biominer.vision.flickr_embeddings import (
 )
 
 __all__ = [
-    "BIOCLIP_SCORE_INPUT_SCHEMA",
     "BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION",
     "DYNAMIC_POOL_VISUAL_MODE",
     "FLICKR_EMBEDDING_BINDINGS_FILE",
@@ -105,8 +96,6 @@ __all__ = [
     "MASKED_FULL_FRAME_KIND",
     "MASK_COVERAGE_BASIS_RASTERIZED_POLYGON",
     "MULTI_OBJECT_FULL_FRAME_KIND",
-    "LEGACY_BIOCLIP_VISUAL_INPUT_KINDS",
-    "LEGACY_OBJECT_VISUAL_MODE",
     "RAW_FULL_IMAGE_KIND",
     "RAW_FULL_IMAGE_TRANSFORMATION_FINGERPRINT",
     "TARGET_AWARE_VISUAL_MODE",
@@ -130,7 +119,6 @@ __all__ = [
     "FullFrameVariantEvidence",
     "FlickrEmbeddingArtifacts",
     "FlickrEmbeddingPersistenceResult",
-    "MaterializedBioClipScoreInputs",
     "MemoryAwareImageBatchMetrics",
     "MemoryAwareImageBatchPolicy",
     "MemoryAwareImageEncodingResult",
@@ -158,12 +146,10 @@ __all__ = [
     "full_frame_embedding_id",
     "generate_full_frame_attention_variants",
     "generate_target_full_frame_attention_variants",
-    "materialize_bioclip_score_inputs",
     "load_flickr_embedding_artifacts",
     "is_image_memory_error",
     "persist_reusable_flickr_embeddings",
     "raw_full_frame_visual_input",
     "raw_full_frame_embeddings_from_cache",
-    "target_full_frame_detection_run_policy",
     "validate_flickr_embedding_artifacts",
 ]

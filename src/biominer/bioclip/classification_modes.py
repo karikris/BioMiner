@@ -3,15 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeGuard
 
-from biominer.bioclip.cascade_contract import (
-    DEFAULT_RANK_BEAM_WIDTH,
-    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
-    DEFAULT_SPECIES_REPORT_TOP_K,
-    DEFAULT_SPECIES_RERANK_TOP_K,
-    GLOBAL_RANK_TOP_K_BEAM_STRATEGY,
-)
-
-
 ClassificationMode = Literal[
     "target_scope_object_screening",
     "hierarchical_butterfly_classification",
@@ -25,12 +16,7 @@ HIERARCHICAL_BUTTERFLY_CLASSIFICATION: ClassificationMode = (
 TARGET_AWARE_FEW_SHOT_CLASSIFICATION: ClassificationMode = (
     "target_aware_few_shot_classification"
 )
-DEFAULT_CLASSIFICATION_MODE: ClassificationMode = TARGET_SCOPE_OBJECT_SCREENING
-# Promote this to the default only after the frozen pilot satisfies its acceptance policy.
-POST_PILOT_PRODUCTION_CLASSIFICATION_MODE: ClassificationMode = (
-    TARGET_AWARE_FEW_SHOT_CLASSIFICATION
-)
-TARGET_FAMILY_REPORT_TOP_K = 3
+DEFAULT_CLASSIFICATION_MODE: ClassificationMode = TARGET_AWARE_FEW_SHOT_CLASSIFICATION
 
 SUPPORTED_CLASSIFICATION_MODES: tuple[ClassificationMode, ...] = (
     TARGET_SCOPE_OBJECT_SCREENING,
@@ -130,17 +116,10 @@ __all__ = [
     "CLASSIFICATION_MODE_ALIASES",
     "ClassificationModeContract",
     "DEFAULT_CLASSIFICATION_MODE",
-    "DEFAULT_RANK_BEAM_WIDTH",
-    "DEFAULT_SPECIES_FIRST_PASS_TOP_K",
-    "DEFAULT_SPECIES_REPORT_TOP_K",
-    "DEFAULT_SPECIES_RERANK_TOP_K",
-    "GLOBAL_RANK_TOP_K_BEAM_STRATEGY",
     "HIERARCHICAL_BUTTERFLY_CLASSIFICATION",
-    "POST_PILOT_PRODUCTION_CLASSIFICATION_MODE",
     "SUPPORTED_CLASSIFICATION_MODES",
     "TARGET_AWARE_FEW_SHOT_CLASSIFICATION",
     "TARGET_SCOPE_OBJECT_SCREENING",
-    "TARGET_FAMILY_REPORT_TOP_K",
     "ClassificationMode",
     "classification_mode_contract",
     "is_hierarchical_classification",

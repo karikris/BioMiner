@@ -93,16 +93,17 @@ candidates and are excluded from all cleanup commits.
 
    The callable model-free cascade benchmark and its synthetic fixture have now
    been removed. The classification-v3 text-cache builder and the remaining
-   plumbing, rolling, and M5Pro crop/cascade benchmark harnesses have also been
-   removed. The production cascade cutover remains a separate gated subtask
-   because it is intertwined with the old cloud runner and evidence join.
+   plumbing, rolling, and M5Pro crop/cascade benchmark harnesses were removed
+   first. The production cascade, crop generator, object-evidence buckets,
+   cloud wrappers, and rolling worker are now removed as one coherent cutover;
+   the stable detector schema retains nullable historical crop fields.
 
 4. **Legacy/default/reference-first workflow layers.** Completed on
    2026-07-19: the alternate workflow selector, legacy/default and
    reference-first stage plans, and one-off Build Week runtime configuration
    and permit wrappers were removed. `run` now resolves one adaptive graph.
-   Legacy stage enum members remain only until the intertwined cascade runner
-   is removed.
+   Concrete reference-command stage labels remain outside the adaptive plan
+   until that vocabulary is separated from production orchestration.
 
 5. **Inert switches and forwarding helpers.** The first cleanup removed the
    hidden registry `--skip-classification` switch, two no-op wrappers, and stale
@@ -154,8 +155,10 @@ not by importing product implementation code.
 ### A. Remove misleading legacy authority
 
 1. Remove comment enrichment/review and all automatic promotion.
-2. Remove bucket/cascade/classification-v3 production surfaces and artifacts.
-3. Remove alternate workflow plans and legacy-only configuration.
+2. Remove frozen cascade-specific evaluation compatibility after confirming no
+   current report or consumer depends on it.
+3. Separate concrete reference-operation labels from adaptive production-stage
+   vocabulary.
 
 Gate: no removed symbol is importable or parseable; current adaptive schema,
 science, CLI, and orchestrator tests pass; migration documentation states how
@@ -165,8 +168,8 @@ to retain historical artifacts without reinterpretation.
 
 1. Remove the disconnected plan-only dynamic command layer; use the concrete
    `references` application commands for artifact work.
-2. Route the canonical orchestrator stages through those same owning
-   application functions instead of duplicating transformations.
+2. Bind each live canonical stage to one explicit owning adapter; unconfigured
+   live stages fail closed instead of falling back to old transformations.
 3. Keep manual-review stages awaiting explicit signed review input.
 4. Fail closed on missing, stale, incompatible, or partially written inputs.
 

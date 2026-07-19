@@ -34,12 +34,13 @@ human verification always blocks final occurrence release. Strict projects set
 readiness, evidence-maturity and selective-rerun contract is documented in
 [Adaptive GBIF fast-start](adaptive_gbif_fast_start.md).
 
-The target-aware rolling worker uses bounded queues between staging, full-frame
-quality routing, one-time image embedding, cached-vector scoring, and commit.
-Workers return plain results; the coordinator merges, sorts, deduplicates,
-writes Parquet, registers immutable shards, and removes temporary images only
-after durable commit. Reference-pool and matrix identities are independently
-versioned, so pool changes reuse compatible Flickr and reference embeddings.
+`biominer run` owns one adaptive stage graph, planning, scope resolution,
+manual-review pauses, support-dependency preflight, and manifest publication.
+Concrete live stage operations are supplied by explicit stage owners; an
+unconfigured live stage fails closed. Dry-run records the plan without opening
+the workstore or running acquisition and model code. Reference-pool and matrix
+identities are independently versioned, so pool changes reuse compatible
+Flickr and reference embeddings.
 
 Cloud runs require S3-compatible storage and a PostgreSQL-compatible workstore. Local development can use filesystem storage and SQLite. Work claims, retry state, committed shard inventories, and source evidence make runs resumable and idempotent.
 
@@ -72,15 +73,14 @@ support, occurrence-release maturity, and downstream handoff maturity are
 separate contracts. Unreviewed Flickr records cannot enter the verified
 occurrence export.
 
-The alternate `legacy` and `reference-first` workflow selectors and the
-one-off Build Week runtime mode were removed on 2026-07-19. The family/genus
-cascade, the strictly-above-0.90 genus shortcut, per-detection crop
-materialization, and bucketed visual modes remain temporarily in source while
-their intertwined runner is removed; they are not supported fallbacks and are
-not part of the adaptive stage graph. Existing historical hierarchical
-artifacts remain in Git. They must not substitute for adaptive full-frame
-dynamic-pool output. See the
-[migration note](migrations/alternate-workflow-removal.md).
+The alternate `legacy` and `reference-first` workflow selectors, one-off Build
+Week mode, family/genus cascade, strictly-above-0.90 genus shortcut,
+per-detection crop materialization, bucketed visual modes, and rolling cloud
+worker were removed on 2026-07-19. There is no supported runtime fallback.
+Existing historical artifacts remain in Git and cannot substitute for
+adaptive full-frame dynamic-pool output. See the
+[workflow migration](migrations/alternate-workflow-removal.md) and
+[vision-runtime migration](migrations/cascade-crop-runtime-removal.md).
 
 ## Example
 
@@ -90,7 +90,6 @@ uv run biominer --config config/biominer.cloud.example.toml run \
   --rank family \
   --registry-dir s3://biominer/registry/butterflies-v2 \
   --output-prefix s3://biominer/runs/current \
-  --classification-mode target_aware_few_shot_classification \
   --reference-admission-mode adaptive_gbif_fast_start \
   --reference-source gbif \
   --initial-scoring-mode provisional_reference_ranking \

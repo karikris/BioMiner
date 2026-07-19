@@ -86,52 +86,6 @@ def test_manual_review_approval_rejects_invalid_transition() -> None:
         waiting.with_manual_review_approval(RunStage.REFERENCE_REVIEW, reviewer="  ")
 
 
-def test_orchestrator_pauses_at_manual_review_without_completing_it(
-    tmp_path: Path,
-) -> None:
-    called: list[RunStage] = []
-
-    def complete(stage: RunStage) -> object:
-        def handler(_plan: object) -> StageExecutionResult:
-            called.append(stage)
-            return StageExecutionResult(outputs={"artifact": f"{stage.value}.parquet"})
-
-        return handler
-
-    stages = (
-        RunStage.REFERENCE_METADATA,
-        RunStage.REFERENCE_REVIEW,
-        RunStage.REFERENCE_EMBEDDINGS,
-    )
-    request = ProductionRunRequest(
-        taxon="Papilio demoleus",
-        rank="species",
-        output_root=tmp_path,
-        run_id="manual-review-pause",
-        stages=stages,
-    )
-    result = ProductionRunOrchestrator(
-        request,
-        taxon_scope=_taxon_scope(),
-        stage_handlers={stage: complete(stage) for stage in stages},
-    ).run()
-
-    records = {record.stage: record for record in result.manifest.stages}
-    assert called == [RunStage.REFERENCE_METADATA, RunStage.REFERENCE_REVIEW]
-    assert result.manifest.status == StageStatus.AWAITING_MANUAL_REVIEW.value
-    assert result.manifest.ended_at is None
-    assert records[RunStage.REFERENCE_METADATA].status is StageStatus.COMPLETE
-    assert (
-        records[RunStage.REFERENCE_REVIEW].status is StageStatus.AWAITING_MANUAL_REVIEW
-    )
-    assert records[RunStage.REFERENCE_REVIEW].message == "manual_review_required"
-    assert records[RunStage.REFERENCE_REVIEW].outputs == {
-        "artifact": "reference_review.parquet"
-    }
-    assert records[RunStage.REFERENCE_REVIEW].ended_at is None
-    assert records[RunStage.REFERENCE_EMBEDDINGS].status is StageStatus.PENDING
-
-
 def test_dynamic_workflow_stops_before_risk_audit_for_human_review(
     tmp_path: Path,
 ) -> None:

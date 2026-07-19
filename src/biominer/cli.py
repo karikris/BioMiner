@@ -5,7 +5,6 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 import hashlib
-from html import escape
 import io
 import json
 import logging
@@ -17,22 +16,8 @@ from typing import Any
 
 import polars as pl
 
-from biominer.bioclip.classification_modes import (
-    DEFAULT_CLASSIFICATION_MODE,
-    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    SUPPORTED_CLASSIFICATION_MODES,
-    normalize_classification_mode,
-)
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
-from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
-from biominer.bioclip.object_runner import (
-    write_object_evidence_outputs,
-)
 from biominer.detection.evaluate import evaluate_xie_style
-from biominer.detection.policy import (
-    VisionRuntimeSettings,
-    vision_runtime_settings,
-)
 from biominer.evaluation.labels import (
     normalize_reviewed_label_frame,
     read_reviewed_labels,
@@ -115,7 +100,6 @@ from biominer.run.adaptive_config import (
     REFERENCE_ADMISSION_MODES,
 )
 from biominer.secrets_loader import load_runtime_secrets_env
-from biominer.species.context import SpeciesContext
 from biominer.config import ConfigError, create_storage_backend, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.handoff import (
     build_handoff_bundle,
@@ -175,25 +159,27 @@ RUN_STAGE_ALIASES = {
     "regional_candidate_generation": RunStage.REGIONAL_CANDIDATE_GENERATION,
     "reference_metadata": RunStage.REFERENCE_METADATA,
     "reference_media": RunStage.REFERENCE_MEDIA,
-    "reference_review": RunStage.REFERENCE_REVIEW,
     "reference_embeddings": RunStage.REFERENCE_EMBEDDINGS,
     "reference_prototypes": RunStage.REFERENCE_PROTOTYPES,
-    "classifier_training": RunStage.CLASSIFIER_TRAINING,
-    "classifier_calibration": RunStage.CLASSIFIER_CALIBRATION,
-    "reference_readiness": RunStage.REFERENCE_READINESS,
     "flickr_detection": RunStage.FLICKR_DETECTION,
     "flickr_embedding": RunStage.FLICKR_EMBEDDING,
-    "target_aware_scoring": RunStage.TARGET_AWARE_SCORING,
-    "evidence": RunStage.EVIDENCE,
-    "evaluation": RunStage.EVALUATION,
-    "detect": RunStage.DETECT_OBJECTS,
-    "detect_objects": RunStage.DETECT_OBJECTS,
-    "score": RunStage.SCORE_BIOCLIP,
-    "score_bioclip": RunStage.SCORE_BIOCLIP,
-    "join": RunStage.JOIN_EVIDENCE,
-    "join_evidence": RunStage.JOIN_EVIDENCE,
-    "summarize": RunStage.SUMMARIZE,
-    "summary": RunStage.SUMMARIZE,
+    "reference_deduplication": RunStage.REFERENCE_DEDUPLICATION,
+    "reference_quality_routing": RunStage.REFERENCE_QUALITY_ROUTING,
+    "reference_admission": RunStage.REFERENCE_ADMISSION,
+    "reference_geography_index": RunStage.REFERENCE_GEOGRAPHY_INDEX,
+    "flickr_geo_taxon_partitioning": RunStage.FLICKR_GEO_TAXON_PARTITIONING,
+    "family_routing": RunStage.FAMILY_ROUTING,
+    "dynamic_pool_planning": RunStage.DYNAMIC_POOL_PLANNING,
+    "dynamic_pool_scoring": RunStage.DYNAMIC_POOL_SCORING,
+    "provisional_flickr_scoring": RunStage.PROVISIONAL_FLICKR_SCORING,
+    "review_sample_planning": RunStage.REVIEW_SAMPLE_PLANNING,
+    "flickr_human_verification": RunStage.FLICKR_HUMAN_VERIFICATION,
+    "risk_controlled_audit": RunStage.RISK_CONTROLLED_AUDIT,
+    "statistical_reference_audit": RunStage.STATISTICAL_REFERENCE_AUDIT,
+    "targeted_reference_review": RunStage.TARGETED_REFERENCE_REVIEW,
+    "affected_reference_rebuild": RunStage.AFFECTED_REFERENCE_REBUILD,
+    "affected_record_rescore": RunStage.AFFECTED_RECORD_RESCORE,
+    "final_quality_gate": RunStage.FINAL_QUALITY_GATE,
 }
 
 
@@ -202,11 +188,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    evidence = subparsers.add_parser("evidence")
-    evidence_subparsers = evidence.add_subparsers(dest="evidence_command")
-    evidence_join = evidence_subparsers.add_parser("join")
-    _add_object_evidence_join_args(evidence_join)
-    evidence_join.add_argument("--species-context")
     evaluation = subparsers.add_parser("evaluation")
     evaluation_subparsers = evaluation.add_subparsers(dest="evaluation_command")
     evaluation_classify = evaluation_subparsers.add_parser("classify")
@@ -295,14 +276,6 @@ def build_parser() -> argparse.ArgumentParser:
     references_readiness.add_argument("--run-id")
     bioclip = subparsers.add_parser("bioclip")
     bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
-    bioclip_screen = bioclip_subparsers.add_parser("screen")
-    bioclip_screen.add_argument("--input", required=True)
-    bioclip_screen.add_argument("--output-dir", required=True)
-    bioclip_screen.add_argument("--registry-dir", required=True, help="Unified registry containing species_paths.parquet")
-    bioclip_screen.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    bioclip_screen.add_argument("--taxonomy-text-embedding-cache")
-    bioclip_screen.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    bioclip_screen.add_argument("--dry-run", action="store_true")
     bioclip_evidence = bioclip_subparsers.add_parser("prototype-evidence")
     bioclip_evidence.add_argument("--config", required=True)
     registry = subparsers.add_parser("registry")
@@ -463,34 +436,6 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--output-prefix", required=True)
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
-    production_run.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
-    production_run.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
-    production_run.add_argument("--yolo-checkpoint")
-    production_run.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
-    production_run.add_argument("--yolo-imgsz", type=int)
-    production_run.add_argument("--yolo-batch", type=int)
-    production_run.add_argument(
-        "--possible-adult-route",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-    )
-    production_run.add_argument("--possible-adult-route-threshold", type=float)
-    production_run.add_argument(
-        "--ambiguous-insect-review",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-    )
-    production_run.add_argument("--ambiguous-insect-review-threshold", type=float)
-    production_run.add_argument("--bioclip-batch", type=int)
-    production_run.add_argument("--adaptive-batching", action="store_true")
-    production_run.add_argument("--bioclip-top-k", type=int)
-    production_run.add_argument(
-        "--classification-mode",
-        type=_classification_mode_arg,
-        choices=SUPPORTED_CLASSIFICATION_MODES,
-        default=DEFAULT_CLASSIFICATION_MODE,
-    )
-    production_run.add_argument("--taxonomy-text-embedding-cache")
     production_run.add_argument("--regional-candidates")
     production_run.add_argument("--reference-embeddings")
     production_run.add_argument("--classifier-artifact")
@@ -553,12 +498,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="declare each downstream split that may consume admitted references",
     )
-    production_run.add_argument("--crop-padding-ratio", type=float)
-    production_run.add_argument("--parquet-compression")
-    production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
     production_run.add_argument("--stages")
     production_run.add_argument("--dry-run", action="store_true")
-    production_run.add_argument("--build-registry-if-missing", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
     production_run.add_argument("--limit-records", type=int, default=0)
     return parser
@@ -579,14 +520,6 @@ def _add_poll_once_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--evidence-stage", default="poll_once")
     parser.add_argument("--no-compact", action="store_true")
     parser.add_argument("--config")
-
-
-def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--detections", required=True)
-    parser.add_argument("--scores", required=True)
-    parser.add_argument("--joined-output", required=True)
-    parser.add_argument("--photo-summary-output", required=True)
 
 
 def _add_dev_vision_commands(subparsers: Any) -> None:
@@ -630,10 +563,6 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     prototype_benchmark.add_argument("--config", required=True)
     prototype_policy = subparsers.add_parser("prototype-select-policy")
     prototype_policy.add_argument("--config", required=True)
-    detect_crop_preview = subparsers.add_parser("crop-preview")
-    detect_crop_preview.add_argument("--detections", required=True)
-    detect_crop_preview.add_argument("--output", required=True)
-    detect_crop_preview.add_argument("--limit", type=int, default=200)
     detect_eval = subparsers.add_parser("eval")
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
@@ -667,8 +596,6 @@ def run(args: argparse.Namespace) -> int:
             return _run_prototype_benchmark_matrix(args)
         if args.vision_command == "prototype-select-policy":
             return _run_prototype_policy_selection(args)
-        if args.vision_command == "crop-preview":
-            return _run_detect_crop_preview(args)
         if args.vision_command == "eval":
             return _run_detect_eval(args)
         return 2
@@ -701,30 +628,6 @@ def run(args: argparse.Namespace) -> int:
                 )
             )
             return 0
-        if args.bioclip_command != "screen":
-            return 2
-        registry = Path(args.registry_dir)
-        try:
-            store = PathTaxonomyStore.read(registry)
-        except (FileNotFoundError, ValueError) as exc:
-            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-            return 2
-        payload = {
-            "status": "validated" if args.dry_run else "ready",
-            "input": args.input,
-            "output_dir": args.output_dir,
-            "registry_dir": str(registry),
-            "rank_order": list(getattr(store, "rank_order", ("FAMILY", "SUBFAMILY", "TRIBE", "SUBTRIBE", "GENUS", "SPECIES"))),
-            "classification_fingerprint": store.classification_fingerprint,
-            "dry_run": bool(args.dry_run),
-        }
-        if not args.dry_run:
-            payload["next_command"] = "biominer run (screen execution remains orchestrated through the production run command)"
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    if args.command == "evidence":
-        if args.evidence_command == "join":
-            return _run_bioclip_join_object_evidence(args)
         return 2
     if args.command == "evaluation":
         return _run_evaluation_command(args)
@@ -1757,80 +1660,10 @@ def _storage_base_uri(*, storage: object, config: object) -> str:
     return str(getattr(storage_config, "prefix", "."))
 
 
-def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRuntimeSettings:
-    settings = (
-        vision_runtime_settings(args.vision_profile)
-        if getattr(args, "vision_profile", None)
-        else VisionRuntimeSettings(bioclip_model=BIOCLIP_25_HUGE_REPO_ID)
-    )
-    overrides: dict[str, object] = {}
-    if getattr(args, "device", None) is not None:
-        overrides["device"] = args.device
-    if getattr(args, "yolo_checkpoint", None) is not None:
-        overrides["yolo_checkpoint"] = args.yolo_checkpoint
-    if getattr(args, "yolo_sidecar_transport", None) is not None:
-        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
-    if getattr(args, "yolo_imgsz", None) is not None:
-        overrides["yolo_imgsz"] = args.yolo_imgsz
-    if getattr(args, "yolo_batch", None) is not None:
-        overrides["detector_batch_size"] = args.yolo_batch
-    if getattr(args, "possible_adult_route", None) is not None:
-        overrides["possible_adult_route_enabled"] = args.possible_adult_route
-    if getattr(args, "possible_adult_route_threshold", None) is not None:
-        overrides["possible_adult_route_threshold"] = (
-            args.possible_adult_route_threshold
-        )
-    if getattr(args, "ambiguous_insect_review", None) is not None:
-        overrides["ambiguous_insect_review_enabled"] = (
-            args.ambiguous_insect_review
-        )
-    if getattr(args, "ambiguous_insect_review_threshold", None) is not None:
-        overrides["ambiguous_insect_review_threshold"] = (
-            args.ambiguous_insect_review_threshold
-        )
-    if getattr(args, "bioclip_batch", None) is not None:
-        overrides["crop_batch_size"] = args.bioclip_batch
-    if getattr(args, "bioclip_top_k", None) is not None:
-        overrides["bioclip_top_k"] = args.bioclip_top_k
-    if getattr(args, "crop_padding_ratio", None) is not None:
-        overrides["crop_padding_ratio"] = args.crop_padding_ratio
-    if getattr(args, "parquet_compression", None) is not None:
-        overrides["parquet_compression"] = args.parquet_compression
-    if getattr(args, "delete_images_after_commit", None) is not None:
-        overrides["delete_images_after_commit"] = args.delete_images_after_commit
-    if getattr(args, "adaptive_batching", False):
-        overrides["adaptive_batching"] = True
-    return settings.with_overrides(**overrides) if overrides else settings.with_overrides()
-
-
-def _classification_mode_arg(value: str) -> str:
-    try:
-        return normalize_classification_mode(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-
-
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
     try:
         stages = _parse_run_stages(args.stages)
-        if (
-            not args.dry_run
-            and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
-            and not args.reference_bank_readiness
-        ):
-            raise ValueError(
-                "--reference-bank-readiness is required for non-dry detect_objects or score_bioclip stages"
-            )
-        if (
-            not args.dry_run
-            and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
-            and not args.reference_bank_readiness_sha256
-        ):
-            raise ValueError(
-                "--reference-bank-readiness-sha256 is required for non-dry "
-                "detect_objects or score_bioclip stages"
-            )
         config = load_biominer_config(args.config)
         config = replace(
             config,
@@ -1845,10 +1678,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
         registry_dir_is_cloud = is_cloud_uri(args.registry_dir)
         if args.storage_backend != "local" and (not args.dry_run or registry_dir_is_cloud):
             storage = create_storage_backend(config.storage)
-        workstore = None
-        if not args.dry_run:
-            workstore = create_workstore(config.workstore)
-            _init_workstore_schema_if_supported(workstore)
         limits = {
             key: value
             for key, value in {
@@ -1857,7 +1686,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             }.items()
             if value and value > 0
         }
-        vision_settings = _production_vision_settings_from_args(args)
         request = ProductionRunRequest(
             taxon=args.taxon,
             rank=args.rank,
@@ -1865,11 +1693,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             output_root=args.output_prefix,
             storage_backend=args.storage_backend,
             workstore_backend=args.workstore_backend,
-            bioclip_model=vision_settings.bioclip_model,
-            vision_profile=args.vision_profile,
-            vision_settings=vision_settings,
-            classification_mode=args.classification_mode,
-            taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
             reference_bank_readiness=args.reference_bank_readiness,
             reference_bank_readiness_sha256=(
                 args.reference_bank_readiness_sha256
@@ -1892,30 +1715,11 @@ def _run_production_command(args: argparse.Namespace) -> int:
             worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
-            build_registry_if_missing=args.build_registry_if_missing,
             limits=limits,
-        )
-        def create_vision_runtime() -> tuple[Any, Any, Any, list[Any]]:
-            return _create_production_vision_runtime(
-                vision_settings,
-                classification_mode=args.classification_mode,
-            )
-
-        vision_runtime_factory = (
-            create_vision_runtime
-            if not args.dry_run
-            and any(
-                stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP}
-                for stage in stages
-            )
-            else None
         )
         plan = ProductionRunOrchestrator(
             request,
             storage=storage,
-            workstore=workstore,
-            vision_runtime_factory=vision_runtime_factory,
-            flickr_api_key=os.environ.get("FLICKR_API_KEY"),
         ).run()
     except (ConfigError, FileNotFoundError, ValueError) as exc:
         payload: dict[str, object] = {"error": redact_text(str(exc), config) if config else str(exc)}
@@ -1925,62 +1729,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
     return 0
-
-
-def _create_production_vision_runtime(
-    vision_settings: VisionRuntimeSettings,
-    *,
-    classification_mode: str = DEFAULT_CLASSIFICATION_MODE,
-) -> tuple[Any, Any, Any, list[Any]]:
-    from biominer.bioclip.bioclip import PersistentBioClipScorer
-    from biominer.bioclip.object_runner import EphemeralCropBioClipScorer
-    from biominer.detection.image_io import load_decoded_image_from_record
-    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
-    from biominer.vision.full_frame_attention import (
-        TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
-    )
-
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=YOLOE26_RUNTIME_PYTHON,
-        checkpoint=vision_settings.yolo_checkpoint,
-        device=vision_settings.device,
-        imgsz=vision_settings.yolo_imgsz,
-        conf=vision_settings.yolo_conf,
-        iou=vision_settings.yolo_iou,
-        max_det=vision_settings.yolo_max_det,
-        transport=vision_settings.yolo_sidecar_transport,
-        temp_dir=Path("/tmp") / "biominer_yoloe26",
-    )
-    runtime = _bioclip_runtime(
-        runtime_python=Path(BIOCLIP_RUNTIME_PYTHON),
-        model_name=vision_settings.bioclip_model,
-    )
-    image_resize_mode = (
-        None
-        if normalize_classification_mode(classification_mode)
-        == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-        else TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
-    )
-    persistent = PersistentBioClipScorer(
-        runtime=runtime,
-        hf_cache_dir=BIOCLIP_HF_CACHE_DIR,
-        device=vision_settings.device,
-        image_resize_mode=image_resize_mode,
-        preprocess_workers=vision_settings.bioclip_preprocess_workers,
-    )
-    def image_loader(record: dict[str, Any]) -> Any:
-        return load_decoded_image_from_record(record, cache_root="data/cache/images")
-    scorer = EphemeralCropBioClipScorer(
-        scorer=persistent,
-        image_loader=image_loader,
-        temp_dir=Path("/tmp") / "biominer_bioclip_crops",
-        crop_padding_ratio=vision_settings.crop_padding_ratio,
-        crop_target_px=vision_settings.crop_target_px,
-        model_id=runtime.model.model_name.removeprefix("hf-hub:"),
-        model_version=runtime.package_version,
-        model_checkpoint=runtime.model.checkpoint,
-    )
-    return detector, image_loader, scorer, [persistent, detector]
 
 
 def _parse_run_stages(
@@ -2388,129 +2136,6 @@ def _value_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-def _run_detect_crop_preview(args: argparse.Namespace) -> int:
-    detections = pl.read_parquet(args.detections)
-    rows = _crop_preview_rows(detections, limit=max(1, args.limit))
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.suffix.lower() in {".html", ".htm"}:
-        output.write_text(_crop_preview_html(rows), encoding="utf-8")
-        output_format = "html"
-    else:
-        output.write_text(json.dumps({"preview_rows": rows}, indent=2, sort_keys=True), encoding="utf-8")
-        output_format = "json"
-    preview = {
-        "detections": args.detections,
-        "output": args.output,
-        "format": output_format,
-        "rows_seen": detections.height,
-        "preview_rows": len(rows),
-        "skipped_rows": detections.height - len(rows),
-        "storage_policy": "remote_image_references_only",
-    }
-    print(json.dumps(preview, indent=2, sort_keys=True))
-    return 0
-
-
-def _crop_preview_rows(detections: pl.DataFrame, *, limit: int) -> list[dict[str, object]]:
-    if detections.is_empty():
-        return []
-    rows: list[dict[str, object]] = []
-    for row in detections.to_dicts():
-        if len(rows) >= limit:
-            break
-        if str(row.get("detection_status") or "") != "detected":
-            continue
-        image_url = str(row.get("image_url") or "")
-        bbox = _normalised_bbox(row.get("bbox_xyxyn"))
-        if not image_url or bbox is None:
-            continue
-        x1, y1, x2, y2 = bbox
-        rows.append(
-            {
-                "source": str(row.get("source") or ""),
-                "flickr_photo_id": str(row.get("flickr_photo_id") or ""),
-                "image_url": image_url,
-                "detection_id": str(row.get("detection_id") or ""),
-                "crop_hash": str(row.get("crop_hash") or ""),
-                "detector_label": str(row.get("detector_label") or ""),
-                "detector_score": row.get("detector_score"),
-                "bbox_xyxyn": [x1, y1, x2, y2],
-                "left_pct": _percent(x1),
-                "top_pct": _percent(y1),
-                "width_pct": _percent(max(0.0, x2 - x1)),
-                "height_pct": _percent(max(0.0, y2 - y1)),
-            }
-        )
-    return rows
-
-
-def _normalised_bbox(value: object) -> tuple[float, float, float, float] | None:
-    if not isinstance(value, list | tuple) or len(value) != 4:
-        return None
-    try:
-        x1, y1, x2, y2 = (max(0.0, min(1.0, float(item))) for item in value)
-    except (TypeError, ValueError):
-        return None
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return x1, y1, x2, y2
-
-
-def _percent(value: float) -> str:
-    return f"{value * 100:.4f}%"
-
-
-def _crop_preview_html(rows: list[dict[str, object]]) -> str:
-    cards = "\n".join(_crop_preview_card(row) for row in rows)
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>BioMiner Crop Preview</title>
-<style>
-body {{ font-family: system-ui, sans-serif; margin: 24px; color: #1f2933; background: #f7f8fa; }}
-.grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }}
-.card {{ background: #fff; border: 1px solid #d7dce2; border-radius: 6px; padding: 12px; }}
-.image-wrap {{ position: relative; background: #111; overflow: hidden; }}
-.image-wrap img {{ display: block; width: 100%; height: auto; }}
-.bbox {{ position: absolute; border: 2px solid #f97316; box-sizing: border-box; }}
-.meta {{ font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }}
-</style>
-</head>
-<body>
-<h1>BioMiner Crop Preview</h1>
-<p>{len(rows)} detected crop previews. Images are referenced remotely; no local image archive is created.</p>
-<div class="grid">
-{cards}
-</div>
-</body>
-</html>
-"""
-
-
-def _crop_preview_card(row: dict[str, object]) -> str:
-    image_url = escape(str(row["image_url"]), quote=True)
-    title = escape(f"{row['source']}:{row['flickr_photo_id']}", quote=False)
-    detection_id = escape(str(row["detection_id"]), quote=False)
-    crop_hash = escape(str(row["crop_hash"]), quote=False)
-    label = escape(str(row["detector_label"]), quote=False)
-    score = row.get("detector_score")
-    score_text = "" if score is None else f"{float(score):.4f}"
-    return f"""<article class="card">
-<div class="image-wrap">
-<img src="{image_url}" alt="{title}">
-<div class="bbox" style="left: {row['left_pct']}; top: {row['top_pct']}; width: {row['width_pct']}; height: {row['height_pct']};"></div>
-</div>
-<div class="meta">
-<strong>{title}</strong><br>
-detection_id: {detection_id}<br>
-crop_hash: {crop_hash}<br>
-label: {label} score: {score_text}
-</div>
-</article>"""
-
-
 def _run_detect_eval(args: argparse.Namespace) -> int:
     predictions = pl.read_parquet(args.predictions).to_dicts()
     truth = pl.read_parquet(args.ground_truth).to_dicts() if args.ground_truth else None
@@ -2530,31 +2155,6 @@ def _run_detect_eval(args: argparse.Namespace) -> int:
     output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
-
-
-def _run_bioclip_join_object_evidence(args: argparse.Namespace) -> int:
-    context = SpeciesContext.read_json(args.species_context) if getattr(args, "species_context", None) else None
-    outputs = write_object_evidence_outputs(
-        canonical_records_path=args.input,
-        detections_path=args.detections,
-        scores_path=args.scores,
-        joined_output_path=args.joined_output,
-        photo_summary_output_path=args.photo_summary_output,
-        species_context=context,
-    )
-    print(
-        json.dumps(
-            {
-                "object_evidence_joined": str(outputs.object_evidence_joined),
-                "photo_evidence_summary": str(outputs.photo_evidence_summary),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
 
 
 def _bioclip_runtime(
