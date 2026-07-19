@@ -20,19 +20,14 @@ class RunStage(StrEnum):
     REFERENCE_QUALITY_ROUTING = "reference_quality_routing"
     REFERENCE_ADMISSION = "reference_admission"
     REFERENCE_GEOGRAPHY_INDEX = "reference_geography_index"
-    REFERENCE_REVIEW = "reference_review"
     REFERENCE_EMBEDDINGS = "reference_embeddings"
     REFERENCE_PROTOTYPES = "reference_prototypes"
-    CLASSIFIER_TRAINING = "classifier_training"
-    CLASSIFIER_CALIBRATION = "classifier_calibration"
-    REFERENCE_READINESS = "reference_readiness"
     FLICKR_DETECTION = "flickr_detection"
     FLICKR_EMBEDDING = "flickr_embedding"
     FLICKR_GEO_TAXON_PARTITIONING = "flickr_geo_taxon_partitioning"
     FAMILY_ROUTING = "family_routing"
     DYNAMIC_POOL_PLANNING = "dynamic_pool_planning"
     DYNAMIC_POOL_SCORING = "dynamic_pool_scoring"
-    TARGET_AWARE_SCORING = "target_aware_scoring"
     PROVISIONAL_FLICKR_SCORING = "provisional_flickr_scoring"
     REVIEW_SAMPLE_PLANNING = "review_sample_planning"
     FLICKR_HUMAN_VERIFICATION = "flickr_human_verification"
@@ -42,7 +37,6 @@ class RunStage(StrEnum):
     AFFECTED_REFERENCE_REBUILD = "affected_reference_rebuild"
     AFFECTED_RECORD_RESCORE = "affected_record_rescore"
     FINAL_QUALITY_GATE = "final_quality_gate"
-    EVALUATION = "evaluation"
 
 
 class StageStatus(StrEnum):
@@ -91,7 +85,6 @@ ADAPTIVE_REFERENCE_PRODUCTION_STAGES: tuple[RunStage, ...] = (
 
 MANUAL_REVIEW_STAGES: frozenset[RunStage] = frozenset(
     {
-        RunStage.REFERENCE_REVIEW,
         RunStage.FLICKR_HUMAN_VERIFICATION,
         RunStage.TARGETED_REFERENCE_REVIEW,
     }

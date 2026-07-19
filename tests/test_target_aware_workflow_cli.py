@@ -767,7 +767,7 @@ def test_target_aware_dry_run_does_not_read_heavy_inputs(
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["command"] == "references score-target-aware"
-    assert payload["stage"] == "target_aware_scoring"
+    assert "stage" not in payload
     assert payload["status"] == "planned"
     assert payload["dry_run"] is True
 

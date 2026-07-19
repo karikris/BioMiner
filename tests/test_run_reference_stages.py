@@ -21,7 +21,6 @@ from biominer.species.context import SpeciesContext
 def test_manual_review_stages_are_explicit() -> None:
     assert MANUAL_REVIEW_STAGES == frozenset(
         {
-            RunStage.REFERENCE_REVIEW,
             RunStage.FLICKR_HUMAN_VERIFICATION,
             RunStage.TARGETED_REFERENCE_REVIEW,
         }
@@ -29,20 +28,23 @@ def test_manual_review_stages_are_explicit() -> None:
 
 
 def test_manual_review_completion_requires_an_audited_approval() -> None:
-    manifest = _manifest((RunStage.REFERENCE_REVIEW,))
+    manifest = _manifest((RunStage.FLICKR_HUMAN_VERIFICATION,))
 
     with pytest.raises(
         ValueError, match="manual-review stage cannot be completed automatically"
     ):
-        manifest.with_stage_status(RunStage.REFERENCE_REVIEW, StageStatus.COMPLETE)
+        manifest.with_stage_status(
+            RunStage.FLICKR_HUMAN_VERIFICATION,
+            StageStatus.COMPLETE,
+        )
 
     waiting = manifest.with_stage_status(
-        RunStage.REFERENCE_REVIEW,
+        RunStage.FLICKR_HUMAN_VERIFICATION,
         StageStatus.AWAITING_MANUAL_REVIEW,
         message="reference_review_required",
     )
     approved = waiting.with_manual_review_approval(
-        RunStage.REFERENCE_REVIEW,
+        RunStage.FLICKR_HUMAN_VERIFICATION,
         reviewer="curator@example.org",
         approved_at="2026-07-14T01:02:03Z",
         message="reviewed_reference_set_accepted",
@@ -71,19 +73,22 @@ def test_every_manual_stage_rejects_automatic_completion(stage: RunStage) -> Non
 
 
 def test_manual_review_approval_rejects_invalid_transition() -> None:
-    manifest = _manifest((RunStage.REFERENCE_REVIEW,))
+    manifest = _manifest((RunStage.FLICKR_HUMAN_VERIFICATION,))
 
     with pytest.raises(ValueError, match="must be awaiting manual review"):
         manifest.with_manual_review_approval(
-            RunStage.REFERENCE_REVIEW,
+            RunStage.FLICKR_HUMAN_VERIFICATION,
             reviewer="curator@example.org",
         )
     waiting = manifest.with_stage_status(
-        RunStage.REFERENCE_REVIEW,
+        RunStage.FLICKR_HUMAN_VERIFICATION,
         StageStatus.AWAITING_MANUAL_REVIEW,
     )
     with pytest.raises(ValueError, match="reviewer must be non-empty"):
-        waiting.with_manual_review_approval(RunStage.REFERENCE_REVIEW, reviewer="  ")
+        waiting.with_manual_review_approval(
+            RunStage.FLICKR_HUMAN_VERIFICATION,
+            reviewer="  ",
+        )
 
 
 def test_dynamic_workflow_stops_before_risk_audit_for_human_review(

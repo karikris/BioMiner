@@ -14,9 +14,6 @@ from typing import Any
 
 import polars as pl
 
-from biominer.run import RunStage
-
-
 REFERENCE_WORKFLOW_SETTINGS_SCHEMA_VERSION = "target-aware-reference-cli-settings-v1"
 _NON_SEMANTIC_EXECUTION_FIELDS = frozenset({"overwrite", "resume"})
 _MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -31,7 +28,6 @@ class ReferenceWorkflowRuntimeDefaults:
 @dataclass(frozen=True, slots=True)
 class ResolvedReferenceWorkflowOptions:
     command: str
-    stage: RunStage
     values: dict[str, Any]
     settings_fingerprint: str
     settings_file: str | None
@@ -39,7 +35,6 @@ class ResolvedReferenceWorkflowOptions:
 
 @dataclass(frozen=True, slots=True)
 class _CommandSpec:
-    stage: RunStage
     fields: frozenset[str]
     required: frozenset[str]
     defaults: Mapping[str, object]
@@ -47,7 +42,6 @@ class _CommandSpec:
 
 _COMMAND_SPECS: dict[str, _CommandSpec] = {
     "build-geographic-spread": _CommandSpec(
-        stage=RunStage.GEOGRAPHIC_SPREAD,
         fields=frozenset(
             {
                 "accepted_taxon_key",
@@ -85,7 +79,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "build-regional-competitor-evidence": _CommandSpec(
-        stage=RunStage.REGIONAL_CANDIDATE_GENERATION,
         fields=frozenset(
             {
                 "target_occurrence_evidence",
@@ -126,7 +119,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "cluster-flickr-metadata": _CommandSpec(
-        stage=RunStage.FLICKR_GEO_CLUSTERING,
         fields=frozenset(
             {
                 "geography",
@@ -155,7 +147,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "materialize-flickr-workload": _CommandSpec(
-        stage=RunStage.FLICKR_GEO_CLUSTERING,
         fields=frozenset(
             {
                 "candidate_metadata",
@@ -207,7 +198,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "plan": _CommandSpec(
-        stage=RunStage.REFERENCE_METADATA,
         fields=frozenset(
             {
                 "candidate_species",
@@ -256,7 +246,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "fetch-metadata": _CommandSpec(
-        stage=RunStage.REFERENCE_METADATA,
         fields=frozenset(
             {
                 "queries",
@@ -286,7 +275,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "finalize-prototype-acquisition": _CommandSpec(
-        stage=RunStage.REFERENCE_METADATA,
         fields=frozenset(
             {
                 "observations",
@@ -316,7 +304,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         defaults={"selection_seed": 20260715, "overwrite": False},
     ),
     "download": _CommandSpec(
-        stage=RunStage.REFERENCE_MEDIA,
         fields=frozenset(
             {
                 "acquisition_selections",
@@ -349,7 +336,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "resolve-prototype-duplicates": _CommandSpec(
-        stage=RunStage.REFERENCE_MEDIA,
         fields=frozenset(
             {
                 "selections",
@@ -396,7 +382,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "qualify-prototype-support": _CommandSpec(
-        stage=RunStage.REFERENCE_MEDIA,
         fields=frozenset(
             {
                 "selections",
@@ -446,7 +431,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "freeze-prototype-support": _CommandSpec(
-        stage=RunStage.REFERENCE_READINESS,
         fields=frozenset(
             {
                 "selections",
@@ -504,7 +488,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "build-support-embeddings": _CommandSpec(
-        stage=RunStage.REFERENCE_EMBEDDINGS,
         fields=frozenset(
             {
                 "readiness_dir",
@@ -541,7 +524,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "build-prototypes": _CommandSpec(
-        stage=RunStage.REFERENCE_PROTOTYPES,
         fields=frozenset(
             {
                 "reference_embeddings",
@@ -575,7 +557,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "train-classifier": _CommandSpec(
-        stage=RunStage.CLASSIFIER_TRAINING,
         fields=frozenset(
             {
                 "training_features",
@@ -626,7 +607,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "calibrate-classifier": _CommandSpec(
-        stage=RunStage.CLASSIFIER_CALIBRATION,
         fields=frozenset(
             {
                 "predictions",
@@ -664,7 +644,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         },
     ),
     "score-target-aware": _CommandSpec(
-        stage=RunStage.TARGET_AWARE_SCORING,
         fields=frozenset(
             {
                 "candidate_set",
@@ -686,7 +665,6 @@ _COMMAND_SPECS: dict[str, _CommandSpec] = {
         defaults={},
     ),
     "evaluate-target-verifier": _CommandSpec(
-        stage=RunStage.EVALUATION,
         fields=frozenset(
             {
                 "evaluation_frame",
@@ -1168,7 +1146,6 @@ def resolve_reference_workflow_options(
     _validate_effective_options(command, values)
     return ResolvedReferenceWorkflowOptions(
         command=command,
-        stage=spec.stage,
         values=values,
         settings_fingerprint=_fingerprint(
             {
@@ -1198,7 +1175,6 @@ def run_reference_workflow_command(args: argparse.Namespace) -> int:
                         "options": _jsonable(resolved.values),
                         "settings_file": resolved.settings_file,
                         "settings_fingerprint": resolved.settings_fingerprint,
-                        "stage": resolved.stage.value,
                         "status": "planned",
                     },
                     sort_keys=True,
