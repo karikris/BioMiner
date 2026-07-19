@@ -277,7 +277,6 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
         report_dir=tmp_path / "reports",
         workers=1,
         skip_translations=True,
-        skip_classification_table=True,
     )
 
     registry = tmp_path / "registry"
@@ -288,8 +287,6 @@ def test_registry_build_outputs_one_canonical_enriched_register_by_default(tmp_p
     manifest = json.loads((registry / "manifest.json").read_text(encoding="utf-8"))
 
     assert result["manifest"]["qa_status"] == "passed"
-    assert result["manifest"]["classification_skipped"] is True
-    assert result["manifest"]["classification"] is None
     assert manifest["enrichment_sources"] == [
         "col",
         "ncbi",
@@ -372,7 +369,6 @@ def test_registry_build_writes_range_and_language_targets_when_configured(tmp_pa
         range_seed_json=range_seed,
         language_targets_json=language_targets,
         skip_enrichment=True,
-        skip_classification_table=True,
     )
 
     registry = tmp_path / "registry"
@@ -424,7 +420,6 @@ def test_registry_build_skip_flags_disable_regional_outputs(tmp_path, monkeypatc
         skip_range_discovery=True,
         skip_language_targets=True,
         skip_enrichment=True,
-        skip_classification_table=True,
     )
 
     registry = tmp_path / "registry"
@@ -470,7 +465,6 @@ def test_cloud_registry_build_writes_canonical_artifacts_to_s3_version_prefix(tm
         reuse_source_json=True,
         report_dir="s3://biominer/biominer/reports",
         skip_enrichment=True,
-        skip_classification_table=True,
         storage=storage,
     )
 
@@ -486,7 +480,7 @@ def test_cloud_registry_build_writes_canonical_artifacts_to_s3_version_prefix(tm
         "qa_findings.parquet",
     ):
         assert f"{registry_prefix}/{filename}" in storage.parquet_payloads
-    assert storage.json_payloads[f"{registry_prefix}/manifest.json"]["classification_skipped"] is True
+    assert "classification_skipped" not in storage.json_payloads[f"{registry_prefix}/manifest.json"]
     assert storage.json_payloads[f"{registry_prefix}/manifest.json"]["registry_version"] == "cloud-test"
     assert storage.json_payloads[f"{registry_prefix}/gbif_source_snapshot.json"]["source"] == "GBIF"
     assert storage.json_payloads["s3://biominer/biominer/reports/registry_build_cloud-test.json"]["status"] == "passed"
@@ -518,7 +512,6 @@ def test_cloud_registry_build_resumes_from_existing_source_snapshot(tmp_path, mo
         scope_path=scope,
         report_dir="s3://biominer/biominer/reports",
         skip_enrichment=True,
-        skip_classification_table=True,
         storage=storage,
     )
 
@@ -560,7 +553,6 @@ def test_registry_build_quarantines_source_errors_without_siloing_successful_nam
         report_dir=tmp_path / "reports",
         workers=1,
         skip_translations=True,
-        skip_classification_table=True,
     )
 
     registry = tmp_path / "registry"

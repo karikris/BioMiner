@@ -1963,7 +1963,6 @@ def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsy
             str(scope),
             "--report-dir",
             str(reports),
-            "--skip-classification",
         ]
     )
 
@@ -1979,68 +1978,13 @@ def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsy
     assert Path(payload["report_md"]).exists()
 
 
-def test_registry_build_cli_skip_classification_omits_artifacts(tmp_path, capsys) -> None:
-    scope = tmp_path / "scope.json"
-    scope.write_text(
-        json.dumps(
-            {
-                "scope_id": "test-scope",
-                "root": {"scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"},
-                "included_families": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    source = tmp_path / "registry_source.json"
-    source.write_text(
-        json.dumps(
-            {
-                "source": "GBIF",
-                "source_version": "gbif-species-api",
-                "retrieved_at": "2026-06-20T00:00:00+00:00",
-                "taxa": [
-                    {
-                        "accepted_taxon_key": "gbif:1",
-                        "scientific_name": "Papilionoidea",
-                        "rank": "SUPERFAMILY",
-                    }
-                ],
-                "names": [],
-                "source_assertions": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    output = tmp_path / "registry"
+def test_registry_build_cli_has_no_removed_classification_switch() -> None:
     parser = build_parser()
+    registry = parser._subparsers._group_actions[0].choices["registry"]
+    build = registry._subparsers._group_actions[0].choices["build"]
+    options = {option for action in build._actions for option in action.option_strings}
 
-    assert (
-        run(
-            parser.parse_args(
-                [
-                    "registry",
-                    "build",
-                    "--source-json",
-                    str(source),
-                    "--reuse-source-json",
-                    "--output-dir",
-                    str(output),
-                    "--registry-version",
-                    "test-registry",
-                    "--scope-json",
-                    str(scope),
-                    "--skip-classification",
-                ]
-            )
-        )
-        == 0
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["manifest"]["classification_skipped"] is True
-    assert not (output / "classification_nodes.parquet").exists()
-    assert not (output / "classification_edges.parquet").exists()
-    assert not (output / "classification_leaf_paths.parquet").exists()
+    assert "--skip-classification" not in options
 
 
 def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp_path, capsys) -> None:

@@ -391,7 +391,6 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--skip-language-targets", action="store_true")
     registry_build.add_argument("--skip-curated-static-sources", action="store_true")
     registry_build.add_argument("--skip-enrichment", action="store_true")
-    registry_build.add_argument("--skip-classification", action="store_true", help=argparse.SUPPRESS)
     registry_harvest_col = registry_subparsers.add_parser("harvest-col-xr")
     registry_harvest_col.add_argument("--output-dir", default="data/sources/col/COL26.6-XR")
     registry_harvest_col.add_argument("--scope-json", default="config/butterfly_scope.json")
@@ -1061,7 +1060,6 @@ def run(args: argparse.Namespace) -> int:
                     skip_language_targets=args.skip_language_targets,
                     skip_curated_static_sources=args.skip_curated_static_sources,
                     skip_enrichment=args.skip_enrichment,
-                    skip_classification_table=args.skip_classification,
                 )
             except (FileNotFoundError, ValueError) as exc:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
