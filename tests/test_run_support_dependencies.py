@@ -224,6 +224,11 @@ def test_support_dependency_validation_reports_all_missing_configuration() -> No
     assert "reference embeddings are not configured" in message
     assert "classifier artifact is not configured" in message
     assert "calibrator artifact is not configured" in message
+    assert "biominer references build-regional-competitor-evidence" in message
+    assert "biominer references readiness" in message
+    assert "biominer references build-support-embeddings" in message
+    assert "biominer references train-classifier" in message
+    assert "biominer references calibrate-classifier" in message
 
 
 def test_support_dependency_validation_requires_readiness_digest_pin(

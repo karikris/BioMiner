@@ -204,13 +204,13 @@ def _missing_configuration_issues(
     issues: list[str] = []
     if regional_candidates is None:
         issues.append(
-            "regional candidates are not configured; run "
-            "regional_candidate_generation and pass its artifact"
+            "regional candidates are not configured; run 'biominer references "
+            "build-regional-competitor-evidence' and pass its artifact"
         )
     if reference_bank_readiness is None:
         issues.append(
-            "reference readiness is not configured; run reference_readiness and "
-            "pass the published readiness directory"
+            "reference readiness is not configured; run 'biominer references "
+            "readiness' and pass the published readiness directory"
         )
     elif reference_bank_readiness_sha256 is None:
         issues.append(
@@ -219,18 +219,18 @@ def _missing_configuration_issues(
         )
     if reference_embeddings is None:
         issues.append(
-            "reference embeddings are not configured; run reference_embeddings "
-            "against the current readiness permit"
+            "reference embeddings are not configured; run 'biominer references "
+            "build-support-embeddings' against the current readiness permit"
         )
     if calibrated and classifier_artifact is None:
         issues.append(
-            "classifier artifact is not configured; run classifier_training and "
-            "pass the immutable classifier directory"
+            "classifier artifact is not configured; run 'biominer references "
+            "train-classifier' and pass the immutable classifier directory"
         )
     if calibrated and calibrator_artifact is None:
         issues.append(
-            "calibrator artifact is not configured; run classifier_calibration and "
-            "pass the immutable calibrator directory"
+            "calibrator artifact is not configured; run 'biominer references "
+            "calibrate-classifier' and pass the immutable calibrator directory"
         )
     return issues
 
@@ -257,7 +257,8 @@ def _load_readiness(
     except (OSError, ValueError) as exc:
         issues.append(
             "reference readiness is blocked or invalid: "
-            f"{exc}; resolve review/support blockers and republish reference_readiness"
+            f"{exc}; resolve review/support blockers and rerun "
+            "'biominer references readiness'"
         )
         return None
 
@@ -328,7 +329,7 @@ def _validate_target_support(
     if not requirements:
         issues.append(
             "reference readiness does not expose admitted target support minima; "
-            "republish reference_readiness with the current schema"
+            "rerun 'biominer references readiness' with the current schema"
         )
         return
     strict = readiness.reference_admission_mode == "human_verified_strict"
@@ -419,7 +420,7 @@ def _validate_embedding_bindings(
     except (TypeError, ValueError) as exc:
         issues.append(
             "reference embeddings are stale or internally inconsistent: "
-            f"{exc}; rebuild reference_embeddings"
+            f"{exc}; rerun 'biominer references build-support-embeddings'"
         )
         return None, None, None
     if readiness is not None:
@@ -437,14 +438,15 @@ def _validate_embedding_bindings(
             except ValueError as exc:
                 issues.append(
                     "reference embeddings are stale or internally inconsistent: "
-                    f"{exc}; rebuild reference_embeddings"
+                    f"{exc}; rerun 'biominer references build-support-embeddings'"
                 )
                 continue
             if actual != expected_value:
                 issues.append(
                     "reference embeddings are stale: "
                     f"{field}={actual!r}, expected={expected_value!r}; rebuild "
-                    "reference_embeddings from the current readiness permit"
+                    "with 'biominer references build-support-embeddings' from the "
+                    "current readiness permit"
                 )
     return embedding_fingerprint, model_fingerprint, preprocessing_fingerprint
 
@@ -469,7 +471,7 @@ def _load_classifier(
     except (OSError, ValueError) as exc:
         issues.append(
             "classifier artifact is missing or incompatible, or reference and model "
-            f"versions disagree: {exc}; rerun classifier_training"
+            f"versions disagree: {exc}; rerun 'biominer references train-classifier'"
         )
         return None
 
@@ -498,7 +500,7 @@ def _validate_classifier_bindings(
                 issues.append(
                     "classifier reference version disagrees with readiness: "
                     f"{field}={actual!r}, expected={expected_value!r}; rerun "
-                    "classifier_training"
+                    "'biominer references train-classifier'"
                 )
     if (
         reference_embedding_fingerprint is not None
@@ -508,7 +510,8 @@ def _validate_classifier_bindings(
         issues.append(
             "classifier reference embedding fingerprint is stale: "
             f"classifier={classifier.reference_embedding_fingerprint!r}, "
-            f"current={reference_embedding_fingerprint!r}; rerun classifier_training"
+            f"current={reference_embedding_fingerprint!r}; rerun "
+            "'biominer references train-classifier'"
         )
     for field, expected_value in (
         ("model_fingerprint", model_fingerprint),
@@ -542,7 +545,8 @@ def _load_calibrator(
     except (OSError, ValueError) as exc:
         issues.append(
             "calibrator artifact is missing or incompatible: "
-            f"{exc}; rerun classifier_calibration from the current classifier"
+            f"{exc}; rerun 'biominer references calibrate-classifier' from the "
+            "current classifier"
         )
         return None
 
@@ -563,7 +567,8 @@ def _validate_calibrator_binding(
         issues.append(
             "calibrator classifier fingerprint is stale: "
             f"calibrator={calibrator.classifier_fingerprint!r}, "
-            f"classifier={classifier_fingerprint!r}; rerun classifier_calibration"
+            f"classifier={classifier_fingerprint!r}; rerun "
+            "'biominer references calibrate-classifier'"
         )
     return str(calibrator.calibration_fingerprint)
 
