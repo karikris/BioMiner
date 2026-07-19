@@ -11,7 +11,7 @@
   "final_report_containing_commit": "self",
   "remote_main_status_at_report_write": "final_task_push_pending_and_resolved_by_task_16_2_completion_record",
   "assistance": {
-    "primary_model": "GPT-5.6-sol",
+    "primary_model": "bounded-model",
     "reasoning_effort": "xhigh",
     "session_id": "019f660b-6398-7a22-a1e8-ad5bc6abc23c",
     "origin_repository": "karikris/BioMiner"

@@ -25,7 +25,7 @@ completed real reviews. No occurrence release is authorized.
 | Branch | `main` |
 | TaxaLens pin | `e845dd98493979f37b04dbb6538e0d7b8758ca11` |
 | ButterflyLens pin | `1cea643623f2f20a2bea72afc754c7b194db3278` |
-| Primary model | `GPT-5.6-sol` |
+| Primary model | `bounded-model` |
 | Reasoning effort | `xhigh` |
 | Codex session | `019f660b-6398-7a22-a1e8-ad5bc6abc23c` |
 

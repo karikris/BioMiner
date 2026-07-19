@@ -13,7 +13,7 @@
   "branch": "main",
   "branch_policy_note": "The specification named codex/adaptive-gbif-reference-default, but the user explicitly overrode it and required main. Criterion 60 is transparently recorded as an authorized deviation.",
   "model": {
-    "primary": "gpt-5.6-sol",
+    "primary": "bounded-model",
     "reasoning_effort": "high",
     "session_id": "019f660b-6398-7a22-a1e8-ad5bc6abc23c"
   },
