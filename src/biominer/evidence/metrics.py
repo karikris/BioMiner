@@ -4,9 +4,7 @@ from typing import Any
 
 import polars as pl
 
-from biominer.evidence.review_policy import REVIEW_QUEUE_BUCKETS, comment_review_is_actionable
-
-
+REVIEW_QUEUE_BUCKETS = {"bronze", "in_review"}
 REVIEW_QUEUE_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,
     "flickr_photo_id": pl.String,
@@ -43,7 +41,7 @@ def build_review_queue(photo_summary: pl.DataFrame) -> pl.DataFrame:
     for row in photo_summary.to_dicts():
         bucket = str(row.get("photo_occurrence_bin") or "")
         reason = str(row.get("photo_bin_reason") or bucket)
-        if bucket not in REVIEW_QUEUE_BUCKETS or not comment_review_is_actionable(bucket=bucket, reason=reason):
+        if bucket not in REVIEW_QUEUE_BUCKETS:
             continue
         rows.append(
             {

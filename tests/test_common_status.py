@@ -27,7 +27,6 @@ def test_status_constants_are_not_redefined_in_stateful_modules() -> None:
         "src/biominer/workstore/sqlite.py",
         "src/biominer/workstore/postgres.py",
         "src/biominer/flickr_fetch/metadata_poller.py",
-        "src/biominer/flickr_comments/comments_enrichment.py",
     )
     offenders: list[str] = []
     for relative in checked:

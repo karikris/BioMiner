@@ -24,14 +24,12 @@ RUN_ARTIFACT_RELATIVE_PATHS: Mapping[str, str] = MappingProxyType(
         "vision_stage_summary": "reports/vision_stage_summary.md",
         "review_queue": "reports/review_queue.parquet",
         "visual_qa_findings": "reports/visual_qa_findings.parquet",
-        "reviewed_object_evidence": "staging/object_evidence_reviewed.parquet",
         "query_definitions": "registry/flickr_query_definitions.parquet",
         "source_records": "staging/canonical_source_records.parquet",
         "object_detections": "staging/object_detections.parquet",
         "object_scores": "staging/object_bioclip_scores.parquet",
         "object_evidence": "staging/object_evidence_joined.parquet",
         "photo_summary": "staging/photo_evidence_summary.parquet",
-        "comment_review_state": "state/comment_review.sqlite",
         "geographic_registry": "registry/geography",
         "taxon_geographic_spread": (
             "registry/geography/taxon_geographic_spread.parquet"
@@ -214,10 +212,6 @@ class RunArtifactUris:
     @property
     def visual_qa_findings_uri(self) -> str:
         return self.artifact_uri("visual_qa_findings")
-
-    @property
-    def reviewed_object_evidence_uri(self) -> str:
-        return self.artifact_uri("reviewed_object_evidence")
 
     @property
     def query_definitions_uri(self) -> str:
@@ -457,14 +451,6 @@ class RunPaths:
     @property
     def visual_qa_findings_path(self) -> Path:
         return self.artifact_path("visual_qa_findings")
-
-    @property
-    def comment_review_state_path(self) -> Path:
-        return self.artifact_path("comment_review_state")
-
-    @property
-    def reviewed_object_evidence_path(self) -> Path:
-        return self.artifact_path("reviewed_object_evidence")
 
     @property
     def query_definitions_path(self) -> Path:

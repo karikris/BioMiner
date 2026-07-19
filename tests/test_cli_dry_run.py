@@ -708,7 +708,7 @@ def test_registry_commands_parse_query_curation_json() -> None:
     assert compile_args.query_curation_json == "examples/species/papilio_demoleus/query_curation.json"
 
 
-def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
+def test_run_cli_exposes_registry_build_control() -> None:
     parser = build_parser()
 
     args = parser.parse_args(
@@ -725,13 +725,27 @@ def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
             "--workstore-backend",
             "sqlite",
             "--build-registry-if-missing",
-            "--comments-max-api-calls",
-            "17",
         ]
     )
 
     assert args.build_registry_if_missing is True
-    assert args.comments_max_api_calls == 17
+
+
+def test_removed_comment_commands_and_run_limit_fail_to_parse() -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dev", "comments", "fetch", "--photo-id", "1"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run",
+                "--taxon",
+                "Danaus plexippus",
+                "--comments-max-api-calls",
+                "17",
+            ]
+        )
 
 
 def test_storage_and_workstore_doctor_commands_parse() -> None:
@@ -2111,28 +2125,6 @@ def test_registry_audit_cli_summarizes_registry_parquet_with_duckdb(tmp_path, ca
     assert payload["qa_by_severity"] == {"warning": 1}
     assert payload["language_target_coverage_report"].startswith(str(report_dir))
     assert payload["curated_vernacular_gap_report"].startswith(str(report_dir))
-
-
-def test_comments_enrichment_cli(tmp_path, capsys) -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "dev",
-            "comments",
-            "fetch",
-            "--photo-id",
-            "1",
-            "--state-db",
-            str(tmp_path / "comments.sqlite"),
-            "--dry-run",
-        ]
-    )
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["implemented"] is True
-    assert payload["comment_fetch_scope"] == "selected_candidate_records_only"
-    assert payload["photo_ids_requested"] == ["1"]
-    assert payload["queued_comment_candidates_added"] == 1
 
 
 def _fake_cloud_config() -> BioMinerConfig:

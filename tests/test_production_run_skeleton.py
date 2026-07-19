@@ -2417,69 +2417,6 @@ def test_orchestrator_builds_hierarchical_review_queue_from_cloud_join_shards(
     assert queue.select("flickr_photo_id").to_series().to_list() == ["hier-photo-1"]
 
 
-def test_orchestrator_local_comment_review_stages_process_and_apply_promotions(
-    tmp_path,
-) -> None:
-    scope = TaxonScope.from_species_context(_species_context())
-    request = ProductionRunRequest(
-        taxon="Danaus plexippus",
-        rank="species",
-        output_root=tmp_path / "runs",
-        storage_backend="local",
-        workstore_backend="sqlite",
-        stages=(
-            RunStage.QUEUE_COMMENT_REVIEW,
-            RunStage.REVIEW_COMMENTS,
-            RunStage.APPLY_COMMENT_REVIEW,
-        ),
-    )
-    orchestrator = ProductionRunOrchestrator(
-        request,
-        taxon_scope=scope,
-        comment_fetcher=lambda photo_id: [
-            {
-                "author": "u1",
-                "_content": "Confirmed Danaus plexippus at -27.4698, 153.0251",
-            }
-        ],
-    )
-    plan = orchestrator.plan()
-    plan.paths.ensure_directories()
-    pl.DataFrame(
-        [
-            {
-                "source": "flickr",
-                "source_record_id": "bronze-1",
-                "source_record_hash": "sha256:bronze-1",
-                "flickr_photo_id": "bronze-1",
-                "photo_page_url": "https://www.flickr.com/photos/example/bronze-1",
-                "image_url": "https://live.staticflickr.com/bronze-1.jpg",
-                "raw_title": "Danaus plexippus",
-                "raw_tags": "Danaus plexippus monarch",
-                "bioclip_top1_label": "a photo of Danaus plexippus",
-                "species_top1_score": 0.92,
-                "bioclip_top1_score": 0.92,
-                "is_target_positive": True,
-                "occurrence_bin": "bronze",
-                "triage_bin": "bronze",
-                "image_category": "adult_butterfly",
-                "life_stage": "adult_butterfly",
-                "date_taken": "2024-01-15",
-                "latitude": None,
-                "longitude": None,
-            }
-        ]
-    ).write_parquet(plan.paths.object_evidence_path)
-
-    result = orchestrator.run()
-
-    reviewed = pl.read_parquet(result.paths.reviewed_object_evidence_path)
-    assert result.manifest.status == "complete"
-    assert result.manifest.metrics["comment_review_queue_created"] == 1
-    assert result.manifest.metrics["records_moved_to_gold"] == 1
-    assert reviewed.select("occurrence_bin").to_series().to_list() == ["gold"]
-
-
 def test_orchestrator_cloud_summarize_requires_storage_backend() -> None:
     scope = TaxonScope.from_species_context(_species_context())
     request = ProductionRunRequest(

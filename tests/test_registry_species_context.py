@@ -5,7 +5,6 @@ from pathlib import Path
 
 import polars as pl
 
-from biominer.flickr_comments.comment_review import review_comments_for_record
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once
 from biominer.flickr_fetch.query_planner import FlickrQuery, plan_pages_from_count, plan_queries_from_count
 from biominer.run.taxon_scope import resolve_species_context_from_registry
@@ -215,45 +214,6 @@ def test_no_compact_shard_writes_canonical_folded_evidence_rows(tmp_path) -> Non
     assert row["tag_search_terms"] == ["monarch butterfly"]
     assert row["all_query_labels"] == ["text:Danaus plexippus", "tags:monarch butterfly"]
     assert row["query_hit_count"] == 2
-
-
-def test_comment_review_uses_species_context_terms_for_common_names() -> None:
-    context = SpeciesContext(
-        scientific_name="Danaus plexippus",
-        accepted_taxon_key="gbif:5133240",
-        canonical_name="Danaus plexippus",
-        family="Nymphalidae",
-        genus="Danaus",
-        family_key="gbif:7017",
-        genus_key="gbif:5133234",
-        species_key="gbif:5133240",
-        registry_version="registry-v1",
-        common_names=(CommonName(name="monarch butterfly", language="en", source="fixture", trust_tier="T2"),),
-    )
-    record = {
-        "source": "flickr",
-        "source_record_id": "1",
-        "source_record_hash": "sha256:1",
-        "flickr_photo_id": "1",
-        "image_url": "https://live.staticflickr.com/1_l.jpg",
-        "raw_tags": "monarch butterfly",
-        "bioclip_top1_label": "a photo of Danaus plexippus",
-        "species_top1_score": 0.92,
-        "bioclip_top1_score": 0.92,
-        "occurrence_bin": "bronze",
-        "triage_bin": "bronze",
-        "image_category": "adult_butterfly",
-        "life_stage": "adult_butterfly",
-        "date_taken": "2024-01-15",
-        "latitude": -27.0,
-        "longitude": 153.0,
-    }
-
-    result = review_comments_for_record(record, [{"author": "u1", "_content": "confirmed monarch butterfly"}], species_context=context)
-
-    assert result.flickr_text_species_candidate == "Danaus plexippus"
-    assert result.comment_species_candidate == "Danaus plexippus"
-    assert result.comment_review_decision == "move_to_gold"
 
 
 def test_species_context_target_terms_skip_query_ineligible_common_names() -> None:
