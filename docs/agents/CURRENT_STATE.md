@@ -555,12 +555,13 @@ run. No strategy is empirically superior, and no live dynamic pool, live score,
 calibrated probability, completed human review, statistical-support result or
 new release-ready occurrence is claimed by the completed phases.
 
-- as of 2026-07-19T00:00:00+10:00 local (workspace check), no local live
-  Biominer process is active; recent `run`/`logs`/`data/state` artifacts are
-  complete or historical. The GBIF 18 July 2026 download has been materialized
-  to `data/reference/gbif_occurrences.parquet` (571,755 rows) with manifest
-  `data/reference/gbif_occurrence_manifest.json` from DOI
-  `https://doi.org/10.15468/dl.7uut3k`.
+- as of 2026-07-19T17:22:00+10:00 local (workspace check), no local live
+  Biominer process is active; the running overlap is metadata-only Flickr polling
+  artifacts and no media or score stages are active. Recent `run`/`logs`/
+  `data/state` artifacts are complete or historical. The GBIF 18 July 2026
+  download has been materialized to `data/reference/gbif_occurrences.parquet`
+  (571,755 rows) with manifest `data/reference/gbif_occurrence_manifest.json`
+  from DOI `https://doi.org/10.15468/dl.7uut3k`.
 
 ## Repository map
 
