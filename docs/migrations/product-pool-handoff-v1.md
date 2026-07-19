@@ -3,6 +3,9 @@
 > Historical scope: this document records the Task 1.2 manifest migration.
 > Task 14.1 later advances the TaxaLens pin and adds the compatible deterministic
 > archive transport described in the architecture handoff audit.
+> The current ButterflyLens pin and its v1.1-only fingerprint boundary are
+> recorded in
+> [`butterflylens_3d6486_compatibility_review.md`](../architecture/butterflylens_3d6486_compatibility_review.md).
 
 ## Scope
 

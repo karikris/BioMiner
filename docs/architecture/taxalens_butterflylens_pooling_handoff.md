@@ -1,7 +1,7 @@
 # TaxaLens and ButterflyLens pooling handoff audit
 
-Status: Task 0.1.3 audit, updated by Task 1.2 and Task 14.1 compatibility
-reviews, 2026-07-18.
+Status: Task 0.1.3 audit, updated by Task 1.2, Task 14.1, and the post-uplift
+compatibility review, 2026-07-19.
 This document defines the
 downstream constraints for BioMiner's geographic dynamic-reference-pooling
 work. It is an interoperability audit, not evidence that a live model run or
@@ -15,8 +15,8 @@ The goal was written against TaxaLens
 `c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc`; Task 14.1 advances that exact
 pin to `e845dd98493979f37b04dbb6538e0d7b8758ca11` after verifying its additive,
 fail-closed content-addressed handoff consumer. The current ButterflyLens pin
-remains `1cea643623f2f20a2bea72afc754c7b194db3278`; its previous audited pin was
-`fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3`. The compatibility decisions are
+is `3d6486da87f32136c35e29aeed6cb6291da66a17`; its previous audited pin was
+`1cea643623f2f20a2bea72afc754c7b194db3278`. The compatibility decisions are
 recorded separately in the executable pin fixture. The sibling worktrees were
 dirty, so every audit and compatibility test read exact committed Git objects,
 not sibling working-tree files.
@@ -122,11 +122,13 @@ Provider assertions are not human review. BioMiner must preserve these layer
 boundaries when a global/local pool comparison becomes a candidate-score
 artifact.
 
-The current pin further requires at least two repeated independent assignments
-under `repeated-independent-v1`, blind model/peer evidence until decision, and
-append-only authenticated review submission with correction lineage. BioMiner
-may supply assignment inputs, but ButterflyLens assigns reviewers and database
-identities and enforces those controls.
+The current pin requires at least two repeated independent assignments under
+`repeated-independent-v1`, blind model/peer evidence until decision,
+append-only authenticated review submission with correction lineage,
+independent conflict adjudication, control-calibrated reliability, layered
+consensus, and representative quality estimation. BioMiner may supply
+assignment inputs, but ButterflyLens assigns reviewers and database identities
+and owns adjudication, reliability, consensus, and quality decisions.
 
 ### Map impact, RLS, and import boundary
 
@@ -178,8 +180,19 @@ state is either available with evidence fingerprints or unavailable with a
 reason. `release_ready=true` requires all preceding states to be true, while
 `scientific_claim_allowed` remains false in the interchange contract.
 Fingerprint v1.1 (`butterflylens-evidence-fingerprint:v1.1.0`) uses a canonical
-SHA-256 preimage with parent lineage. Content-addressed artifacts are immutable
-and manifests publish last.
+SHA-256 preimage with parent lineage. The current consumer has retired its v1.0
+reader and rejects that schema; BioMiner already emits v1.1. Content-addressed
+artifacts are immutable and manifests publish last.
+
+### Rights, location, release, and publication boundary
+
+Flickr display eligibility, media takedown, sensitive-location receipts,
+occurrence-release decisions, Darwin Core preparation, and ALA contribution
+preparation are all ButterflyLens-owned. A BioMiner handoff does not contain
+raw coordinates, display approval, a release receipt, a Darwin Core
+publication decision, or ALA submission authority. The current Darwin Core
+and ALA builders are themselves fail-closed preparation tools: they do not
+publish or submit.
 
 ## BioMiner dynamic-pooling handoff requirements
 

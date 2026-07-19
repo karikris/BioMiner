@@ -28,7 +28,7 @@ MODEL_FINGERPRINT = "sha256:" + "3" * 64
 PREPROCESSING_FINGERPRINT = "sha256:" + "4" * 64
 COMPATIBILITY_REVIEW = (
     Path(__file__).parents[1]
-    / "docs/architecture/butterflylens_1cea643_compatibility_review.md"
+    / "docs/architecture/butterflylens_3d6486_compatibility_review.md"
 )
 
 
@@ -95,13 +95,18 @@ def test_manifest_records_deliberate_pin_movement_and_all_roles() -> None:
     assert manifest["consumer_compatibility"] == {
         "previous_audited_commit": BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT,
         "current_audited_commit": BUTTERFLYLENS_PINNED_COMMIT,
-        "decision": "compatible_additive_with_stricter_review_controls",
-        "wire_schema_breaking_changes": False,
+        "decision": (
+            "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls"
+        ),
+        "wire_schema_breaking_changes": True,
+        "producer_wire_schema_compatible": True,
         "database_adapter_changes_required": True,
+        "producer_artifact_changes_required": False,
         "required_adapter_changes": [
-            "create repeated independent assignments under downstream policy",
-            "keep model evidence and peer decisions blind until review submission",
-            "submit append-only review events with correction lineage",
+            "accept evidence fingerprint v1.1 only; reject the retired v1.0 schema",
+            "keep adjudication reviewer reliability and quality estimates downstream",
+            "apply Flickr display rights takedown and sensitive-location controls downstream",
+            "issue occurrence-release decisions and Darwin Core or ALA exports downstream",
         ],
         "silent_pin_movement": False,
     }
@@ -159,6 +164,12 @@ def test_database_and_release_authority_stay_downstream() -> None:
     assert boundary["biominer_database_writes_allowed"] is False
     assert boundary["service_role_ingestion_enforced_downstream"] is True
     assert boundary["row_level_security_enforced_downstream"] is True
+    assert boundary["public_display_decisions_in_handoff"] is False
+    assert boundary["sensitive_location_decisions_in_handoff"] is False
+    assert boundary["occurrence_release_decisions_in_handoff"] is False
+    assert boundary["darwin_core_release_authority"] is False
+    assert boundary["ala_submission_authority"] is False
+    assert boundary["media_takedown_authority"] is False
     assert manifest["release_state"]["candidate_state"] == "blocked"
     assert manifest["release_state"]["release_ready"] is False
     assert manifest["release_state"]["scientific_claim_allowed"] is False
@@ -210,7 +221,12 @@ def test_compatibility_review_documents_supabase_and_pin_boundaries() -> None:
         "append-only",
         "service-role",
         "row-level security",
-        "compatible_additive_with_stricter_review_controls",
+        "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls",
+        "retired v1.0",
+        "sensitive-location",
+        "occurrence-release",
+        "Darwin Core",
+        "ALA",
         "https://supabase.com/docs/guides/database/postgres/row-level-security",
     ):
         assert term in review

@@ -1,6 +1,6 @@
 {
-  "schema_version": "biominer-downstream-pooling-contract-pins-v1.2.0",
-  "compatibility_status": "compatible_additive_storage_handoff_with_stricter_maturity_and_review_semantics",
+  "schema_version": "biominer-downstream-pooling-contract-pins-v1.3.0",
+  "compatibility_status": "compatible_storage_handoffs_with_v1_1_fingerprints_and_consumer_owned_release_controls",
   "policy": {
     "consume_committed_objects_only": true,
     "import_sibling_implementation_code": false,
@@ -33,9 +33,9 @@
   "butterflylens": {
     "repository": "karikris/ButterflyLens",
     "goal_written_commit": "c8135a0cb0001245215cdc774d063ef49407fb26",
-    "previous_audited_commit": "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3",
-    "audited_commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
-    "pin_movement_decision": "compatible_additive_with_stricter_review_controls",
+    "previous_audited_commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
+    "audited_commit": "3d6486da87f32136c35e29aeed6cb6291da66a17",
+    "pin_movement_decision": "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls",
     "contracts": {
       "taxonomy_pack_manifest": "butterflylens-taxonomy-pack-manifest/v1",
       "project": "butterflylens-project:v1.0.0",
@@ -45,8 +45,23 @@
       "geographic_impact_cell": "butterflylens-geographic-impact-cell:v1.0.0",
       "verification_campaign": "butterflylens-verification-campaign:v1.0.0",
       "verification_assignment": "butterflylens-verification-assignment:v1.0.0",
+      "verification_adjudication": "butterflylens-verification-adjudication:v1.0.0",
       "verification_event": "butterflylens-verification-event:v1.0.0",
       "verification_consensus": "butterflylens-verification-consensus:v1.0.0",
+      "layered_consensus_policy": "butterflylens-layered-consensus-policy:v1.0.0",
+      "reviewer_reliability": "butterflylens-reviewer-reliability:v1.0.0",
+      "quality_snapshot": "butterflylens-quality-snapshot:v1.0.0",
+      "quality_policy": "butterflylens-representative-audit-policy:v1.0.0",
+      "quality_estimator": "butterflylens-dataset-quality-estimator:v1.0.0",
+      "flickr_public_display_policy": "butterflylens-flickr-public-display-policy:v1.0.0",
+      "sensitive_location_policy": "butterflylens-sensitive-location-policy:v1.0.0",
+      "public_location_decision": "butterflylens-public-location-decision:v1.0.0",
+      "occurrence_release_policy": "butterflylens-occurrence-release:v1.0.0",
+      "occurrence_release_decision": "butterflylens-occurrence-release-decision:v1.0.0",
+      "darwin_core_export": "butterflylens-darwin-core-export:v1.0.0",
+      "darwin_core_export_policy": "butterflylens-darwin-core-export-policy:v1.0.0",
+      "ala_contribution": "butterflylens-ala-contribution:v1.0.0",
+      "ala_contribution_policy": "butterflylens-ala-contribution-policy:v1.0.0",
       "reference_bank_manifest": "butterflylens-reference-bank-manifest/v1"
     },
     "review_controls": {
@@ -56,6 +71,6 @@
       "append_only_review_events": true,
       "database_adapter_owned": true
     },
-    "observed_change": "additive_reviewer_accounts_repeated_independent_assignments_blind_disclosure_and_append_only_review_submission"
+    "observed_change": "fingerprint_v1_1_only_plus_consumer_owned_adjudication_quality_rights_sensitive_location_release_and_export_controls"
   }
 }

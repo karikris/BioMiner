@@ -27,9 +27,10 @@ it. This is not just excess code:
   that differed from the owning Parquet contracts;
 - the old default workflow still executes detector-crop, cascade scoring,
   bucket summarisation, and Flickr-comment promotion;
-- the BioMiner ButterflyLens consumer pin predates 60 committed ButterflyLens
-  changes and does not cover the newer quality, occurrence-release,
-  sensitive-location, Darwin Core, or ALA contribution contracts.
+- the initial BioMiner ButterflyLens consumer pin predated 62 committed
+  ButterflyLens changes and did not cover the newer quality,
+  occurrence-release, sensitive-location, Darwin Core, or ALA contribution
+  contracts; the current pin audit now closes that mismatch.
 
 The production direction is one adaptive full-frame workflow with explicit
 manual-review stops and immutable product handoffs. Compatibility code must not
@@ -61,7 +62,7 @@ candidates and are excluded from all cleanup commits.
 | 6–8: vision, scoring, caching | Full-frame routing, separate raw components, reusable embeddings/matrices, and explicit efficiency accounting are appropriate. | The old detector-crop/cascade runtime remains the implemented production path. | Remove old runtime after adaptive execution coverage exists. |
 | 9–12: review, evaluation, and selective rebuild | Representative versus targeted review, source independence, grouped quality, and dependency fingerprints are strong boundaries. | Many modules are fixture-tested but have no production adapter or orchestrator execution. | Connect immutable inputs/outputs and preserve manual-review stops. |
 | 13: orchestration | The 31-stage topological graph correctly names the intended boundaries. | Most graph nodes are declarations only. A skipped/failed node cannot be reported as an executed phase. | Implement concrete dispatch and fail closed on absent artifacts. |
-| 14: downstream handoffs | Product-specific, immutable, fail-closed handoff manifests are a sound boundary. | ButterflyLens is pinned to a stale consumer; TaxaLens and ButterflyLens have since expanded their contract surface. | Audit current committed consumers and update exact pins additively. |
+| 14: downstream handoffs | Product-specific, immutable, fail-closed handoff manifests are a sound boundary. | TaxaLens was already current; ButterflyLens had expanded its contract surface and retired fingerprint v1.0. | The current committed consumers are now pinned; preserve v1.1-only fingerprints and downstream-owned release controls. |
 | 15: pilot | Deterministic fixture coverage and ablation mechanics are useful software evidence. | Fixture outputs are not live Flickr/GBIF/YOLOE/BioCLIP evidence and cannot select a release strategy. | Keep as regression fixtures; label empirical outcomes unavailable. |
 | 16: release report | The report correctly preserves the fixture-only limitation. | Calling the workflow complete obscures disconnected adapters and unhandled stages. | Replace completion language with software-contract/fixture completion and runtime readiness gates. |
 
@@ -128,12 +129,13 @@ TaxaLens pin. TaxaLens owns product replay, human review, geographic impact,
 and occurrence release. BioMiner must publish evidence and maturity; it must
 never authorize TaxaLens occurrence release.
 
-ButterflyLens committed HEAD is
-`b86d32334476f6497a7ac187472c2d2cb53e80a9`. BioMiner currently pins
-`1cea643623f2f20a2bea72afc754c7b194db3278`. The pin may move only after exact
-committed-object tests cover the current consumer schemas and confirm that
-BioMiner does not export database primary keys, reviewer identities, service
-credentials, sensitive locations, or a release authorization.
+ButterflyLens committed HEAD and BioMiner's audited pin are
+`3d6486da87f32136c35e29aeed6cb6291da66a17`. Exact committed-object tests cover
+the current consumer schemas and confirm that BioMiner does not export database
+primary keys, reviewer identities, service credentials, sensitive-location or
+occurrence-release decisions, Darwin Core publication authority, or ALA
+submission authority. The consumer's retired fingerprint v1.0 reader is
+compatible with BioMiner because the producer already emits v1.1 only.
 
 Sibling worktrees remain read-only during this goal. Alignment is performed by
 reading committed objects and changing BioMiner's producer/contracts/tests,
@@ -168,8 +170,8 @@ claimed.
 ### C. Align product consumers
 
 1. Re-audit TaxaLens current committed consumer and preserve its exact pin.
-2. Audit ButterflyLens current committed schemas and update the pin only with
-   parity tests for every BioMiner-owned export role.
+2. Preserve the exact ButterflyLens pin and committed-object parity tests for
+   every BioMiner-owned export role and downstream-owned release gate.
 3. Report unavailable product-owned artifacts explicitly rather than creating
    placeholders or inferring approvals.
 

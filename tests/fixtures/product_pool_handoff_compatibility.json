@@ -30,11 +30,11 @@
   },
   "butterflylens": {
     "project_id": "fixture-australian-butterflies",
-    "previous_consumer_commit": "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3",
-    "consumer_commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
-    "compatibility_decision": "compatible_additive_with_stricter_review_controls",
-    "expected_handoff_id": "butterflylens-pool-handoff:739a34cba523f113fbde5ebdb5df1574346ec1c009d5b2d05667066d48da5907",
-    "expected_manifest_fingerprint": "sha256:a1e58193fd04fb10931a0e5ba4bbebd5b50a522c7329264d70eab1f34e1f26ed",
+    "previous_consumer_commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
+    "consumer_commit": "3d6486da87f32136c35e29aeed6cb6291da66a17",
+    "compatibility_decision": "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls",
+    "expected_handoff_id": "butterflylens-pool-handoff:44533a12a6427de8c17b44cd1902a2b4e4d970acec3f1048f3fc87e14a7ee656",
+    "expected_manifest_fingerprint": "sha256:291be7c577da5cbbd4cb3d321e18f35d524bd1f0f9db106952fa8889a577e2fe",
     "artifacts": [
       {"role": "project", "availability": "available", "unavailable_reason": null, "relative_path": "artifacts/model/butterflylens_project.json", "media_type": "application/json", "schema_version": "biominer-butterflylens-project-projection-v1.0.0", "semantic_fingerprint": "sha256:5a872afa4737ba7f2cf9d394a7228656fe6647b86b98e64984edaa42a298c728", "sha256": "sha256:a375d70a0e94b49ce5a74459da25cd67263a7eb3293b2c9b3a823db687e637cd", "byte_count": 1428, "row_count": 1, "parent_fingerprints": ["sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"], "evidence_maturity_label": null},
       {"role": "run", "availability": "available", "unavailable_reason": null, "relative_path": "artifacts/model/butterflylens_run.json", "media_type": "application/json", "schema_version": "biominer-butterflylens-run-projection-v1.0.0", "semantic_fingerprint": "sha256:de8dc037f7e6b25b7b65ce4b41ef1bce5533fd7d8bddd9bb5c14a9d3c3ee5872", "sha256": "sha256:f555acddb29279c4c2e6a6ec832fb93b76e4af32d0a4c3a5bc3e599598b7bd17", "byte_count": 1499, "row_count": 1, "parent_fingerprints": ["sha256:5a872afa4737ba7f2cf9d394a7228656fe6647b86b98e64984edaa42a298c728", "sha256:9999999999999999999999999999999999999999999999999999999999999999", "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"], "evidence_maturity_label": null},

@@ -327,11 +327,14 @@ TaxaLens at exact committed pin
 review, quality and geographic-impact
 artifacts without conflating reviewed with release-ready occurrence status.
 ButterflyLens at exact committed pin
-`1cea643623f2f20a2bea72afc754c7b194db3278` receives model-evidence and
+`3d6486da87f32136c35e29aeed6cb6291da66a17` receives model-evidence and
 classification-maturity artifacts
 through its import adapter; BioMiner does not bypass RLS or write directly to
-its tables. Both handoffs pin exact contracts and producer commits, preserve
-rights and geographic precision, and publish manifests last.
+its tables. Adjudication, reviewer reliability, product quality, Flickr public
+display, media takedown, sensitive-location receipts, occurrence release,
+Darwin Core preparation, and ALA submission remain ButterflyLens-owned. Both
+handoffs pin exact contracts and producer commits, preserve rights and
+geographic precision, and publish manifests last.
 
 Schema evolution is additive where possible. A breaking policy/schema change
 creates a new version and migration/compatibility fixture; historical pool and

@@ -120,8 +120,23 @@ def test_shared_pin_fixture_matches_production_consumers_and_targets() -> None:
         "geographic_impact_cell",
         "verification_campaign",
         "verification_assignment",
+        "verification_adjudication",
         "verification_event",
         "verification_consensus",
+        "layered_consensus_policy",
+        "reviewer_reliability",
+        "quality_snapshot",
+        "quality_policy",
+        "quality_estimator",
+        "flickr_public_display_policy",
+        "sensitive_location_policy",
+        "public_location_decision",
+        "occurrence_release_policy",
+        "occurrence_release_decision",
+        "darwin_core_export",
+        "darwin_core_export_policy",
+        "ala_contribution",
+        "ala_contribution_policy",
     ):
         assert (
             pins["butterflylens"]["contracts"][name]
@@ -162,6 +177,15 @@ def test_both_manifests_are_complete_and_fail_closed() -> None:
     assert butterflylens["authority_boundary"]["reviewer_identity_in_handoff"] is (
         False
     )
+    assert (
+        butterflylens["authority_boundary"]["sensitive_location_decisions_in_handoff"]
+        is False
+    )
+    assert (
+        butterflylens["authority_boundary"]["occurrence_release_decisions_in_handoff"]
+        is False
+    )
+    assert butterflylens["authority_boundary"]["ala_submission_authority"] is False
 
 
 def test_field_parity_covers_product_specific_scientific_boundaries() -> None:
@@ -181,6 +205,21 @@ def test_field_parity_covers_product_specific_scientific_boundaries() -> None:
     assert (
         butterflylens_projections["geographic_impact"]["candidate_only_is_occurrence"]
         is False
+    )
+    assert (
+        butterflylens_projections["geographic_impact"]["raw_coordinates_excluded"]
+        is True
+    )
+    assert butterflylens_projections["review_inputs"]["quality_estimate_authority"] is (
+        False
+    )
+    assert butterflylens_projections["release"]["producer_release_authority"] is False
+    assert (
+        butterflylens_projections["publication"]["darwin_core_preparation_authority"]
+        is False
+    )
+    assert butterflylens_projections["publication"]["ala_submission_authority"] is (
+        False
     )
 
 
@@ -238,7 +277,52 @@ def test_field_parity_covers_product_specific_scientific_boundaries() -> None:
                 BUTTERFLYLENS_TARGET_CONTRACTS["geographic_impact_cell"],
                 BUTTERFLYLENS_TARGET_CONTRACTS["verification_campaign"],
                 BUTTERFLYLENS_TARGET_CONTRACTS["verification_assignment"],
+                BUTTERFLYLENS_TARGET_CONTRACTS["verification_adjudication"],
+                BUTTERFLYLENS_TARGET_CONTRACTS["reviewer_reliability"],
+                BUTTERFLYLENS_TARGET_CONTRACTS["quality_snapshot"],
             ),
+        ),
+        (
+            "ButterflyLens",
+            BUTTERFLYLENS_PINNED_COMMIT,
+            "packages/contracts/python/butterflylens/contracts/occurrence_release.py",
+            (
+                BUTTERFLYLENS_TARGET_CONTRACTS["occurrence_release_policy"],
+                BUTTERFLYLENS_TARGET_CONTRACTS["occurrence_release_decision"],
+            ),
+        ),
+        (
+            "ButterflyLens",
+            BUTTERFLYLENS_PINNED_COMMIT,
+            "packages/contracts/python/butterflylens/contracts/sensitive_locations.py",
+            (
+                BUTTERFLYLENS_TARGET_CONTRACTS["sensitive_location_policy"],
+                BUTTERFLYLENS_TARGET_CONTRACTS["public_location_decision"],
+            ),
+        ),
+        (
+            "ButterflyLens",
+            BUTTERFLYLENS_PINNED_COMMIT,
+            "packages/contracts/python/butterflylens/contracts/darwin_core_export.py",
+            (
+                BUTTERFLYLENS_TARGET_CONTRACTS["darwin_core_export"],
+                BUTTERFLYLENS_TARGET_CONTRACTS["darwin_core_export_policy"],
+            ),
+        ),
+        (
+            "ButterflyLens",
+            BUTTERFLYLENS_PINNED_COMMIT,
+            "packages/contracts/python/butterflylens/contracts/ala_contribution.py",
+            (
+                BUTTERFLYLENS_TARGET_CONTRACTS["ala_contribution"],
+                BUTTERFLYLENS_TARGET_CONTRACTS["ala_contribution_policy"],
+            ),
+        ),
+        (
+            "ButterflyLens",
+            BUTTERFLYLENS_PINNED_COMMIT,
+            "packages/flickr/public-display-policy.v1.json",
+            (BUTTERFLYLENS_TARGET_CONTRACTS["flickr_public_display_policy"],),
         ),
     ],
 )
@@ -291,3 +375,84 @@ def test_pinned_butterflylens_review_migrations_match_adapter_policy() -> None:
         "supersedes_event_pk",
     ):
         assert term in committed
+
+
+def test_pinned_butterflylens_release_migrations_match_authority_boundary() -> None:
+    repository = ROOT.parent / "ButterflyLens"
+    if not (repository / ".git").exists():
+        pytest.skip("ButterflyLens sibling checkout is unavailable")
+    paths = tuple(
+        BUTTERFLYLENS_TARGET_CONTRACTS[name]
+        for name in (
+            "conflict_adjudication_migration",
+            "reviewer_control_migration",
+            "reviewer_reliability_migration",
+            "layered_consensus_migration",
+            "dataset_quality_migration",
+            "flickr_public_display_migration",
+            "sensitive_location_migration",
+            "media_takedown_migration",
+            "occurrence_release_migration",
+        )
+    )
+    committed = "\n".join(
+        subprocess.run(
+            [
+                "git",
+                "show",
+                f"{BUTTERFLYLENS_PINNED_COMMIT}:supabase/migrations/{path}",
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        for path in paths
+    )
+
+    for term in (
+        "security_invoker",
+        "butterflylens-reviewer-reliability-policy:v1.0.0",
+        "butterflylens-sensitive-location-policy:v1.0.0",
+        "butterflylens-media-rights:v1.0.0",
+        "butterflylens-occurrence-release:v1.0.0",
+    ):
+        assert term in committed
+
+
+def test_pinned_butterflylens_rejects_retired_fingerprint_schema() -> None:
+    repository = ROOT.parent / "ButterflyLens"
+    if not (repository / ".git").exists():
+        pytest.skip("ButterflyLens sibling checkout is unavailable")
+    fingerprint = subprocess.run(
+        [
+            "git",
+            "show",
+            (
+                f"{BUTTERFLYLENS_PINNED_COMMIT}:packages/contracts/python/"
+                "butterflylens/contracts/fingerprint.py"
+            ),
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    parity = subprocess.run(
+        [
+            "git",
+            "show",
+            (
+                f"{BUTTERFLYLENS_PINNED_COMMIT}:packages/contracts/tests/"
+                "fixtures/parity-cases.json"
+            ),
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "EVIDENCE_FINGERPRINT_LEGACY_SCHEMA_VERSION" not in fingerprint
+    assert '"butterflylens-evidence-fingerprint:v1.1.0"' in fingerprint
+    assert "fingerprint-rejects-retired-v1.0-version" in parity

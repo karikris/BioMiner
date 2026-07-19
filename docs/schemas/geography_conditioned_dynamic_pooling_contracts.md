@@ -182,11 +182,13 @@ contains six score/pool tables, a representative review frame, optional
 quality sidecar, and explicit geographic-cell unavailability. TaxaLens owns
 baseline-provider-union geographic impact and database identity.
 
-ButterflyLens is pinned to `1cea643623f2f20a2bea72afc754c7b194db3278` and consumes
-the ButterflyLens dynamic-pool handoff through exact committed JSON Schema,
-Python, TypeScript, migration, pgTAP and vocabulary fixtures. BioMiner exports
-pre-assignment review inputs, not reviewer assignments; ButterflyLens owns
-database IDs, RLS, review events, maturity transitions, and release authority.
+ButterflyLens is pinned to `3d6486da87f32136c35e29aeed6cb6291da66a17`
+and consumes the ButterflyLens dynamic-pool handoff through exact committed
+JSON Schema, Python, TypeScript, migration, pgTAP, and vocabulary fixtures.
+BioMiner emits evidence-fingerprint v1.1 and exports pre-assignment review
+inputs, not reviewer assignments. ButterflyLens owns database IDs, RLS, review
+events, adjudication, reliability, quality, sensitive-location decisions,
+occurrence release, Darwin Core preparation, and ALA submission.
 
 Both handoffs are create-only, validate all artifacts before a manifest-last
 publish, keep semantic fingerprints separate from file SHA-256 values, and
