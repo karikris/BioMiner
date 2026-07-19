@@ -74,8 +74,10 @@ at the start of every task.
   +2,193/-59,356 lines (net -57,163); production Python is net -33,892 lines
   and 53 modules, while test Python is net -24,012 lines and 58 modules. The
   implementation-only regression gate passed 2,622 tests with the agent-pack
-  hash test deferred until this current-state update (138.22 seconds). Ruff,
-  Vulture at 90% confidence and the final complete gate are release checks.
+  hash test deferred until this current-state update (138.22 seconds). After
+  pack regeneration, the complete suite passed all 2,623 tests in 137.45
+  seconds. Ruff, Vulture at 90% confidence, package build and CLI surface gates
+  also passed.
 - `a76781a` introduced the post-uplift architecture audit; its final measured
   outcome is in `docs/architecture/post_uplift_simplification_audit.md`. The
   coherent cutover removes the callable cascade/crop/bucket/cloud/rolling runtime,

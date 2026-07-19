@@ -241,7 +241,8 @@ or human-review dependency is explicit.
 
 - The implementation-only regression gate passed 2,622 tests with the one
   agent-pack manifest consistency test deferred until this report and current
-  state were hashed (138.22 seconds).
+  state were hashed (138.22 seconds). After manifest regeneration, the complete
+  suite passed all 2,623 tests in 137.45 seconds.
 - Ruff and Vulture at 90% confidence report no findings on the cleaned source
   tree; a production-source search has zero whole-word `legacy` matches.
 - Exact committed-object tests cover both sibling consumer pins. No sibling
@@ -249,6 +250,8 @@ or human-review dependency is explicit.
 - Migration notes document each deleted runtime boundary. Historical reports,
   caches, checkpoints and user-owned runtime/configuration paths were not
   rewritten or deleted.
+- `uv build` produced both the source distribution and wheel successfully; the
+  root and retained `dev vision` CLI help surfaces both parse successfully.
 - GitHits was not called, in accordance with the user's directive; each task
   provenance record states `skipped_user_directive` and has no solution ID.
 
