@@ -22,8 +22,9 @@ it. This is not just excess code:
   `compile_queries`, `enqueue_flickr_work`, and `poll_flickr`);
 - the remaining non-manual adaptive stages fail with
   `stage_handler_not_configured` unless a caller injects a handler;
-- the seven dynamic-pooling CLI operations reject non-dry-run execution and
-  describe their adapter as `not_connected`;
+- the seven dynamic-pooling CLI operations rejected non-dry-run execution,
+  described their adapter as `not_connected`, and declared several bindings
+  that differed from the owning Parquet contracts;
 - the old default workflow still executes detector-crop, cascade scoring,
   bucket summarisation, and Flickr-comment promotion;
 - the BioMiner ButterflyLens consumer pin predates 60 committed ButterflyLens
@@ -152,9 +153,10 @@ to retain historical artifacts without reinterpretation.
 
 ### B. Connect the adaptive runtime
 
-1. Replace plan-only dynamic commands with concrete local artifact adapters.
-2. Route the canonical orchestrator stages through those same application
-   functions instead of duplicating transformations.
+1. Remove the disconnected plan-only dynamic command layer; use the concrete
+   `references` application commands for artifact work.
+2. Route the canonical orchestrator stages through those same owning
+   application functions instead of duplicating transformations.
 3. Keep manual-review stages awaiting explicit signed review input.
 4. Fail closed on missing, stale, incompatible, or partially written inputs.
 

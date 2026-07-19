@@ -748,6 +748,11 @@ def test_removed_comment_commands_and_run_limit_fail_to_parse() -> None:
         )
 
 
+def test_removed_plan_only_dynamic_pooling_command_fails_to_parse() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["dynamic-pooling", "plan-pools"])
+
+
 def test_storage_and_workstore_doctor_commands_parse() -> None:
     parser = build_parser()
     storage_args = parser.parse_args(["storage", "doctor"])

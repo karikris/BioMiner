@@ -127,10 +127,6 @@ from biominer.run.adaptive_config import (
     DEFAULT_REFERENCE_SOURCE,
     REFERENCE_ADMISSION_MODES,
 )
-from biominer.run.dynamic_pool_cli import (
-    add_dynamic_pooling_parsers,
-    run_dynamic_pooling_command,
-)
 from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
 from biominer.species.context import SpeciesContext
@@ -220,11 +216,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    dynamic_pooling = subparsers.add_parser("dynamic-pooling")
-    dynamic_pooling_subparsers = dynamic_pooling.add_subparsers(
-        dest="dynamic_pooling_command"
-    )
-    add_dynamic_pooling_parsers(dynamic_pooling_subparsers)
     evidence = subparsers.add_parser("evidence")
     evidence_subparsers = evidence.add_subparsers(dest="evidence_command")
     evidence_join = evidence_subparsers.add_parser("join")
@@ -826,8 +817,6 @@ def run(args: argparse.Namespace) -> int:
         return 2
     if args.command == "evaluation":
         return _run_evaluation_command(args)
-    if args.command == "dynamic-pooling":
-        return run_dynamic_pooling_command(args)
     if args.command == "references":
         return _run_references_command(args)
     if args.command == "storage":

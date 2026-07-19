@@ -41,7 +41,9 @@ production-decision boundary. The implementation includes:
   fail-closed occurrence review, reviewed-evidence planning, leakage-safe
   splits, calibration, grouped quality reporting and remediation;
 - exact reference-revision impact, selective reuse/rerun planning, stage graph,
-  settings and seven plan-first CLI operations;
+  and typed settings. The seven plan-only CLI operations implemented in Phase
+  13 were removed on 2026-07-19 because their disconnected bindings did not
+  match the concrete artifact contracts;
 - immutable TaxaLens and ButterflyLens handoffs validated against exact
   committed consumer objects; and
 - a complete 24-variant fixture ablation and production-default decision.

@@ -95,7 +95,7 @@ uv run biominer dev vision build-text-embedding-cache \
   --output data/cache/taxonomy/current/classification_text_embeddings.parquet
 
 uv run biominer run --help
-uv run biominer dynamic-pooling --help
+uv run biominer references --help
 ```
 
 `registry publish` requires completed geographic spread and summary builds. It
@@ -115,7 +115,7 @@ absence.
 uv run pytest -q
 uv run biominer --help
 uv run biominer run --help
-uv run biominer dynamic-pooling --help
+uv run biominer references --help
 ```
 
 Tests use fake clients and classifiers and do not require Flickr calls or model downloads.

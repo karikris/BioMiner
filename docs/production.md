@@ -1,9 +1,8 @@
 # Production workflow
 
-`biominer run` is the integrated production pipeline entry point. The
-`biominer dynamic-pooling` command group currently validates and persists exact
-operation plans; its live operation adapters deliberately fail closed until
-connected.
+`biominer run` is the integrated production pipeline entry point. Concrete
+reference workflow operations are exposed under `biominer references`; the run
+orchestrator and CLI call the same owning application functions.
 
 ## Stages
 
@@ -106,13 +105,12 @@ does not execute live acquisition, visual models, review, statistical audit, or
 release. Stage-specific artifact, schema, fingerprint, and readiness checks run
 and fail closed when their live adapter initializes.
 
-Dynamic-pooling operations expose seven plan-first commands:
-`build-reference-geography-index`, `plan-pools`, `score-pools`,
-`build-review-sample`, `audit-quality`, `selective-rerun`, and
-`export-handoff`. Each requires typed settings, exact named input bindings, an
-output root, and `--dry-run`. Plans state missing selection evidence and grant
-no calibration, verification, statistical-support, or release authority. A
-non-dry run currently returns an explicit adapter-not-connected error.
+The former seven-command `biominer dynamic-pooling` plan wrapper was removed on
+2026-07-19. It had no execution adapters, and several declared input/output
+bindings did not match the validated Parquet contracts. Typed dynamic-pooling
+settings remain authoritative. Stage planning belongs to `biominer run`, while
+artifact operations belong to the concrete `biominer references` commands; see
+the [migration note](migrations/dynamic-pool-plan-cli-removal.md).
 
 The Phase 15 fixture pilot reports an `insufficient_evidence` production
 decision. Its review projection is not a selected default. Current runtime

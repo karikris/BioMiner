@@ -64,6 +64,9 @@ at the start of every task.
   dependency order and non-automatic human gates through Task 13.1.3. Task 13.2
   adds typed fingerprinted settings, seven plan-first CLI commands, persisted
   plan validation and a fail-closed live-adapter boundary through Task 13.2.3.
+  Those disconnected commands were removed on 2026-07-19: they promised
+  mismatched artifact shapes and could not execute. Typed settings remain;
+  concrete artifact work belongs to `references`, and `run` owns stage order.
   Phase 14 publishes immutable TaxaLens and ButterflyLens handoffs verified
   against exact committed consumer contracts. Phase 15 Task 15.1 freezes and
   executes a seven-case fixture-backed dynamic-pooling pilot across three
