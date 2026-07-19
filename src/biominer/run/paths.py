@@ -20,15 +20,10 @@ RUN_ARTIFACT_RELATIVE_PATHS: Mapping[str, str] = MappingProxyType(
         "species": "species",
         "state": "state",
         "metrics": "reports/run_metrics.json",
-        "vision_stage_metrics": "reports/vision_stage_metrics.json",
-        "vision_stage_summary": "reports/vision_stage_summary.md",
-        "review_queue": "reports/review_queue.parquet",
-        "visual_qa_findings": "reports/visual_qa_findings.parquet",
         "query_definitions": "registry/flickr_query_definitions.parquet",
         "source_records": "staging/canonical_source_records.parquet",
         "object_detections": "staging/object_detections.parquet",
         "object_scores": "staging/object_bioclip_scores.parquet",
-        "object_evidence": "staging/object_evidence_joined.parquet",
         "photo_summary": "staging/photo_evidence_summary.parquet",
         "geographic_registry": "registry/geography",
         "taxon_geographic_spread": (
@@ -123,38 +118,6 @@ RUN_ARTIFACT_DIRECTORY_KEYS: frozenset[str] = frozenset(
     }
 )
 
-REFERENCE_FIRST_ARTIFACT_KEYS: frozenset[str] = frozenset(
-    {
-        "geographic_registry",
-        "taxon_geographic_spread",
-        "geographic_occurrence_evidence",
-        "taxon_geographic_summary",
-        "geographic_qa_findings",
-        "flickr_geography",
-        "flickr_geo_clusters",
-        "flickr_geo_assignments",
-        "regional_candidates",
-        "reference_observations",
-        "reference_media",
-        "reference_media_candidates",
-        "reference_media_objects",
-        "reference_review",
-        "reference_review_queue",
-        "reference_review_decisions",
-        "reference_readiness",
-        "reference_embeddings",
-        "reference_prototypes",
-        "feature_matrix",
-        "classifiers",
-        "calibrators",
-        "flickr_embeddings",
-        "target_aware_object_scores",
-        "target_aware_candidate_scores",
-        "reports",
-    }
-)
-
-
 @dataclass(frozen=True)
 class RunArtifactUris:
     """URI-oriented artifact layout for local or S3-compatible production runs."""
@@ -198,22 +161,6 @@ class RunArtifactUris:
         return self.artifact_uri("metrics")
 
     @property
-    def vision_stage_metrics_uri(self) -> str:
-        return self.artifact_uri("vision_stage_metrics")
-
-    @property
-    def vision_stage_summary_uri(self) -> str:
-        return self.artifact_uri("vision_stage_summary")
-
-    @property
-    def review_queue_uri(self) -> str:
-        return self.artifact_uri("review_queue")
-
-    @property
-    def visual_qa_findings_uri(self) -> str:
-        return self.artifact_uri("visual_qa_findings")
-
-    @property
     def query_definitions_uri(self) -> str:
         return self.artifact_uri("query_definitions")
 
@@ -228,10 +175,6 @@ class RunArtifactUris:
     @property
     def object_scores_uri(self) -> str:
         return self.artifact_uri("object_scores")
-
-    @property
-    def object_evidence_uri(self) -> str:
-        return self.artifact_uri("object_evidence")
 
     @property
     def photo_summary_uri(self) -> str:
@@ -437,22 +380,6 @@ class RunPaths:
         return self.artifact_path("metrics")
 
     @property
-    def vision_stage_metrics_path(self) -> Path:
-        return self.artifact_path("vision_stage_metrics")
-
-    @property
-    def vision_stage_summary_path(self) -> Path:
-        return self.artifact_path("vision_stage_summary")
-
-    @property
-    def review_queue_path(self) -> Path:
-        return self.artifact_path("review_queue")
-
-    @property
-    def visual_qa_findings_path(self) -> Path:
-        return self.artifact_path("visual_qa_findings")
-
-    @property
     def query_definitions_path(self) -> Path:
         return self.artifact_path("query_definitions")
 
@@ -467,10 +394,6 @@ class RunPaths:
     @property
     def object_scores_path(self) -> Path:
         return self.artifact_path("object_scores")
-
-    @property
-    def object_evidence_path(self) -> Path:
-        return self.artifact_path("object_evidence")
 
     @property
     def photo_summary_path(self) -> Path:
@@ -645,7 +568,6 @@ def _scoped_model_artifact(
 
 
 __all__ = [
-    "REFERENCE_FIRST_ARTIFACT_KEYS",
     "RUN_ARTIFACT_DIRECTORY_KEYS",
     "RUN_ARTIFACT_LAYOUT_VERSION",
     "RUN_ARTIFACT_RELATIVE_PATHS",

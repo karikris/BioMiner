@@ -5,7 +5,6 @@ from pathlib import Path
 from biominer.run import ProductionRunRequest, RunArtifactUris, RunPaths, TaxonScope
 from biominer.run.orchestrator import build_run_plan
 from biominer.run.paths import (
-    REFERENCE_FIRST_ARTIFACT_KEYS,
     RUN_ARTIFACT_DIRECTORY_KEYS,
     RUN_ARTIFACT_LAYOUT_VERSION,
     RUN_ARTIFACT_RELATIVE_PATHS,
@@ -13,36 +12,8 @@ from biominer.run.paths import (
 from biominer.species.context import SpeciesContext
 
 
-def test_reference_first_artifact_inventory_covers_every_durable_category() -> None:
-    assert REFERENCE_FIRST_ARTIFACT_KEYS <= set(RUN_ARTIFACT_RELATIVE_PATHS)
-    assert REFERENCE_FIRST_ARTIFACT_KEYS == {
-        "geographic_registry",
-        "taxon_geographic_spread",
-        "geographic_occurrence_evidence",
-        "taxon_geographic_summary",
-        "geographic_qa_findings",
-        "flickr_geography",
-        "flickr_geo_clusters",
-        "flickr_geo_assignments",
-        "regional_candidates",
-        "reference_observations",
-        "reference_media",
-        "reference_media_candidates",
-        "reference_media_objects",
-        "reference_review",
-        "reference_review_queue",
-        "reference_review_decisions",
-        "reference_readiness",
-        "reference_embeddings",
-        "reference_prototypes",
-        "feature_matrix",
-        "classifiers",
-        "calibrators",
-        "flickr_embeddings",
-        "target_aware_object_scores",
-        "target_aware_candidate_scores",
-        "reports",
-    }
+def test_artifact_directory_keys_are_declared_in_the_layout() -> None:
+    assert RUN_ARTIFACT_DIRECTORY_KEYS <= set(RUN_ARTIFACT_RELATIVE_PATHS)
     assert {
         "geographic_registry",
         "reference_media",
