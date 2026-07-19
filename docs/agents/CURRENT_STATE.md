@@ -581,7 +581,7 @@ run. No strategy is empirically superior, and no live dynamic pool, live score,
 calibrated probability, completed human review, statistical-support result or
 new release-ready occurrence is claimed by the completed phases.
 
-- as of 2026-07-19T18:20:21+10:00 local (workspace check), this subtask is
+- as of 2026-07-19T18:22:59+10:00 local (workspace check), this subtask is
   wrapped up: no local BioMiner process is active, and only historical
   metadata-only Flickr polling artifacts are present; no media, download, or
   score stages are running. The 18 July 2026 GBIF provenance remains stored as
@@ -590,6 +590,9 @@ new release-ready occurrence is claimed by the completed phases.
   `https://doi.org/10.15468/dl.7uut3k`).
   Until a new explicit live-goal is issued, do not run additional Flickr API
   calls from this branch.
+  Wrap-up action completed for this subtask: historical fetch-only activity is
+  acknowledged and all further work in this goal should proceed on downstream
+  orchestration/review tasks, not additional Flickr metadata polling.
 
 ## Repository map
 
