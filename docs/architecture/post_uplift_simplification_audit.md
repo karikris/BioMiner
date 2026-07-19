@@ -139,12 +139,15 @@ and occurrence release. BioMiner must publish evidence and maturity; it must
 never authorize TaxaLens occurrence release.
 
 ButterflyLens committed HEAD and BioMiner's audited pin are
-`3d6486da87f32136c35e29aeed6cb6291da66a17`. Exact committed-object tests cover
+`1ca6d9e15b03147df26a15deb309d32aed7ea9f7`. Exact committed-object tests cover
 the current consumer schemas and confirm that BioMiner does not export database
 primary keys, reviewer identities, service credentials, sensitive-location or
 occurrence-release decisions, Darwin Core publication authority, or ALA
 submission authority. The consumer's retired fingerprint v1.0 reader is
 compatible with BioMiner because the producer already emits v1.1 only.
+The 16-commit movement from `3d6486da87f32136c35e29aeed6cb6291da66a17`
+removed a separate analyst runtime; the audited contract, Flickr-policy,
+migration, and database-fixture Git trees remained identical.
 
 Sibling worktrees remain read-only during this goal. Alignment is performed by
 reading committed objects and changing BioMiner's producer/contracts/tests,

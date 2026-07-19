@@ -22,8 +22,8 @@ BUTTERFLYLENS_POOL_HANDOFF_SCHEMA_VERSION = (
 )
 BUTTERFLYLENS_POOL_HANDOFF_FILE = "butterflylens_dynamic_pool_handoff.json"
 BUTTERFLYLENS_REPOSITORY = "karikris/ButterflyLens"
-BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT = "1cea643623f2f20a2bea72afc754c7b194db3278"
-BUTTERFLYLENS_PINNED_COMMIT = "3d6486da87f32136c35e29aeed6cb6291da66a17"
+BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT = "3d6486da87f32136c35e29aeed6cb6291da66a17"
+BUTTERFLYLENS_PINNED_COMMIT = "1ca6d9e15b03147df26a15deb309d32aed7ea9f7"
 BUTTERFLYLENS_REQUIRED_ARTIFACT_ROLES = (
     "project",
     "run",
@@ -329,19 +329,12 @@ def _consumer_compatibility() -> dict[str, object]:
     return {
         "previous_audited_commit": BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT,
         "current_audited_commit": BUTTERFLYLENS_PINNED_COMMIT,
-        "decision": (
-            "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls"
-        ),
-        "wire_schema_breaking_changes": True,
+        "decision": "compatible_contract_scope_unchanged_after_runtime_removal",
+        "wire_schema_breaking_changes": False,
         "producer_wire_schema_compatible": True,
-        "database_adapter_changes_required": True,
+        "database_adapter_changes_required": False,
         "producer_artifact_changes_required": False,
-        "required_adapter_changes": [
-            "accept evidence fingerprint v1.1 only; reject the retired v1.0 schema",
-            "keep adjudication reviewer reliability and quality estimates downstream",
-            "apply Flickr display rights takedown and sensitive-location controls downstream",
-            "issue occurrence-release decisions and Darwin Core or ALA exports downstream",
-        ],
+        "required_adapter_changes": [],
         "silent_pin_movement": False,
     }
 

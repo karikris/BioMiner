@@ -28,7 +28,7 @@ MODEL_FINGERPRINT = "sha256:" + "3" * 64
 PREPROCESSING_FINGERPRINT = "sha256:" + "4" * 64
 COMPATIBILITY_REVIEW = (
     Path(__file__).parents[1]
-    / "docs/architecture/butterflylens_3d6486_compatibility_review.md"
+    / "docs/architecture/butterflylens_1ca6d9_compatibility_review.md"
 )
 
 
@@ -95,19 +95,12 @@ def test_manifest_records_deliberate_pin_movement_and_all_roles() -> None:
     assert manifest["consumer_compatibility"] == {
         "previous_audited_commit": BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT,
         "current_audited_commit": BUTTERFLYLENS_PINNED_COMMIT,
-        "decision": (
-            "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls"
-        ),
-        "wire_schema_breaking_changes": True,
+        "decision": "compatible_contract_scope_unchanged_after_runtime_removal",
+        "wire_schema_breaking_changes": False,
         "producer_wire_schema_compatible": True,
-        "database_adapter_changes_required": True,
+        "database_adapter_changes_required": False,
         "producer_artifact_changes_required": False,
-        "required_adapter_changes": [
-            "accept evidence fingerprint v1.1 only; reject the retired v1.0 schema",
-            "keep adjudication reviewer reliability and quality estimates downstream",
-            "apply Flickr display rights takedown and sensitive-location controls downstream",
-            "issue occurrence-release decisions and Darwin Core or ALA exports downstream",
-        ],
+        "required_adapter_changes": [],
         "silent_pin_movement": False,
     }
     assert [row["role"] for row in manifest["artifacts"]] == list(
@@ -221,7 +214,8 @@ def test_compatibility_review_documents_supabase_and_pin_boundaries() -> None:
         "append-only",
         "service-role",
         "row-level security",
-        "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls",
+        "compatible_contract_scope_unchanged_after_runtime_removal",
+        "byte-for-byte unchanged",
         "retired v1.0",
         "sensitive-location",
         "occurrence-release",

@@ -1,6 +1,6 @@
 {
-  "schema_version": "biominer-downstream-pooling-contract-pins-v1.3.0",
-  "compatibility_status": "compatible_storage_handoffs_with_v1_1_fingerprints_and_consumer_owned_release_controls",
+  "schema_version": "biominer-downstream-pooling-contract-pins-v1.4.0",
+  "compatibility_status": "compatible_storage_handoffs_with_unchanged_butterflylens_contract_scope",
   "policy": {
     "consume_committed_objects_only": true,
     "import_sibling_implementation_code": false,
@@ -33,9 +33,9 @@
   "butterflylens": {
     "repository": "karikris/ButterflyLens",
     "goal_written_commit": "c8135a0cb0001245215cdc774d063ef49407fb26",
-    "previous_audited_commit": "1cea643623f2f20a2bea72afc754c7b194db3278",
-    "audited_commit": "3d6486da87f32136c35e29aeed6cb6291da66a17",
-    "pin_movement_decision": "compatible_with_v1_1_fingerprint_and_consumer_owned_release_controls",
+    "previous_audited_commit": "3d6486da87f32136c35e29aeed6cb6291da66a17",
+    "audited_commit": "1ca6d9e15b03147df26a15deb309d32aed7ea9f7",
+    "pin_movement_decision": "compatible_contract_scope_unchanged_after_runtime_removal",
     "contracts": {
       "taxonomy_pack_manifest": "butterflylens-taxonomy-pack-manifest/v1",
       "project": "butterflylens-project:v1.0.0",
@@ -71,6 +71,6 @@
       "append_only_review_events": true,
       "database_adapter_owned": true
     },
-    "observed_change": "fingerprint_v1_1_only_plus_consumer_owned_adjudication_quality_rights_sensitive_location_release_and_export_controls"
+    "observed_change": "runtime_analyst_removal_and_ui_governance_evidence_only_with_contract_migration_and_database_fixture_trees_unchanged"
   }
 }

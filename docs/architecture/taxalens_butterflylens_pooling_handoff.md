@@ -15,11 +15,13 @@ The goal was written against TaxaLens
 `c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc`; Task 14.1 advances that exact
 pin to `e845dd98493979f37b04dbb6538e0d7b8758ca11` after verifying its additive,
 fail-closed content-addressed handoff consumer. The current ButterflyLens pin
-is `3d6486da87f32136c35e29aeed6cb6291da66a17`; its previous audited pin was
-`1cea643623f2f20a2bea72afc754c7b194db3278`. The compatibility decisions are
-recorded separately in the executable pin fixture. The sibling worktrees were
-dirty, so every audit and compatibility test read exact committed Git objects,
-not sibling working-tree files.
+is `1ca6d9e15b03147df26a15deb309d32aed7ea9f7`; its previous audited pin was
+`3d6486da87f32136c35e29aeed6cb6291da66a17`. Its 16-commit delta removes the
+separate analyst runtime and adds UI/governance evidence while leaving the
+contract, Flickr-policy, migration, and database-fixture trees byte-for-byte
+unchanged. The compatibility decisions are recorded separately in the
+executable pin fixture. Every audit and compatibility test reads exact
+committed Git objects, not sibling working-tree files.
 
 The executable compatibility fixture is
 `tests/fixtures/downstream_pooling_contract_pins.json`. A newer sibling commit

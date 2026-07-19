@@ -5,7 +5,7 @@
 > archive transport described in the architecture handoff audit.
 > The current ButterflyLens pin and its v1.1-only fingerprint boundary are
 > recorded in
-> [`butterflylens_3d6486_compatibility_review.md`](../architecture/butterflylens_3d6486_compatibility_review.md).
+> [`butterflylens_1ca6d9_compatibility_review.md`](../architecture/butterflylens_1ca6d9_compatibility_review.md).
 
 ## Scope
 

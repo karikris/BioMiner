@@ -327,7 +327,7 @@ TaxaLens at exact committed pin
 review, quality and geographic-impact
 artifacts without conflating reviewed with release-ready occurrence status.
 ButterflyLens at exact committed pin
-`3d6486da87f32136c35e29aeed6cb6291da66a17` receives model-evidence and
+`1ca6d9e15b03147df26a15deb309d32aed7ea9f7` receives model-evidence and
 classification-maturity artifacts
 through its import adapter; BioMiner does not bypass RLS or write directly to
 its tables. Adjudication, reviewer reliability, product quality, Flickr public

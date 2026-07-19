@@ -182,7 +182,7 @@ contains six score/pool tables, a representative review frame, optional
 quality sidecar, and explicit geographic-cell unavailability. TaxaLens owns
 baseline-provider-union geographic impact and database identity.
 
-ButterflyLens is pinned to `3d6486da87f32136c35e29aeed6cb6291da66a17`
+ButterflyLens is pinned to `1ca6d9e15b03147df26a15deb309d32aed7ea9f7`
 and consumes the ButterflyLens dynamic-pool handoff through exact committed
 JSON Schema, Python, TypeScript, migration, pgTAP, and vocabulary fixtures.
 BioMiner emits evidence-fingerprint v1.1 and exports pre-assignment review
