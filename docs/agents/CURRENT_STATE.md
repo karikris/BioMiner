@@ -2,7 +2,7 @@
 
 ## Observed repository baseline
 
-Updated from the local repository on 2026-07-18. Confirm Git and reports again
+Updated from the local repository on 2026-07-19. Confirm Git and reports again
 at the start of every task.
 
 - Repository: `karikris/BioMiner`
@@ -17,6 +17,33 @@ at the start of every task.
   (`docs(provenance): record task 16.1 push`)
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
+- Active post-uplift simplification head:
+  `fc86adea2b6fde0235e02794869f24dda274b961`
+  (`refactor(benchmarks): remove synthetic cascade harness`)
+- Post-uplift simplification completed and pushed through that head:
+  - `eef126a`: removed an inert classification switch and no-op registry
+    wrappers; 81 focused tests passed;
+  - `aa9382e`: removed autonomous Flickr comment fetching, enrichment, review,
+    and promotion; 247 focused tests passed;
+  - `c348a4c`: removed the disconnected seven-command dynamic-pooling planning
+    CLI; 78 focused tests passed;
+  - `0155b39`: moved the ButterflyLens consumer pin to exact committed head
+    `3d6486da87f32136c35e29aeed6cb6291da66a17`, preserving v1.1-only
+    fingerprints and downstream-owned release controls; 80 focused handoff,
+    export, and publish tests passed; and
+  - `fc86ade`: removed the model-free synthetic path-cascade benchmark and its
+    fixture/acceptance harness; 101 adjacent tests passed.
+- `a76781a` records the post-uplift architecture audit. The remaining cutover
+  work is to remove the callable cascade/crop/bucket runtime and alternate
+  workflow plans, retain the full-frame adaptive contracts, then run broad
+  dead-code, regression, and measured-reduction gates.
+- GitHits is disabled by the user's current directive for every remaining
+  cleanup task. Use repository history, exact committed sibling objects,
+  schemas, manifests, and tests; never fabricate a GitHits result.
+- The following untracked paths predate and remain outside the cleanup scope:
+  `config/papilio_demoleus_flickr_estimator.sh2`,
+  `config/papilio_demoleus_multilingual_keywords.json`, `docs/superpowers/`,
+  `duplicate_query_terms_skipped`, `logs/`, and `query_terms_added`.
 - Dynamic-pooling phases: Phase 0 baseline, audit and design complete; Phase 1
   cross-repository contract alignment complete; Phase 2 geographic reference
   indexing complete; Phase 3 canonical Flickr photo, organism, association,
@@ -453,12 +480,14 @@ boundary; it does not replace missing live or human evidence.
 
 ## Documentation and legacy compatibility status
 
-At the observed baseline:
+At the current cleanup head:
 
 - `README.md` and `docs/production.md` describe adaptive full-frame,
   target-preserving dynamic pooling as the production direction;
-- family/genus cascades, the 0.90 shortcut, crops and bucket paths remain
-  explicitly labelled legacy compatibility or diagnostics;
+- Flickr comment promotion, the disconnected dynamic-pooling plan CLI, and the
+  synthetic cascade benchmark have been removed with migration notes;
+- the family/genus cascade, crop and bucket production implementation still
+  exists but is a pending removal target, not a supported fallback;
 - `src/biominer/run/orchestrator.py` retains legacy cascade and visual-mode
   compatibility fields alongside adaptive defaults.
 - `src/biominer/run/stages.py` retains legacy, strict reference-first, and
@@ -467,7 +496,8 @@ At the observed baseline:
 Therefore:
 
 - do not treat explicitly labelled legacy prose as active-goal authority;
-- do not delete compatibility paths without an explicit migration task;
+- remove each remaining legacy path only in a coherent migration task with
+  negative surface checks and adjacent regression coverage;
 - do not let compatibility paths silently control adaptive output;
 - keep public, schema, governance and agent documentation aligned when a
   versioned contract or accepted default changes.

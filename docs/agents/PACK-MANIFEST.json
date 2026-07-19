@@ -1,17 +1,17 @@
 {
-  "active_goal_note": "The geography-conditioned dynamic-pooling software/fixture goal is complete through Phase 16 Task 16.2; bounded live execution, source-bound review and statistical validation are next. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled all further GitHits calls through the completed goal.",
+  "active_goal_note": "The geography-conditioned dynamic-pooling software/fixture phases are complete through Phase 16 Task 16.2, but the active post-uplift simplification is removing disconnected and legacy production surfaces before bounded live execution. No live performance result, fusion method or strategy is selected from fixture-only evidence. The user disabled GitHits for every remaining cleanup task.",
   "files": [
     {
-      "bytes": 7159,
-      "lines": 149,
+      "bytes": 7417,
+      "lines": 152,
       "path": "AGENTS.md",
-      "sha256": "ed07b9c0fcdc49bb6aff35c344b8cf8f4359c138c679da957c2ab3c0e3b714fc"
+      "sha256": "35a9379d654d5e8e6dba894c9be75ae3d516a73643cb0ae821704de94877683e"
     },
     {
-      "bytes": 27515,
-      "lines": 519,
+      "bytes": 29704,
+      "lines": 552,
       "path": "docs/agents/CURRENT_STATE.md",
-      "sha256": "ef6b0ef5b0a5f44c03b3963daaecb6f4acef1dfef1d3b4709dd11dcd7203fecb"
+      "sha256": "e14437dc577d1da5e081193fe7d2e847a45490514e169007ec94c5981d6bf3f7"
     },
     {
       "bytes": 5599,
@@ -57,7 +57,7 @@
     }
   ],
   "generated_from_uploaded_file": "AGENTS(14).md",
-  "observed_main_commit": "98c64ec27e0aaa6aa3da333b3e4d37df3fc1c30b",
+  "observed_main_commit": "fc86adea2b6fde0235e02794869f24dda274b961",
   "observed_repository": "karikris/BioMiner",
   "pack": "BioMiner token-efficient agent instructions",
   "schema_version": "biominer-agent-pack-v1.0.0"

@@ -86,8 +86,11 @@ and verify every recorded SHA and gate against local Git before relying on it.
 
 Current direction: adaptive GBIF fast-start → provisional scoring → mandatory
 Flickr review → statistical audit → targeted remediation → selective rerun.
-Legacy cascade/crop/bucket paths are explicit compatibility or diagnostics, not
-adaptive authority.
+Legacy cascade/crop/bucket paths are removal targets, not compatibility or
+adaptive authority. Flickr comment promotion, the disconnected dynamic-pooling
+plan CLI, and the synthetic cascade benchmark have already been removed; do not
+restore or wrap them. Preserve historical artifacts through Git and migration
+documentation rather than callable fallbacks.
 
 Current implementation and release evidence is summarized in
 `reports/gbif_fast_start/final_report.json` and `final_report.md`; detailed gate

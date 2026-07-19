@@ -79,9 +79,9 @@ def test_agent_pack_manifest_matches_every_instruction_file() -> None:
     manifest = _json(PACK_MANIFEST)
 
     assert manifest["observed_main_commit"] == (
-        "98c64ec27e0aaa6aa3da333b3e4d37df3fc1c30b"
+        "fc86adea2b6fde0235e02794869f24dda274b961"
     )
-    assert "software/fixture goal is complete" in manifest["active_goal_note"]
+    assert "active post-uplift simplification" in manifest["active_goal_note"]
 
     for item in manifest["files"]:
         path = ROOT / item["path"]
