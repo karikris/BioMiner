@@ -18,8 +18,8 @@ at the start of every task.
 - Active goal family: geography-conditioned dynamic global/local reference
   pooling
 - Active post-uplift simplification head:
-  `bfdb4b38646f16062d7fb4a6d0f4b0674c8f01dd`
-  (`refactor(run): remove alternate workflow modes`)
+  `cfd377708eeee37fcfacae84553c2940c03fc5a6`
+  (`refactor(vision): remove cascade and crop runtime`)
 - Post-uplift simplification completed and pushed through that head:
   - `eef126a`: removed an inert classification switch and no-op registry
     wrappers; 81 focused tests passed;
@@ -40,7 +40,11 @@ at the start of every task.
     database invariants to their exact owning objects at the pinned consumer
     commit. The full repository gate passed: 3,192 tests in 150.00 seconds; and
   - `bfdb4b3`: removed alternate legacy/reference-first stage plans and Build
-    Week runtime wrappers. The full repository gate passed: 3,176 tests.
+    Week runtime wrappers. The full repository gate passed: 3,176 tests; and
+  - `cfd3777`: removed the classification-v3 cascade, crop generator/scorer,
+    bucket/evidence join, direct cloud wrappers, rolling worker, and phantom
+    runtime profile while retaining null historical crop schema fields. Ruff
+    passed and the full repository gate passed: 2,807 tests in 141.31 seconds.
 - `a76781a` records the post-uplift architecture audit. The current coherent
   cutover removes the callable cascade/crop/bucket/cloud/rolling runtime,
   retains the stable detection schema and full-frame adaptive contracts, and
@@ -499,7 +503,7 @@ At the current cleanup head:
   the adaptive stage graph;
 - the family/genus cascade, crop and bucket production implementation, cloud
   wrappers, rolling worker, and phantom production runtime profile have been
-  removed in the current cutover;
+  removed at `cfd3777`;
 - `src/biominer/run/orchestrator.py` owns planning, manifests, dependency
   preflight, dry-run behavior, and manual-review pauses; live computation is
   owned by explicit injected stage handlers;
