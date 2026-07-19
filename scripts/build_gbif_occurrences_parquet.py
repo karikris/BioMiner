@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 from datetime import UTC, datetime
-from io import BytesIO
 import hashlib
 import json
 from pathlib import Path
-from zipfile import ZipFile
 from urllib import request
+from uuid import uuid4
+from zipfile import ZipFile
 
 import polars as pl
 
-from biominer.storage.parquet import write_parquet
+from biominer.storage.parquet import write_parquet_batches
 
 
 _DEFAULT_URL = "https://api.gbif.org/v1/occurrence/download/request/0004170-260715120105164.zip"
@@ -22,6 +23,15 @@ _DEFAULT_CITATION = (
 _SCHEMA_VERSION = "biominer-gbif-occurrence-parquet-v1"
 _ARCHIVE_MEMBER = "occurrence.txt"
 _NULL_MARKERS = ["", "NULL", "null", "NA", "na", "N/A", "n/a"]
+_REQUIRED_COLUMNS = (
+    "basisOfRecord",
+    "datasetKey",
+    "hasCoordinate",
+    "decimalLatitude",
+    "decimalLongitude",
+)
+_DEFAULT_CSV_BLOCK_SIZE = 8 * 1024 * 1024
+_DEFAULT_PROGRESS_INTERVAL = 1_000_000
 
 
 def _sha256_file(path: Path) -> str:
@@ -48,112 +58,169 @@ def _fetch_archive(url: str, output: Path, *, force: bool) -> Path:
     return output
 
 
-def _read_occurrence_csv(payload: bytes, member_name: str) -> pl.DataFrame:
-    # First try Polars fast-path. Some DWCA rows contain literal quotes in text fields,
-    # so we avoid standard quote handling to keep the parser tolerant.
-    reader_options: list[dict[str, object]] = [
-        {
-            "separator": "\t",
-            "quote_char": "\x00",
-            "null_values": _NULL_MARKERS,
-            "ignore_errors": False,
-            "truncate_ragged_lines": True,
-        },
-    ]
-    for options in reader_options:
-        with BytesIO(payload) as handle:
-            try:
-                return pl.read_csv(handle, **options)
-            except Exception:
-                continue
-    try:
-        import pyarrow.csv as pacsv
+def _occurrence_columns(path: Path) -> list[str]:
+    with ZipFile(path) as archive:
+        try:
+            with archive.open(_ARCHIVE_MEMBER) as member:
+                header = member.readline()
+        except KeyError as error:
+            raise ValueError(f"DWCA archive is missing {_ARCHIVE_MEMBER}") from error
 
-        with BytesIO(payload) as handle:
-            table = pacsv.read_csv(
-                handle,
+    columns = header.decode("utf-8-sig").rstrip("\r\n").split("\t")
+    if not columns or not all(columns) or len(set(columns)) != len(columns):
+        raise ValueError(f"{_ARCHIVE_MEMBER} has an invalid column header")
+    return columns
+
+
+def _validate_columns(columns: list[str]) -> None:
+    missing = [column for column in _REQUIRED_COLUMNS if column not in columns]
+    if missing:
+        raise ValueError(f"DWCA occurrence frame is missing required columns: {', '.join(missing)}")
+    if "key" not in columns and "gbifID" not in columns:
+        raise ValueError("DWCA occurrence frame is missing both gbifID and key")
+
+
+def _validate_row_count(*, row_count: int, expected_records: int | None) -> None:
+    if row_count == 0:
+        raise ValueError("DWCA occurrence frame is empty")
+    if expected_records is not None and row_count != expected_records:
+        raise ValueError(
+            f"DWCA occurrence row count {row_count} does not match expected {expected_records}"
+        )
+
+
+def _output_columns(columns: list[str]) -> list[str]:
+    result = list(columns)
+    for column in ("key", "source", "sourceSnapshotVersion"):
+        if column not in result:
+            result.append(column)
+    return result
+
+
+def _iter_occurrence_frames(
+    path: Path,
+    *,
+    columns: list[str],
+    source_snapshot_version: str,
+    block_size: int,
+    progress_interval: int,
+    progress: dict[str, int],
+) -> Iterator[pl.DataFrame]:
+    """Read the DWCA member incrementally without materializing it in memory."""
+    import pyarrow as pa
+    import pyarrow.csv as pacsv
+
+    if block_size <= 0:
+        raise ValueError("csv block size must be positive")
+    if progress_interval <= 0:
+        raise ValueError("progress interval must be positive")
+
+    column_types = {column: pa.string() for column in columns}
+    with ZipFile(path) as archive:
+        try:
+            member = archive.open(_ARCHIVE_MEMBER)
+        except KeyError as error:
+            raise ValueError(f"DWCA archive is missing {_ARCHIVE_MEMBER}") from error
+        with member:
+            # The header was read separately to pin every field to string. This avoids
+            # type drift across batches and mirrors the former all-string output.
+            member.readline()
+            reader = pacsv.open_csv(
+                member,
+                read_options=pacsv.ReadOptions(
+                    block_size=block_size,
+                    column_names=columns,
+                    use_threads=True,
+                ),
                 parse_options=pacsv.ParseOptions(delimiter="\t", quote_char=False),
                 convert_options=pacsv.ConvertOptions(
+                    column_types=column_types,
                     null_values=_NULL_MARKERS,
                     strings_can_be_null=True,
                 ),
             )
-        return pl.from_arrow(table)
-    except Exception as error:
-        raise ValueError(
-            f"failed to parse {member_name} as a tab-delimited DWCA table"
-        ) from error
-
-
-def _read_occurrence_frame(path: Path) -> pl.DataFrame:
-    with ZipFile(path) as archive:
-        try:
-            payload = archive.read(_ARCHIVE_MEMBER)
-        except KeyError as error:
-            raise ValueError(f"DWCA archive is missing {_ARCHIVE_MEMBER}") from error
-
-    frame = _read_occurrence_csv(payload, _ARCHIVE_MEMBER)
-    if "key" not in frame.columns:
-        if "gbifID" in frame.columns:
-            frame = frame.with_columns(pl.col("gbifID").alias("key"))
-        else:
-            raise ValueError("DWCA occurrence frame is missing both gbifID and key")
-    return frame.with_columns([pl.col(name).cast(pl.Utf8, strict=False) for name in frame.columns])
-
-
-def _validate_frame(
-    frame: pl.DataFrame,
-    *,
-    expected_records: int | None,
-) -> None:
-    if frame.height == 0:
-        raise ValueError("DWCA occurrence frame is empty")
-    if expected_records is not None and frame.height != expected_records:
-        raise ValueError(
-            f"DWCA occurrence row count {frame.height} does not match expected {expected_records}"
-        )
-    required = (
-        "basisOfRecord",
-        "datasetKey",
-        "hasCoordinate",
-        "decimalLatitude",
-        "decimalLongitude",
-    )
-    for field in required:
-        if field not in frame.columns:
-            raise ValueError(f"DWCA occurrence frame is missing required column {field}")
+            for batch in reader:
+                table = pa.Table.from_batches([batch])
+                if "key" not in columns:
+                    table = table.append_column("key", table.column("gbifID"))
+                if "source" not in columns:
+                    table = table.append_column(
+                        "source",
+                        pa.array(["GBIF"] * table.num_rows, type=pa.string()),
+                    )
+                if "sourceSnapshotVersion" not in columns:
+                    table = table.append_column(
+                        "sourceSnapshotVersion",
+                        pa.array(
+                            [source_snapshot_version] * table.num_rows,
+                            type=pa.string(),
+                        ),
+                    )
+                progress["row_count"] += table.num_rows
+                if progress["row_count"] // progress_interval > progress["reported_rows"] // progress_interval:
+                    progress["reported_rows"] = progress["row_count"]
+                    print(
+                        json.dumps(
+                            {
+                                "event": "gbif_dwca_to_parquet_progress",
+                                "rows_written": progress["row_count"],
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                yield pl.from_arrow(table)
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
     archive_path = Path(args.archive)
     downloaded_at = datetime.now(UTC)
     _fetch_archive(args.download_url, archive_path, force=args.force)
-    frame = _read_occurrence_frame(archive_path).sort("key")
-    _validate_frame(frame, expected_records=args.expected_records)
-    if "source" not in frame.columns:
-        frame = frame.with_columns(pl.lit("GBIF").alias("source"))
-    if "sourceSnapshotVersion" not in frame.columns:
-        frame = frame.with_columns(pl.lit(args.source_snapshot_version).alias("sourceSnapshotVersion"))
-
+    columns = _occurrence_columns(archive_path)
+    _validate_columns(columns)
     output = Path(args.output)
-    written = write_parquet(frame, output, compression="zstd")
+    output_schema = {column: pl.String for column in _output_columns(columns)}
+    staging = output.with_name(f".{output.name}.{uuid4().hex}.staging")
+    progress = {"row_count": 0, "reported_rows": 0}
+    try:
+        write_parquet_batches(
+            _iter_occurrence_frames(
+                archive_path,
+                columns=columns,
+                source_snapshot_version=args.source_snapshot_version,
+                block_size=args.csv_block_size,
+                progress_interval=args.progress_interval,
+                progress=progress,
+            ),
+            staging,
+            compression="zstd",
+            schema=output_schema,
+            overwrite=False,
+        )
+        _validate_row_count(
+            row_count=progress["row_count"],
+            expected_records=args.expected_records,
+        )
+        staging.replace(output)
+    finally:
+        staging.unlink(missing_ok=True)
 
     manifest = {
         "schema_version": _SCHEMA_VERSION,
         "generated_at": downloaded_at.isoformat().replace("+00:00", "Z"),
         "source": {
             "download_url": args.download_url,
-            "doi": _DEFAULT_DOI,
-            "citation": _DEFAULT_CITATION,
+            "doi": args.doi,
+            "citation": args.citation,
             "archive_path": str(archive_path),
             "archive_sha256": _sha256_file(archive_path),
             "archive_bytes": archive_path.stat().st_size,
         },
         "output": {
             "path": str(output),
-            "row_count": frame.height,
-            "column_count": len(frame.columns),
-            "physical_bytes": written.stat().st_size,
+            "row_count": progress["row_count"],
+            "column_count": len(output_schema),
+            "physical_bytes": output.stat().st_size,
             "expected_row_count": args.expected_records,
             "source_snapshot_version": args.source_snapshot_version,
         },
@@ -169,11 +236,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default="data/reference/gbif_occurrences.parquet")
     parser.add_argument("--archive", default="data/reference/gbif-occurrence-download.zip")
     parser.add_argument("--manifest", default="data/reference/gbif_occurrence_manifest.json")
+    parser.add_argument("--doi", default=_DEFAULT_DOI)
+    parser.add_argument("--citation", default=_DEFAULT_CITATION)
     parser.add_argument(
         "--source-snapshot-version",
         default="gbif-papilionoidea-australia-2026-07-18",
     )
     parser.add_argument("--expected-records", type=int, default=571_755)
+    parser.add_argument("--csv-block-size", type=int, default=_DEFAULT_CSV_BLOCK_SIZE)
+    parser.add_argument("--progress-interval", type=int, default=_DEFAULT_PROGRESS_INTERVAL)
     parser.add_argument("--force", action="store_true")
     return parser
 
