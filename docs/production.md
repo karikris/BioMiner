@@ -1,25 +1,30 @@
 # Production workflow
 
-`biominer run` is the only production pipeline entry point. Direct visual commands are intentionally absent.
+`biominer run` is the integrated production pipeline entry point. Concrete
+reference workflow operations are exposed under `biominer references`; the run
+orchestrator and CLI call the same owning application functions.
 
 ## Stages
 
 ```text
 resolve scope
   → build/validate registry
-  → acquire, route and admit GBIF reference support
-  → issue provisional or strict reference readiness
-  → reuse/build reference embeddings and prototypes
-  → compile queries
+  → plan geographic spread and compile discovery queries
   → enqueue and poll Flickr metadata
-  → detect and crop eligible butterflies
-  → provisional reference ranking and/or seven-rank BioCLIP screening
-  → join evidence
-  → human-review Flickr release candidates
-  → statistically audit reference-bank performance
-  → review flagged references and selectively rerun affected evidence
+  → cluster Flickr geographic evidence
+  → route Flickr full-frame visual inputs and build/reuse one embedding per photo
+  → acquire, route and provisionally admit GBIF reference support
+  → build/reuse reference embeddings and a geography index
+  → build the complete family/geography candidate union
+  → plan bounded global safety and local reference pools
+  → score complete raw global/local components
+  → provisional fusion and Flickr screening
+  → build a representative probability sample
+  → pause for source-bound Flickr human verification
+  → risk-controlled and statistical reference audit
+  → targeted reference review
+  → rebuild affected reference evidence and selectively rescore affected records
   → final release gate
-  → optional comment review
 ```
 
 The default reference mode is `adaptive_gbif_fast_start`: automated reference
@@ -29,30 +34,53 @@ human verification always blocks final occurrence release. Strict projects set
 readiness, evidence-maturity and selective-rerun contract is documented in
 [Adaptive GBIF fast-start](adaptive_gbif_fast_start.md).
 
-The rolling worker uses bounded queues between staging, detection, crop materialization, image embedding, scoring, and commit. Workers return plain results; the main process merges, sorts, deduplicates, writes Parquet, registers immutable shards, and removes temporary images only after durable commit.
+The target-aware rolling worker uses bounded queues between staging, full-frame
+quality routing, one-time image embedding, cached-vector scoring, and commit.
+Workers return plain results; the coordinator merges, sorts, deduplicates,
+writes Parquet, registers immutable shards, and removes temporary images only
+after durable commit. Reference-pool and matrix identities are independently
+versioned, so pool changes reuse compatible Flickr and reference embeddings.
 
 Cloud runs require S3-compatible storage and a PostgreSQL-compatible workstore. Local development can use filesystem storage and SQLite. Work claims, retry state, committed shard inventories, and source evidence make runs resumable and idempotent.
 
-## Production cascade contract
+## Adaptive dynamic-pooling contract
 
-The registry stores BioCLIP's supported identity ranks:
-`KINGDOM → PHYLUM → CLASS → ORDER → FAMILY → GENUS → SPECIES`. Visual routing
-uses the butterfly funnel: family top 1; genera within that family top 20 then
-top 3; species beneath those genera top 20; distinct-prompt species top 5; and
-final species top 1 selected from the top 5.
+The registry stores BioCLIP-supported identity paths, but the adaptive visual
+route does not treat a family winner as an identity proof. Family retrieval and
+regional evidence form a complete, deterministic candidate union. The target
+and safety-union candidates must remain present; family and geography hard
+pruning are forbidden.
 
-A genus score strictly above 0.90 activates the high-confidence shortcut and
-routes species through only that top genus. At 0.90 or below, the broader genus
-top-20 then top-3 route is retained. Every shortlist, score, margin, candidate
-count, and routing mode is written to the classification output. Missing stored
-ranks use semantic-parent proxies without making taxonomic assertions.
+Each candidate receives a diverse global reference pool and, where evidence is
+available, a geographically relevant local pool. A missing or inadequate local
+pool remains an explicit unavailable state and falls back to global evidence;
+it is never converted into zero support or biological absence. Pool selection
+is bounded, class-balanced, observation/observer-aware, deterministic, and
+fingerprinted.
 
-Every hierarchical run requires a validated `species_paths.parquet` in the
-registry and a complete text-embedding cache built for the BioCLIP model ID and
-checkpoint used by that run. Production verifies classification and prompt
-versions, hierarchy and cache fingerprints, the exact staged-label set, and
-embedding dimensions. Missing or mismatched taxonomy/cache input fails before
-scoring; production has no direct-prompt fallback.
+The canonical target-aware model input is the full frame. YOLOE routes and
+measures suitability; it does not classify species. One raw BioCLIP embedding
+is persisted per compatible media/model/transform identity. Candidate, family,
+global, and local matrices are cached separately, and scoring is ordered for
+locality. Every raw component, disagreement, rank movement, coverage state,
+fusion method, tie, and alternative remains available downstream.
+
+No raw similarity, distance, detector score, margin, SVM value, component
+score, or provisional fusion score is a probability. Candidate evidence,
+calibrated probability, human verification, representative statistical
+support, occurrence-release maturity, and downstream handoff maturity are
+separate contracts. Unreviewed Flickr records cannot enter the verified
+occurrence export.
+
+The family/genus cascade, the strictly-above-0.90 genus shortcut, per-detection
+crop materialization, and bucketed visual modes remain supported only as
+explicit `legacy`/compatibility workflows. Existing hierarchical artifacts
+still require validated species paths and a matching taxonomy text-embedding
+cache, for example
+`--taxonomy-text-embedding-cache s3://biominer/cache/taxonomy/current/classification_text_embeddings.parquet`.
+That cache is a legacy hierarchical input, not an adaptive dynamic-pool
+selection or release artifact. Those paths must not silently substitute for
+adaptive full-frame dynamic-pool output.
 
 ## Example
 
@@ -61,9 +89,9 @@ uv run biominer --config config/biominer.cloud.example.toml run \
   --taxon Papilionidae \
   --rank family \
   --registry-dir s3://biominer/registry/butterflies-v2 \
-  --taxonomy-text-embedding-cache s3://biominer/cache/taxonomy/current/classification_text_embeddings.parquet \
   --output-prefix s3://biominer/runs/current \
-  --classification-mode hierarchical_butterfly_classification \
+  --workflow adaptive \
+  --classification-mode target_aware_few_shot_classification \
   --reference-admission-mode adaptive_gbif_fast_start \
   --reference-source gbif \
   --initial-scoring-mode provisional_reference_ranking \
@@ -73,17 +101,23 @@ uv run biominer --config config/biominer.cloud.example.toml run \
 
 Use `storage doctor`, `workstore doctor`, and `run --dry-run` before a live run.
 Dry-run resolves scope and records the plan and configured artifact paths; it
-does not load or validate species paths or the embedding cache. Those
-checks run, and fail closed, when the hierarchical vision stage initializes.
+does not execute live acquisition, visual models, review, statistical audit, or
+release. Stage-specific artifact, schema, fingerprint, and readiness checks run
+and fail closed when their live adapter initializes.
 
-Cascade output persists `classification_fingerprint`,
-`hierarchy_fingerprint`, and `embedding_cache_fingerprint`. Intermediate
-`<rank>_top1` fields describe the rank-local raw-similarity winner, while
-`selected_<rank>` fields describe the final reranked species-winning path; the
-two are intentionally not interchangeable. Species audit arrays retain the
-first-pass top 20, reranked top 5, and reported top 3. See
-[Vision and classification](vision.md) for the complete field contract and the
-registry migration notes before switching persisted artifacts or output roots.
+The former seven-command `biominer dynamic-pooling` plan wrapper was removed on
+2026-07-19. It had no execution adapters, and several declared input/output
+bindings did not match the validated Parquet contracts. Typed dynamic-pooling
+settings remain authoritative. Stage planning belongs to `biominer run`, while
+artifact operations belong to the concrete `biominer references` commands; see
+the [migration note](migrations/dynamic-pool-plan-cli-removal.md).
+
+The Phase 15 fixture pilot reports an `insufficient_evidence` production
+decision. Its review projection is not a selected default. Current runtime
+settings remain unselected and unchanged; real source-bound review, precision
+bounds, subgroup support, comparable computation, and MPS measurements are
+still required. See the
+[pilot report](../reports/geo_dynamic_pooling/pilot/geography_conditioned_pooling_report.md).
 
 ## Durability and observability
 

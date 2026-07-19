@@ -108,6 +108,8 @@ def test_shared_pin_fixture_matches_production_consumers_and_targets() -> None:
         "flickr_verification_source",
         "quality_snapshot",
         "reviewed_labels",
+        "storage_handoff_inventory",
+        "storage_handoff_inventory_path",
     ):
         assert pins["taxalens"]["contracts"][name] == (TAXALENS_TARGET_CONTRACTS[name])
     for name in (
@@ -185,6 +187,15 @@ def test_field_parity_covers_product_specific_scientific_boundaries() -> None:
 @pytest.mark.parametrize(
     ("repository_name", "commit", "path", "required_values"),
     [
+        (
+            "taxalens",
+            TAXALENS_PINNED_COMMIT,
+            "taxalens/product/biominer_handoff.py",
+            (
+                TAXALENS_TARGET_CONTRACTS["storage_handoff_inventory"],
+                TAXALENS_TARGET_CONTRACTS["storage_handoff_inventory_path"],
+            ),
+        ),
         (
             "taxalens",
             TAXALENS_PINNED_COMMIT,

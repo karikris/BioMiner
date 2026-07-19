@@ -140,22 +140,9 @@ OBJECT_SCORE_OUTPUT_SCHEMA.update(PATH_CASCADE_OUTPUT_SCHEMA)
 OBJECT_EVIDENCE_JOINED_SCHEMA: dict[str, pl.DataType] = {
     **OBJECT_SCORE_OUTPUT_SCHEMA,
     **DETECTION_OUTPUT_SCHEMA,
-    "comments_fetched": pl.Boolean,
-    "comment_count": pl.Int64,
-    "species_match_from_comments": pl.Boolean,
-    "species_name_from_comments": pl.String,
-    "common_name_from_comments": pl.String,
-    "life_stage_from_comments": pl.String,
-    "date_evidence_from_comments": pl.String,
-    "geo_evidence_from_comments": pl.String,
-    "location_text_from_comments": pl.String,
-    "comment_review_decision": pl.String,
-    "comment_review_reason": pl.String,
     "flickr_text_species_candidate": pl.String,
     "bioclip_species_candidate": pl.String,
     "bioclip_tag_conflict": pl.Boolean,
-    "comment_species_candidate": pl.String,
-    "comment_resolves_conflict": pl.Boolean,
 }
 PHOTO_EVIDENCE_SUMMARY_SCHEMA: dict[str, pl.DataType] = {
     "source": pl.String,

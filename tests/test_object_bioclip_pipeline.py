@@ -2972,12 +2972,18 @@ def test_empty_object_evidence_outputs_keep_stable_join_table_schemas(tmp_path) 
         "comment_evidence_score",
         "is_target_positive",
         "is_negative_material",
+        "flickr_text_species_candidate",
+        "bioclip_species_candidate",
+        "bioclip_tag_conflict",
+    }.issubset(joined.columns)
+    assert {
+        "comments_fetched",
         "comment_review_decision",
         "comment_review_reason",
         "comment_species_candidate",
         "comment_resolves_conflict",
         "geo_evidence_from_comments",
-    }.issubset(joined.columns)
+    }.isdisjoint(joined.columns)
     assert set(DETECTION_OUTPUT_SCHEMA).issubset(joined.columns)
     assert {
         "source",

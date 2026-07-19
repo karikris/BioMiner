@@ -1,0 +1,167 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-14.1",
+  "title": "Publish TaxaLens evidence handoff",
+  "status": "completed",
+  "completed_at": "2026-07-18T13:15:47Z",
+  "starting_sha": "900301dfb33a818dffaebc2a59bd4d1e86f34cd7",
+  "pushed_implementation_sha": "1acc128dfdefb69150db0255b00258155ec1e358",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-14.1.1",
+      "commit": "5635dfcc9f6a0019cd00bb56fcc02ad5e2b48053",
+      "subject": "feat(handoff): export TaxaLens pooling evidence"
+    },
+    {
+      "subtask_id": "geo-pool-14.1.2",
+      "commit": "6ee9df1e2a50da3dd748def69da4720a22935234",
+      "subject": "feat(handoff): export TaxaLens quality evidence"
+    },
+    {
+      "subtask_id": "geo-pool-14.1.3",
+      "commit": "1acc128dfdefb69150db0255b00258155ec1e358",
+      "subject": "test(handoff): verify TaxaLens pooling contract"
+    }
+  ],
+  "consumer_pin": {
+    "repository": "karikris/taxalens",
+    "previous_commit": "c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc",
+    "commit": "e845dd98493979f37b04dbb6538e0d7b8758ca11",
+    "decision": "compatible_additive_storage_handoff_consumer",
+    "working_tree_consumed": false,
+    "committed_git_objects_only": true
+  },
+  "artifact_contract": {
+    "required_role_count": 9,
+    "roles": [
+      "candidate_scores",
+      "photo_summaries",
+      "pool_plans",
+      "pool_members",
+      "pool_summaries",
+      "candidate_sets",
+      "review_sampling_frame",
+      "quality_sidecar",
+      "geographic_cells"
+    ],
+    "score_and_pool_parquet_roles": 6,
+    "review_sampling_frame": {
+      "sampling_purpose": "representative_audit",
+      "probability_design_preserved": true,
+      "inclusion_probability_and_weight_preserved": true,
+      "blind_review": true,
+      "random_seed_policy_bound": true,
+      "raw_score_is_probability": false,
+      "no_geo_is_biological_absence": false,
+      "occurrence_release_authorized": false
+    },
+    "quality_sidecar": {
+      "source_must_validate": true,
+      "completed_review_and_effective_sample_counts_preserved": true,
+      "metric_status_and_confidence_intervals_preserved": true,
+      "available_sidecar_can_have_insufficient_estimate": true,
+      "zero_reviews_are_zero_quality": false,
+      "representative_and_targeted_review_separate": true,
+      "authorizes_occurrence_release": false
+    },
+    "geographic_cells": {
+      "availability": "unavailable",
+      "reason": "TaxaLens owns baseline-provider-union and geographic-impact materialization",
+      "baseline_counts_fabricated": false
+    }
+  },
+  "publication": {
+    "directory_create_only": true,
+    "all_artifacts_staged_before_manifest": true,
+    "manifest_written_last": true,
+    "directory_validated_before_atomic_publish": true,
+    "semantic_fingerprints_separate_from_physical_sha256": true,
+    "storage_inventory_schema": "storage-handoff-inventory-v1.0.0",
+    "storage_inventory_path": ".biominer-handoff/inventory.json",
+    "archive_content_addressed": true,
+    "archive_deterministic": true,
+    "reviewed_quality_fixture_archive_file_count": 9,
+    "no_quality_fixture_archive_file_count": 8,
+    "exact_pinned_taxalens_verifier_executed": true,
+    "database_writes": false,
+    "release_authority": false
+  },
+  "gate": {
+    "score_pool_export": {
+      "command": ".venv/bin/pytest -q tests/test_taxalens_pool_export.py",
+      "result": "passed",
+      "passed": 6,
+      "duration_seconds": 0.98
+    },
+    "pinned_sha_compatibility": {
+      "command": ".venv/bin/pytest -q tests/test_taxalens_pool_publish.py tests/test_product_pool_handoff_compatibility.py tests/test_downstream_pooling_handoff_audit.py tests/test_taxalens_pool_handoff.py tests/test_taxalens_pool_export.py tests/test_taxalens_quality_export.py tests/test_storage_handoff.py",
+      "result": "passed",
+      "passed": 50,
+      "duration_seconds": 3.04,
+      "consumer_commit": "e845dd98493979f37b04dbb6538e0d7b8758ca11",
+      "consumer_verifier_source": "git show of the exact committed TaxaLens object"
+    },
+    "full_regression": {
+      "command": ".venv/bin/pytest -q",
+      "result": "passed",
+      "passed": 3143,
+      "duration_seconds": 114.26,
+      "tested_implementation_sha": "1acc128dfdefb69150db0255b00258155ec1e358",
+      "collection_regression_fixed": "removed tests package marker and retained top-level fixture import convention"
+    },
+    "lint_and_format": {
+      "commands": [
+        "uvx ruff check on all changed Python files",
+        "uvx ruff format on all changed Python files",
+        "git diff --check",
+        "python -m json.tool on both changed compatibility fixtures"
+      ],
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "required_records": [
+        "geo-pool-14.1",
+        "geo-pool-14.1.1",
+        "geo-pool-14.1.2",
+        "geo-pool-14.1.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    }
+  },
+  "githits_architecture_impact": {
+    "calls_made_for_task": 0,
+    "direct_external_code_contribution": "none",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "BioMiner dynamic score, pool, probability-audit and quality-report contracts",
+      "BioMiner product artifact and deterministic storage-handoff contracts",
+      "exact committed TaxaLens inventory consumer constants and verifier behavior"
+    ]
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "1acc128dfdefb69150db0255b00258155ec1e358",
+    "verified_remote_sha": "1acc128dfdefb69150db0255b00258155ec1e358",
+    "verified_at": "2026-07-18T13:15:47Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "BioMiner can publish a deterministic, content-addressed TaxaLens handoff containing six score/pool artifacts, a representative review frame, an optional validated quality sidecar, and a fail-closed manifest.",
+      "The exact committed TaxaLens e845dd9 archive verifier accepts the reviewed-quality fixture archive.",
+      "Raw scores, semantic identities, physical checksums, human-review maturity, quality availability and release maturity remain separate.",
+      "An insufficient reviewed quality report remains an available sidecar with unavailable estimates and explicit reasons.",
+      "Geographic-impact cells remain unavailable until TaxaLens combines evidence with its owned baseline provider union."
+    ],
+    "blocked": [
+      "The handoff proves a live model run, production import, application database write, or occurrence release occurred.",
+      "A raw dynamic-pool score is a calibrated probability.",
+      "A selected review sample is a completed human review outcome.",
+      "An available quality sidecar necessarily has sufficient statistical support.",
+      "Missing geography or unavailable geographic-impact cells represent biological absence."
+    ]
+  },
+  "completion_record_commit": "self"
+}

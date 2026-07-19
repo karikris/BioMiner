@@ -19,6 +19,11 @@ from biominer.detection.routing import (
     DetectionRoutingPolicy,
     route_detection,
 )
+from biominer.detection.route_contract import (
+    DETECTOR_ROUTE_CONTRACT_SCHEMA_VERSION,
+    DetectorRouteContract,
+    build_detector_route_contract,
+)
 
 __all__ = [
     "DecodedImage",
@@ -29,14 +34,17 @@ __all__ = [
     "DetectionPipelineResult",
     "DetectionPolicy",
     "DetectionRouteDecision",
+    "DetectorRouteContract",
     "DetectionRoutingPolicy",
     "DetectionRunPolicy",
+    "DETECTOR_ROUTE_CONTRACT_SCHEMA_VERSION",
     "FakeObjectDetector",
     "ObjectDetector",
     "RuntimeProfile",
     "ROUTING_ACTIONS",
     "ROUTING_PRIORITIES",
     "VisionRuntimeSettings",
+    "build_detector_route_contract",
     "run_detection_pipeline",
     "route_detection",
     "runtime_profile",

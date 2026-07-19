@@ -81,7 +81,6 @@ def build_registry(
     skip_language_targets: bool = False,
     skip_curated_static_sources: bool = False,
     skip_enrichment: bool = False,
-    skip_classification_table: bool = False,
     storage: CloudStorage | None = None,
 ) -> dict[str, Any]:
     options = {
@@ -124,7 +123,6 @@ def build_registry(
         "skip_language_targets": skip_language_targets,
         "skip_curated_static_sources": skip_curated_static_sources,
         "skip_enrichment": skip_enrichment,
-        "skip_classification_table": skip_classification_table,
     }
     if is_cloud_uri(str(output_dir)):
         if storage is None:
@@ -175,7 +173,6 @@ def build_cloud_registry(
     skip_language_targets: bool = False,
     skip_curated_static_sources: bool = False,
     skip_enrichment: bool = False,
-    skip_classification_table: bool = False,
 ) -> dict[str, Any]:
     if not skip_enrichment:
         raise NotImplementedError("cloud_registry_enrichment_not_implemented")
@@ -217,14 +214,6 @@ def build_cloud_registry(
         registry_version=registry_version,
         scope_path=scope_path,
         query_curation_json=query_curation_json,
-    )
-    manifest = _add_cloud_classification_v3_outputs(
-        storage=storage,
-        registry_prefix=registry_prefix,
-        registry_version=registry_version,
-        taxa=frames["taxa.parquet"],
-        manifest=manifest,
-        skip=skip_classification_table,
     )
     for filename, frame in frames.items():
         storage.write_parquet_shard(
@@ -324,7 +313,6 @@ def build_local_registry(
     skip_language_targets: bool = False,
     skip_curated_static_sources: bool = False,
     skip_enrichment: bool = False,
-    skip_classification_table: bool = False,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -399,11 +387,6 @@ def build_local_registry(
             skip_range_discovery=skip_range_discovery,
             skip_language_targets=skip_language_targets,
             retrieved_at=retrieved,
-        )
-        manifest = _add_local_classification_v3_outputs(
-            registry_dir=output,
-            manifest=manifest,
-            skip=skip_classification_table,
         )
     else:
         run_id = _run_id(retrieved)
@@ -494,11 +477,6 @@ def build_local_registry(
             skip_range_discovery=skip_range_discovery,
             skip_language_targets=skip_language_targets,
             retrieved_at=retrieved,
-        )
-        manifest = _add_local_classification_v3_outputs(
-            registry_dir=canonical_dir,
-            manifest=manifest,
-            skip=skip_classification_table,
         )
         logger.info(
             "registry.build.compile_enriched.complete status=%s taxa=%s names=%s queries=%s enrichment_names=%s source_errors=%s",
@@ -595,41 +573,6 @@ def _add_regional_outputs(
     updated = {**manifest, **regional_manifest}
     (registry_dir / "manifest.json").write_text(json.dumps(updated, indent=2, sort_keys=True), encoding="utf-8")
     return updated
-
-
-def _add_local_classification_v3_outputs(
-    *,
-    registry_dir: Path,
-    manifest: dict[str, Any],
-    skip: bool,
-) -> dict[str, Any]:
-    updated = {
-        **manifest,
-        "classification_skipped": True,
-        "classification": None,
-        "taxonomy_input": "species_paths.parquet",
-        "legacy_classification_overlay_removed": True,
-    }
-    (registry_dir / "manifest.json").write_text(json.dumps(updated, indent=2, sort_keys=True), encoding="utf-8")
-    return updated
-
-
-def _add_cloud_classification_v3_outputs(
-    *,
-    storage: CloudStorage,
-    registry_prefix: str,
-    registry_version: str,
-    taxa: pl.DataFrame,
-    manifest: dict[str, Any],
-    skip: bool,
-) -> dict[str, Any]:
-    return {
-        **manifest,
-        "classification_skipped": True,
-        "classification": None,
-        "taxonomy_input": "species_paths.parquet",
-        "legacy_classification_overlay_removed": True,
-    }
 
 
 def _write_regional_outputs(
@@ -750,15 +693,6 @@ def _build_report(
         "progress_every": source_payload.get("metrics", {}).get("progress_every"),
         "resumed_species": source_payload.get("metrics", {}).get("resumed_species"),
         "taxa_rows": manifest.get("taxa_rows"),
-        "classification_skipped": manifest.get("classification_skipped"),
-        "classification_version": (manifest.get("classification") or {}).get("classification_version")
-        if isinstance(manifest.get("classification"), dict)
-        else None,
-        "classification_species_count": ((manifest.get("classification") or {}).get("enabled_node_counts_by_rank") or {}).get("SPECIES"),
-        "classification_family_count": ((manifest.get("classification") or {}).get("enabled_node_counts_by_rank") or {}).get("FAMILY"),
-        "classification_prompt_label_rows": (manifest.get("classification") or {}).get("prompt_label_count")
-        if isinstance(manifest.get("classification"), dict)
-        else None,
         "name_rows": manifest.get("name_rows"),
         "query_definition_rows": manifest.get("query_definition_rows"),
         "query_definition_unique_term_count": manifest.get("query_definition_unique_term_count"),
@@ -843,10 +777,6 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- Status: {report['status']}",
             f"- Source: {report['source']} {report['source_version']}",
             f"- Taxa rows: {report['taxa_rows']}",
-            f"- Classification skipped: {report['classification_skipped']}",
-            f"- Classification version: {report['classification_version']}",
-            f"- Classification species/families: {report['classification_species_count']}/{report['classification_family_count']}",
-            f"- Classification prompt labels: {report['classification_prompt_label_rows']}",
             f"- Name rows: {report['name_rows']}",
             f"- Query definitions: {report['query_definition_rows']}",
             f"- Query unique terms: {report['query_definition_unique_term_count']}",

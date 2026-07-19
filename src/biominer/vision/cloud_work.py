@@ -378,6 +378,14 @@ def detect_cloud_rolling_vision_batch(
                     "prompt_set_fingerprint": str(
                         getattr(detector, "prompt_set_fingerprint", "") or ""
                     ),
+                    "execution_mode": getattr(
+                        detector, "execution_mode", "injected"
+                    ),
+                    "transport": getattr(detector, "transport", None),
+                    "imgsz": getattr(detector, "imgsz", None),
+                    "conf": getattr(detector, "conf", None),
+                    "iou": getattr(detector, "iou", None),
+                    "max_det": getattr(detector, "max_det", None),
                 },
                 detection_policy=detection_policy,
                 vision_settings=None,

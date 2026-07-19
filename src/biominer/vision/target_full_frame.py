@@ -13,9 +13,19 @@ from biominer.detection.detector_base import (
 )
 from biominer.detection.policy import DetectionRunPolicy
 from biominer.detection.schema import DETECTION_SCHEMA_VERSION
+from biominer.vision.bioclip_input_contract import (
+    TARGET_AWARE_VISUAL_MODE,
+    bioclip_visual_input_contract,
+)
 from biominer.vision.gates import (
     COMPARISON_ROUTE_BY_DETECTION_ROUTE,
     SUPPORTED_COMPARISON_ROUTES,
+)
+from biominer.vision.memory_aware_batching import (
+    MemoryAwareImageBatchMetrics,
+    MemoryAwareImageBatchPolicy,
+    MpsMemorySnapshot,
+    encode_images_memory_aware,
 )
 from biominer.vision.full_frame_attention import (
     FULL_FRAME_VISUAL_INPUT_VERSION,
@@ -32,7 +42,6 @@ from biominer.vision.full_frame_attention import (
 )
 
 
-TARGET_AWARE_VISUAL_MODE = "whole_image_reference_ensemble"
 TARGET_FULL_FRAME_VISUAL_INPUT_VERSION = FULL_FRAME_VISUAL_INPUT_VERSION
 TARGET_FULL_FRAME_SCORING_UNIT_VERSION = "target-full-frame-scoring-unit-v3"
 TARGET_FULL_FRAME_EMBEDDING_VERSION = "target-full-frame-embedding-v3"
@@ -126,6 +135,8 @@ class TargetFullFrameScoringUnit:
 @dataclass(frozen=True)
 class TargetFullFramePlan:
     visual_mode: str
+    visual_input_contract_version: str
+    visual_input_contract_fingerprint: str
     visual_inputs: tuple[RawFullFrameVisualInput, ...]
     scoring_units: tuple[TargetFullFrameScoringUnit, ...]
 
@@ -162,6 +173,7 @@ class ScoringUnitEmbeddingReference:
 class EmbeddedTargetFullFramePlan:
     embeddings: tuple[RawFullFrameEmbedding, ...]
     scoring_unit_references: tuple[ScoringUnitEmbeddingReference, ...]
+    image_batch_metrics: MemoryAwareImageBatchMetrics | None = None
 
 
 def target_full_frame_detection_run_policy(
@@ -181,6 +193,7 @@ def build_target_full_frame_plan(
     """Build photo/route scoring units without constructing spatial crops."""
 
     _require_target_full_frame_mode(visual_mode)
+    input_contract = bioclip_visual_input_contract(visual_mode)
     rows_by_photo: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for raw_row in detection_rows:
         row = dict(raw_row)
@@ -241,6 +254,11 @@ def build_target_full_frame_plan(
         if not isinstance(image, DecodedImage):
             raise TypeError("image_loader must return a DecodedImage")
         visual_input = _raw_full_frame_visual_input(image)
+        input_contract.validate_input(
+            visual_input_kind=visual_input.visual_input_kind,
+            visual_input_version=visual_input.visual_input_version,
+            spatial_crop_applied=False,
+        )
         existing_visual_input = visual_inputs_by_id.get(visual_input.visual_input_id)
         if existing_visual_input is None:
             visual_inputs_by_id[visual_input.visual_input_id] = visual_input
@@ -296,6 +314,8 @@ def build_target_full_frame_plan(
 
     return TargetFullFramePlan(
         visual_mode=visual_mode,
+        visual_input_contract_version=input_contract.contract_version,
+        visual_input_contract_fingerprint=input_contract.fingerprint,
         visual_inputs=tuple(
             sorted(
                 visual_inputs_by_id.values(),
@@ -377,6 +397,8 @@ def encode_target_full_frame_plan(
     model_fingerprint: str,
     preprocessing_fingerprint: str,
     embedding_cache: Iterable[RawFullFrameEmbedding] | None = None,
+    image_batch_policy: MemoryAwareImageBatchPolicy | None = None,
+    mps_memory_probe: Callable[[], MpsMemorySnapshot] | None = None,
 ) -> EmbeddedTargetFullFramePlan:
     """Encode missing raw inputs once and fan references out to route units."""
 
@@ -386,6 +408,8 @@ def encode_target_full_frame_plan(
         preprocessing_fingerprint,
         "preprocessing_fingerprint",
     )
+    if mps_memory_probe is not None and image_batch_policy is None:
+        raise ValueError("mps_memory_probe requires an image_batch_policy")
     if (
         getattr(encoder, "image_resize_mode", None)
         != TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
@@ -431,15 +455,26 @@ def encode_target_full_frame_plan(
         )
         embedding_by_visual_input[visual_input.visual_input_id] = cached
 
-    raw_vectors = (
-        tuple(
-            encoder.encode_images(
-                tuple(item.image for item in visual_inputs_to_encode)
-            )
+    batch_metrics: MemoryAwareImageBatchMetrics | None = None
+    if image_batch_policy is not None:
+        encoded = encode_images_memory_aware(
+            tuple(item.image for item in visual_inputs_to_encode),
+            encode_batch=encoder.encode_images,
+            policy=image_batch_policy,
+            memory_probe=mps_memory_probe,
         )
-        if visual_inputs_to_encode
-        else ()
-    )
+        raw_vectors = encoded.vectors
+        batch_metrics = encoded.metrics
+    else:
+        raw_vectors = (
+            tuple(
+                encoder.encode_images(
+                    tuple(item.image for item in visual_inputs_to_encode)
+                )
+            )
+            if visual_inputs_to_encode
+            else ()
+        )
     if len(raw_vectors) != len(visual_inputs_to_encode):
         raise ValueError(
             "full-frame encoder returned "
@@ -482,30 +517,27 @@ def encode_target_full_frame_plan(
                 "embedding_version": TARGET_FULL_FRAME_EMBEDDING_VERSION,
             }
         )
-        embedding_by_visual_input[visual_input.visual_input_id] = (
-            RawFullFrameEmbedding(
-                embedding_id=embedding_id,
-                embedding_version=TARGET_FULL_FRAME_EMBEDDING_VERSION,
-                embedding_fingerprint=embedding_fingerprint,
-                visual_input_id=visual_input.visual_input_id,
-                visual_input_kind=RAW_FULL_IMAGE_KIND,
-                raw_image_content_hash=visual_input.raw_image_content_hash,
-                transformation_fingerprint=visual_input.transformation_fingerprint,
-                model_fingerprint=model_fingerprint,
-                image_resize_mode=TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
-                preprocessing_contract_fingerprint=(
-                    TARGET_FULL_FRAME_PREPROCESSING.fingerprint
-                ),
-                preprocessing_fingerprint=preprocessing_fingerprint,
-                embedding_dimension=len(vector),
-                embedding=vector,
-                embedding_norm=embedding_norm,
-            )
+        embedding_by_visual_input[visual_input.visual_input_id] = RawFullFrameEmbedding(
+            embedding_id=embedding_id,
+            embedding_version=TARGET_FULL_FRAME_EMBEDDING_VERSION,
+            embedding_fingerprint=embedding_fingerprint,
+            visual_input_id=visual_input.visual_input_id,
+            visual_input_kind=RAW_FULL_IMAGE_KIND,
+            raw_image_content_hash=visual_input.raw_image_content_hash,
+            transformation_fingerprint=visual_input.transformation_fingerprint,
+            model_fingerprint=model_fingerprint,
+            image_resize_mode=TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
+            preprocessing_contract_fingerprint=(
+                TARGET_FULL_FRAME_PREPROCESSING.fingerprint
+            ),
+            preprocessing_fingerprint=preprocessing_fingerprint,
+            embedding_dimension=len(vector),
+            embedding=vector,
+            embedding_norm=embedding_norm,
         )
 
     embeddings = tuple(
-        embedding_by_visual_input[item.visual_input_id]
-        for item in plan.visual_inputs
+        embedding_by_visual_input[item.visual_input_id] for item in plan.visual_inputs
     )
     dimensions = {embedding.embedding_dimension for embedding in embeddings}
     if len(dimensions) != 1:
@@ -537,6 +569,7 @@ def encode_target_full_frame_plan(
     return EmbeddedTargetFullFramePlan(
         embeddings=embeddings,
         scoring_unit_references=tuple(references),
+        image_batch_metrics=batch_metrics,
     )
 
 
@@ -621,6 +654,11 @@ def _validate_cached_full_frame_embedding(
 
 def _validate_target_full_frame_plan(plan: TargetFullFramePlan) -> None:
     _require_target_full_frame_mode(plan.visual_mode)
+    input_contract = bioclip_visual_input_contract(plan.visual_mode)
+    if plan.visual_input_contract_version != input_contract.contract_version:
+        raise ValueError("target full-frame visual-input contract version mismatch")
+    if plan.visual_input_contract_fingerprint != input_contract.fingerprint:
+        raise ValueError("target full-frame visual-input contract fingerprint mismatch")
     visual_input_by_id: dict[str, RawFullFrameVisualInput] = {}
     for visual_input in plan.visual_inputs:
         if visual_input.visual_input_id in visual_input_by_id:
@@ -629,6 +667,11 @@ def _validate_target_full_frame_plan(plan: TargetFullFramePlan) -> None:
                 f"{visual_input.visual_input_id!r}"
             )
         expected = _raw_full_frame_visual_input(visual_input.image)
+        input_contract.validate_input(
+            visual_input_kind=visual_input.visual_input_kind,
+            visual_input_version=visual_input.visual_input_version,
+            spatial_crop_applied=False,
+        )
         if not _same_visual_input_identity(visual_input, expected):
             raise ValueError(
                 "target full-frame plan contains stale raw visual-input identity "

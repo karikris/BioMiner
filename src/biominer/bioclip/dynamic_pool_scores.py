@@ -19,10 +19,15 @@ from biominer.bioclip.family_geo_candidates import (
 )
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.storage.parquet import write_parquet
+from biominer.vision.bioclip_input_contract import (
+    BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION,
+    DYNAMIC_POOL_VISUAL_MODE,
+    bioclip_visual_input_contract,
+)
 
 
-DYNAMIC_POOL_CANDIDATE_SCORE_SCHEMA_VERSION = "dynamic-pool-candidate-score-v1.0.0"
-DYNAMIC_POOL_PHOTO_SUMMARY_SCHEMA_VERSION = "dynamic-pool-photo-summary-v1.0.0"
+DYNAMIC_POOL_CANDIDATE_SCORE_SCHEMA_VERSION = "dynamic-pool-candidate-score-v2.0.0"
+DYNAMIC_POOL_PHOTO_SUMMARY_SCHEMA_VERSION = "dynamic-pool-photo-summary-v2.0.0"
 DYNAMIC_POOL_CANDIDATE_SCORES_FILE = "dynamic_pool_candidate_scores.parquet"
 DYNAMIC_POOL_PHOTO_SUMMARY_FILE = "dynamic_pool_photo_summary.parquet"
 
@@ -47,6 +52,11 @@ _GROUP_FIELDS = (
     "flickr_photo_id",
     "organism_unit_id",
     "visual_input_id",
+    "visual_input_kind",
+    "visual_input_version",
+    "visual_input_contract_version",
+    "visual_input_contract_fingerprint",
+    "spatial_crop_applied",
     "scoring_stage",
     "query_route",
     "plan_id",
@@ -144,6 +154,11 @@ def dynamic_pool_candidate_score_schema() -> dict[str, pl.DataType]:
         "flickr_photo_id": pl.String,
         "organism_unit_id": pl.String,
         "visual_input_id": pl.String,
+        "visual_input_kind": pl.String,
+        "visual_input_version": pl.String,
+        "visual_input_contract_version": pl.String,
+        "visual_input_contract_fingerprint": pl.String,
+        "spatial_crop_applied": pl.Boolean,
         "scoring_stage": pl.String,
         "query_route": pl.String,
         "plan_id": pl.String,
@@ -226,6 +241,11 @@ def dynamic_pool_photo_summary_schema() -> dict[str, pl.DataType]:
         "flickr_photo_id": pl.String,
         "organism_unit_id": pl.String,
         "visual_input_id": pl.String,
+        "visual_input_kind": pl.String,
+        "visual_input_version": pl.String,
+        "visual_input_contract_version": pl.String,
+        "visual_input_contract_fingerprint": pl.String,
+        "spatial_crop_applied": pl.Boolean,
         "scoring_stage": pl.String,
         "query_route": pl.String,
         "plan_id": pl.String,
@@ -347,6 +367,13 @@ def _derive_summaries(scores: pl.DataFrame) -> pl.DataFrame:
             "flickr_photo_id": top["flickr_photo_id"],
             "organism_unit_id": top["organism_unit_id"],
             "visual_input_id": top["visual_input_id"],
+            "visual_input_kind": top["visual_input_kind"],
+            "visual_input_version": top["visual_input_version"],
+            "visual_input_contract_version": top["visual_input_contract_version"],
+            "visual_input_contract_fingerprint": top[
+                "visual_input_contract_fingerprint"
+            ],
+            "spatial_crop_applied": top["spatial_crop_applied"],
             "scoring_stage": top["scoring_stage"],
             "query_route": top["query_route"],
             "plan_id": plan_id,
@@ -597,6 +624,10 @@ def _normalized_score(values: Mapping[str, object]) -> dict[str, object]:
         "flickr_photo_id",
         "organism_unit_id",
         "visual_input_id",
+        "visual_input_kind",
+        "visual_input_version",
+        "visual_input_contract_version",
+        "visual_input_contract_fingerprint",
         "scoring_stage",
         "query_route",
         "plan_id",
@@ -652,6 +683,7 @@ def _normalized_score(values: Mapping[str, object]) -> dict[str, object]:
         "expansion_triggered",
         "human_review_required",
         "abstained",
+        "spatial_crop_applied",
     ):
         row[field] = _boolean(values[field], field=field)
     row["family_priority_match"] = _optional_boolean(
@@ -704,6 +736,7 @@ def _normalized_score(values: Mapping[str, object]) -> dict[str, object]:
 
 
 def _validate_score_semantics(row: Mapping[str, object]) -> None:
+    _validate_dynamic_pool_visual_input(row)
     if row["scoring_stage"] not in DYNAMIC_POOL_SCORING_STAGES:
         raise ValueError("unsupported dynamic score scoring_stage")
     if not _PLAN_ID_PATTERN.fullmatch(str(row["plan_id"])):
@@ -786,6 +819,7 @@ def _validate_score_semantics(row: Mapping[str, object]) -> None:
         raise ValueError("abstention state and reasons are inconsistent")
     for field in (
         "visual_input_id",
+        "visual_input_contract_fingerprint",
         "plan_fingerprint",
         "candidate_set_fingerprint",
         "score_policy_fingerprint",
@@ -835,6 +869,7 @@ def _validate_component(row: Mapping[str, object], *, prefix: str) -> None:
 
 
 def _validate_summary_semantics(row: Mapping[str, object]) -> None:
+    _validate_dynamic_pool_visual_input(row)
     candidate_count = _nonnegative_int(
         row["candidate_count"], field="candidate_count", maximum=2**32 - 1
     )
@@ -872,6 +907,7 @@ def _validate_summary_semantics(row: Mapping[str, object]) -> None:
         raise ValueError("summary expansion state and rounds are inconsistent")
     for field in (
         "visual_input_id",
+        "visual_input_contract_fingerprint",
         "plan_fingerprint",
         "candidate_set_fingerprint",
         "candidate_scores_fingerprint",
@@ -944,6 +980,21 @@ def _validate_summary_semantics(row: Mapping[str, object]) -> None:
         raise ValueError("unevaluated summary support cannot have a report")
     _required_text(
         row["statistical_support_reason"], field="statistical_support_reason"
+    )
+
+
+def _validate_dynamic_pool_visual_input(row: Mapping[str, object]) -> None:
+    contract = bioclip_visual_input_contract(DYNAMIC_POOL_VISUAL_MODE)
+    if row["visual_input_contract_version"] != BIOCLIP_VISUAL_INPUT_CONTRACT_VERSION:
+        raise ValueError("dynamic score visual-input contract version mismatch")
+    if row["visual_input_contract_fingerprint"] != contract.fingerprint:
+        raise ValueError("dynamic score visual-input contract fingerprint mismatch")
+    contract.validate_input(
+        visual_input_kind=str(row["visual_input_kind"]),
+        visual_input_version=str(row["visual_input_version"]),
+        spatial_crop_applied=_boolean(
+            row["spatial_crop_applied"], field="spatial_crop_applied"
+        ),
     )
 
 

@@ -19,13 +19,19 @@ def test_downstream_contract_pins_are_exact_and_versioned() -> None:
     pins = _pins()
 
     assert pins["schema_version"] == (
-        "biominer-downstream-pooling-contract-pins-v1.1.0"
+        "biominer-downstream-pooling-contract-pins-v1.2.0"
     )
     assert pins["taxalens"]["goal_written_commit"] == (
         "1440596cf4403af61ba8d57481feacda7c4e3044"
     )
-    assert pins["taxalens"]["audited_commit"] == (
+    assert pins["taxalens"]["previous_audited_commit"] == (
         "c5e87ead4fdb26d5c5624bbb8d8d67e46d8eddbc"
+    )
+    assert pins["taxalens"]["audited_commit"] == (
+        "e845dd98493979f37b04dbb6538e0d7b8758ca11"
+    )
+    assert pins["taxalens"]["pin_movement_decision"] == (
+        "compatible_additive_storage_handoff_consumer"
     )
     assert pins["butterflylens"]["goal_written_commit"] == (
         "c8135a0cb0001245215cdc774d063ef49407fb26"
@@ -60,11 +66,13 @@ def test_audit_covers_required_downstream_boundaries() -> None:
         "Geographic review and quality",
         "Evidence maturity and release projections",
         "Artifact export expectations",
+        "Content-addressed archive import",
         "Discovery, model evidence, and review layers",
         "Map impact, RLS, and import boundary",
         "Australian taxonomy and ALA geography",
         "BioMiner dynamic-pooling handoff requirements",
         "reviewed-labels-v2",
+        "storage-handoff-inventory-v1.0.0",
         "butterflylens-classification-maturity:v1.0.0",
     }
     assert all(term in audit for term in required_terms)

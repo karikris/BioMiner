@@ -1,0 +1,324 @@
+{
+  "candidate_ablation": {
+    "classification_accuracy_status": "unavailable_fixture_only",
+    "result_row_count": 21,
+    "strategy_count": 3,
+    "strategy_metrics": [
+      {
+        "candidate_strategy": "geography_first",
+        "case_count": 7,
+        "complete_union_preserved_count": 7,
+        "interpretation": "fixture_structural_not_reviewed_accuracy",
+        "target_candidate_recall_at_1": 1.0,
+        "target_candidate_recall_at_3": 1.0,
+        "target_candidate_recall_at_5": 1.0,
+        "target_preserved_count": 7
+      },
+      {
+        "candidate_strategy": "family_first_safe",
+        "case_count": 7,
+        "complete_union_preserved_count": 7,
+        "interpretation": "fixture_structural_not_reviewed_accuracy",
+        "target_candidate_recall_at_1": 0.14285714285714285,
+        "target_candidate_recall_at_3": 1.0,
+        "target_candidate_recall_at_5": 1.0,
+        "target_preserved_count": 7
+      },
+      {
+        "candidate_strategy": "parallel_family_geography_union",
+        "case_count": 7,
+        "complete_union_preserved_count": 7,
+        "interpretation": "fixture_structural_not_reviewed_accuracy",
+        "target_candidate_recall_at_1": 1.0,
+        "target_candidate_recall_at_3": 1.0,
+        "target_candidate_recall_at_5": 1.0,
+        "target_preserved_count": 7
+      }
+    ],
+    "target_pruning_regression_count": 0
+  },
+  "claims": {
+    "allowed": [
+      "The frozen fixture pilot exercises all 24 declared candidate, pool and fusion variants through production contracts.",
+      "All candidate strategies preserve the complete five-taxon union and target in every fixture case.",
+      "Observed cached-vector embedding and matrix reuse counts describe the complete fixture execution.",
+      "The no-geography fixture preserves exact global fallback without implying biological absence.",
+      "The production acceptance decision is insufficient evidence and runtime defaults remain unchanged."
+    ],
+    "blocked": [
+      "Fixture target ranks are reviewed classification accuracy or empirical superiority.",
+      "Raw scores are calibrated probabilities.",
+      "Historical manifests are current pilot execution or human-review outcomes.",
+      "Planned representative or targeted fixture work is completed source-bound review.",
+      "Any candidate strategy, pool variant or fusion method is a selected production default.",
+      "Any occurrence is release ready or release authorized."
+    ]
+  },
+  "computation_and_reuse": {
+    "avoided_runtime_seconds": null,
+    "encoder_invocations": 0,
+    "image_materializations": 0,
+    "instrumented_runtime_seconds": null,
+    "maximum_batch_pool_matrix_bytes": 2240,
+    "mps_memory_limit_bytes": 536870912,
+    "mps_peak_memory_bytes": null,
+    "mps_status": "not_executed_cached_vector_fixture",
+    "pool_matrix_references": 100,
+    "query_embedding_consumption_count": 14,
+    "query_embedding_count": 7,
+    "query_embedding_reuse_event_count": 7,
+    "unique_pool_matrices": 35,
+    "within_batch_matrix_reuses": 65
+  },
+  "evidence_inventory": {
+    "current_execution_basis": "deterministic_fixture_vectors",
+    "current_fixture_case_count": 7,
+    "current_human_reviewed_label_count": 0,
+    "current_source_bound_real_flickr_item_count": 0,
+    "historical_outputs_count_as_current_execution": false,
+    "historical_real_execution_manifest_count": 4,
+    "historical_real_execution_manifests": [
+      {
+        "authority": "historical_execution_evidence_only",
+        "relative_path": "examples/species/papilio_demoleus/pilot_prototype_support_bank_manifest.json",
+        "sha256": "sha256:da558c04ac9b9c93941ee627532e3da657398415b707ad94757c903e0e51f76c"
+      },
+      {
+        "authority": "historical_execution_evidence_only",
+        "relative_path": "examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json",
+        "sha256": "sha256:381cc9a1266c30e744c12b320de4d4f3b11119c4c80b9136c25f6a0b9d9ecb0b"
+      },
+      {
+        "authority": "historical_execution_evidence_only",
+        "relative_path": "examples/species/papilio_demoleus/pilot_staged_flickr_manifest.json",
+        "sha256": "sha256:4f4aeeadb559e962eb11802301c3b2d691be674094c7449aab0ab061a4b362e3"
+      },
+      {
+        "authority": "historical_execution_evidence_only",
+        "relative_path": "examples/species/papilio_demoleus/pilot_prototype_b0_b16_manifest.json",
+        "sha256": "sha256:dfe21afbc8998ae5fc8eb4aa0157afc4f17ede336635f62af7cb888f141d3bf0"
+      }
+    ],
+    "live_bioclip_image_encoder_runs": 0,
+    "live_network_calls": 0
+  },
+  "executive_result": {
+    "decision": "insufficient_evidence",
+    "eligible_variant_count": 0,
+    "occurrence_release_authorized": false,
+    "production_default_authorized": false,
+    "reason": "fixture evidence and zero completed real reviews cannot satisfy the production acceptance policy",
+    "runtime_settings_changed": false,
+    "selected_candidate_strategy": null,
+    "selected_fusion_method": null,
+    "selected_pool_variant": null
+  },
+  "pilot_id": "geo-dynamic-pool-pilot-20260718-v1",
+  "plan_fingerprint": "sha256:ac63c18f391164e8bcdb474190a70c6200ff28dfdda93c5c3ad11fe7de9b0092",
+  "production_selection": {
+    "acceptance_policy_version": "dynamic-pool-production-selection-v1.0.0",
+    "blocking_criteria": [
+      "target_candidate_recall",
+      "reviewed_precision_and_confidence_bounds",
+      "family_and_geographic_subgroup_behavior",
+      "review_workload",
+      "computation",
+      "mps_memory"
+    ],
+    "criterion_evaluations": [
+      {
+        "criterion": "target_candidate_recall",
+        "evidence_status": "fixture_structural_only",
+        "observed": 1.0,
+        "required": 1.0,
+        "selection_gate_status": "insufficient_ineligible_evidence"
+      },
+      {
+        "criterion": "reviewed_precision_and_confidence_bounds",
+        "evidence_status": "unavailable_no_completed_real_reviews",
+        "observed_lower_bound": null,
+        "required_lower_bound": 0.95,
+        "selection_gate_status": "insufficient_unavailable"
+      },
+      {
+        "criterion": "family_and_geographic_subgroup_behavior",
+        "evidence_status": "unavailable_no_completed_real_reviews",
+        "observed_minimum_independent_records": 0,
+        "required_independent_records_per_subgroup": 30,
+        "selection_gate_status": "insufficient_unavailable"
+      },
+      {
+        "criterion": "review_workload",
+        "evidence_status": "planned_fixture_work_not_completed_reviews",
+        "observed_effective_real_reviews": 0,
+        "planned_representative_fixture_items": 7,
+        "planned_targeted_fixture_items": 7,
+        "required_effective_real_reviews": 86,
+        "selection_gate_status": "insufficient_unmet"
+      },
+      {
+        "criterion": "computation",
+        "encoder_invocations": 0,
+        "evidence_status": "fixture_counts_available_timing_not_instrumented",
+        "instrumented_comparable_runtime_seconds": null,
+        "observed_score_work_items": 14,
+        "selection_gate_status": "insufficient_unavailable"
+      },
+      {
+        "criterion": "embedding_and_matrix_reuse",
+        "embedding_reuse_required": true,
+        "evidence_status": "observed_complete_fixture_execution",
+        "matrix_reuse_required": true,
+        "observed_query_embedding_reuse_events": 7,
+        "observed_within_batch_matrix_reuses": 65,
+        "selection_gate_status": "passed_eligible_evidence"
+      },
+      {
+        "criterion": "mps_memory",
+        "evidence_status": "unavailable_cached_vector_fixture_not_mps",
+        "observed_peak_bytes": null,
+        "required_maximum_bytes": 536870912,
+        "selection_gate_status": "insufficient_unavailable"
+      },
+      {
+        "criterion": "target_pruning_regressions",
+        "evidence_status": "observed_complete_fixture_union",
+        "observed_regression_count": 0,
+        "required_regression_count": 0,
+        "selection_gate_status": "passed_eligible_evidence"
+      },
+      {
+        "allowed": false,
+        "criterion": "unsupported_statistical_claims",
+        "evidence_status": "validated_report_contract",
+        "observed": false,
+        "selection_gate_status": "passed_eligible_evidence"
+      }
+    ],
+    "current_settings_fingerprint": "sha256:0fd197b2650a79d99970cada3dcbabe9980c5a265d9d71f929bbcf6f51e13e7d",
+    "decision_fingerprint": "sha256:43d034983485e789b8fa7c0428131f13c826d695781a28130b011e13b3bf3fb2",
+    "resulting_settings_fingerprint": "sha256:0fd197b2650a79d99970cada3dcbabe9980c5a265d9d71f929bbcf6f51e13e7d",
+    "review_projection_is_selected_default": false,
+    "settings_fingerprint_changed": false,
+    "source_ablation_table_fingerprint": "sha256:7368a623b9fbd9a665e2ae135c7da24c2adf9ed3a87b8e36241a3a2f14a676ec"
+  },
+  "remaining_evidence": {
+    "comparable_instrumented_computation": true,
+    "minimum_effective_reviewed_records": 86,
+    "minimum_reviewed_precision_lower_bound": 0.95,
+    "minimum_subgroup_independent_records": 30,
+    "mps_peak_memory_measurement": true,
+    "remaining_effective_review_shortfall": 86,
+    "source_bound_human_review": true
+  },
+  "report_fingerprint": "sha256:ade039c9914c6fc720773eee7fbfb2141ff087f3abf869d9ab56b5f54dfa5d09",
+  "review_and_statistical_support": {
+    "assignment_count": 0,
+    "completed_real_review_count": 0,
+    "effective_real_review_count": 0,
+    "effective_real_review_shortfall": 86,
+    "family_subgroup_status": "unavailable_no_completed_real_reviews",
+    "geographic_subgroup_status": "unavailable_no_completed_real_reviews",
+    "minimum_effective_real_review_count": 86,
+    "minimum_reviewed_precision_lower_bound": 0.95,
+    "minimum_subgroup_independent_records": 30,
+    "occurrence_release_review_queue_count": 0,
+    "representative_and_targeted_purposes_separate": true,
+    "representative_fixture_population_count": 7,
+    "representative_fixture_selected_count": 7,
+    "reviewed_precision": null,
+    "reviewed_precision_lower_bound": null,
+    "reviewer_identity_count": 0,
+    "statistical_support_status": "insufficient_evidence",
+    "targeted_fixture_selected_count": 7
+  },
+  "schema_version": "dynamic-pool-pilot-final-report-v1.0.0",
+  "scientific_invariants": {
+    "fixture_reviews_satisfy_real_review_minimum": false,
+    "missing_geography_is_biological_absence": false,
+    "occurrence_release_authorized": false,
+    "production_default_selected": false,
+    "raw_scores_are_probabilities": false,
+    "representative_and_targeted_review_are_merged": false
+  },
+  "scope": {
+    "australian_case_count": 5,
+    "candidate_taxa_per_case": 5,
+    "case_count": 7,
+    "located_case_count": 6,
+    "no_geo_case_count": 1,
+    "taxa": [
+      {
+        "accepted_taxon_key": "gbif:1938069",
+        "family": "Papilionidae",
+        "pilot_roles": [
+          "primary_target",
+          "cross_region_target"
+        ],
+        "scientific_name": "Papilio demoleus"
+      },
+      {
+        "accepted_taxon_key": "gbif:1937698",
+        "family": "Papilionidae",
+        "pilot_roles": [
+          "australian_scope",
+          "stress_same_genus_competitor"
+        ],
+        "scientific_name": "Papilio anactus"
+      },
+      {
+        "accepted_taxon_key": "gbif:1937712",
+        "family": "Papilionidae",
+        "pilot_roles": [
+          "australian_scope",
+          "stress_same_genus_competitor"
+        ],
+        "scientific_name": "Papilio aegeus"
+      },
+      {
+        "accepted_taxon_key": "gbif:5803065",
+        "family": "Papilionidae",
+        "pilot_roles": [
+          "australian_scope",
+          "same_family_competitor"
+        ],
+        "scientific_name": "Graphium macleayanus"
+      },
+      {
+        "accepted_taxon_key": "gbif:1937474",
+        "family": "Papilionidae",
+        "pilot_roles": [
+          "australian_scope",
+          "same_family_competitor"
+        ],
+        "scientific_name": "Ornithoptera richmondia"
+      }
+    ],
+    "taxon_count": 5
+  },
+  "scoring_ablation": {
+    "candidate_strategy_count": 3,
+    "case_variant_result_count": 168,
+    "classification_accuracy_status": "unavailable_fixture_only",
+    "fusion_method_count": 4,
+    "located_global_dynamic_pair_count": 72,
+    "located_target_raw_score_changed_count": 36,
+    "located_top_candidate_changed_count": 0,
+    "no_geo_exact_global_fallback_parity_count": 12,
+    "no_geo_global_dynamic_pair_count": 12,
+    "pool_variant_count": 2,
+    "raw_score_is_probability": false,
+    "score_work_item_count": 14,
+    "variant_count": 24
+  },
+  "source_fingerprints": {
+    "candidate_ablation": "sha256:ad466876d18977b52387ebf425b959e8ecb0f583c19f5a14071da62e9d8f750d",
+    "production_default_decision": "sha256:43d034983485e789b8fa7c0428131f13c826d695781a28130b011e13b3bf3fb2",
+    "review_plan": "sha256:b25194fe357a928fccc36db6c4307b56db6afe83f471fe90b089b73030053655",
+    "scoring_execution": "sha256:97ee84443bc321928e41350af2d9cc07ddde129dcfc262746f55d10414c8dd8c",
+    "scoring_results": "sha256:b0b65ce0f92e389379ff7b55c516b5a86b4a2af317746dbe5a4028215379a622",
+    "selection_ablation_table": "sha256:7368a623b9fbd9a665e2ae135c7da24c2adf9ed3a87b8e36241a3a2f14a676ec"
+  },
+  "status": "completed_fixture_pilot_insufficient_production_evidence",
+  "title": "Bounded geography-conditioned dynamic reference pooling pilot"
+}

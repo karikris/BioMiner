@@ -12,6 +12,7 @@ from typing import Any
 
 import polars as pl
 
+from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.geography import (
     CellGrid,
     GeographicCoordinate,
@@ -22,7 +23,7 @@ from biominer.geography import (
 from biominer.storage.parquet import write_parquet
 
 
-FLICKR_GEOGRAPHY_SCHEMA_VERSION = "flickr-geography-v1.0.0"
+FLICKR_GEOGRAPHY_SCHEMA_VERSION = "flickr-geography-v1.1.0"
 FLICKR_ACCURACY_POLICY_VERSION = "flickr-accuracy-v1.0.0"
 FLICKR_GEOGRAPHY_FILE = "flickr_geography.parquet"
 
@@ -35,6 +36,7 @@ _WARNING_PRIORITY = (
     "coordinate_accuracy_invalid",
     "coordinate_accuracy_out_of_range",
     "coordinate_accuracy_nonintegral",
+    "coordinate_uncertainty_invalid",
     "coordinate_precision_unknown",
     "coordinate_precision_limits_cells",
     "coordinate_at_null_island",
@@ -67,17 +69,24 @@ def flickr_geography_schema() -> dict[str, pl.DataType]:
         "latitude": pl.Float64,
         "longitude": pl.Float64,
         "coordinate_accuracy": pl.Float64,
+        "coordinate_uncertainty_m": pl.Float64,
+        "coordinate_uncertainty_source": pl.String,
         "coordinate_source": pl.String,
         "geotag_available": pl.Boolean,
         "country_code": pl.String,
         "admin1": pl.String,
+        "bioregion": pl.String,
+        "bioregion_source": pl.String,
         "coarse_cell_id": pl.String,
         "regional_cell_id": pl.String,
         "local_cell_id": pl.String,
+        "supported_cell_resolution": pl.UInt8,
         "coordinate_quality": pl.String,
+        "geography_source_quality": pl.String,
         "geography_warning": pl.String,
         "geography_warnings": pl.List(pl.String),
         "geography_config_fingerprint": pl.String,
+        "row_fingerprint": pl.String,
     }
 
 
@@ -168,7 +177,11 @@ def _project_flickr_record(
     warnings: set[str] = set()
     country_code = _country_code(record, warnings=warnings)
     admin1 = _admin1(record)
+    bioregion, bioregion_source = _bioregion(record)
     coordinate_accuracy = _coordinate_accuracy(record, warnings=warnings)
+    coordinate_uncertainty_m, coordinate_uncertainty_source = (
+        _coordinate_uncertainty(record, warnings=warnings)
+    )
     latitude_value, longitude_value, inferred_source = _coordinate_values(record)
     explicit_source = _optional_text(record.get("coordinate_source"))
     coordinate_source = explicit_source or inferred_source
@@ -178,6 +191,7 @@ def _project_flickr_record(
     geotag_available = False
     coordinate_quality = "missing"
     cells: dict[int, str] = {}
+    supported_resolutions: tuple[int, ...] = ()
     latitude_present = _is_present(latitude_value)
     longitude_present = _is_present(longitude_value)
 
@@ -215,10 +229,12 @@ def _project_flickr_record(
                 warnings.add("flickr_zero_geo_sentinel")
             else:
                 geotag_available = True
-                coordinate_quality, supported_resolutions = _coordinate_quality_and_resolutions(
-                    coordinate_accuracy,
-                    config=config,
-                    warnings=warnings,
+                coordinate_quality, supported_resolutions = (
+                    _coordinate_quality_and_resolutions(
+                        coordinate_accuracy,
+                        config=config,
+                        warnings=warnings,
+                    )
                 )
                 if latitude == 0.0 and longitude == 0.0:
                     warnings.add("coordinate_at_null_island")
@@ -234,7 +250,7 @@ def _project_flickr_record(
                     }
 
     sorted_warnings = sorted(warnings)
-    return {
+    base = {
         "schema_version": FLICKR_GEOGRAPHY_SCHEMA_VERSION,
         "source": source,
         "flickr_photo_id": photo_id,
@@ -242,18 +258,29 @@ def _project_flickr_record(
         "latitude": latitude,
         "longitude": longitude,
         "coordinate_accuracy": coordinate_accuracy,
+        "coordinate_uncertainty_m": coordinate_uncertainty_m,
+        "coordinate_uncertainty_source": coordinate_uncertainty_source,
         "coordinate_source": coordinate_source,
         "geotag_available": geotag_available,
         "country_code": country_code,
         "admin1": admin1,
+        "bioregion": bioregion,
+        "bioregion_source": bioregion_source,
         "coarse_cell_id": cells.get(int(config.resolutions.coarse)),
         "regional_cell_id": cells.get(int(config.resolutions.regional)),
         "local_cell_id": cells.get(int(config.resolutions.local)),
+        "supported_cell_resolution": max(supported_resolutions, default=None),
         "coordinate_quality": coordinate_quality,
+        "geography_source_quality": _geography_source_quality(
+            coordinate_quality=coordinate_quality,
+            coordinate_accuracy=coordinate_accuracy,
+            coordinate_uncertainty_m=coordinate_uncertainty_m,
+        ),
         "geography_warning": _primary_warning(warnings),
         "geography_warnings": sorted_warnings,
         "geography_config_fingerprint": config_fingerprint,
     }
+    return {**base, "row_fingerprint": canonical_semantic_fingerprint(base)}
 
 
 def _record_rows(
@@ -299,6 +326,32 @@ def _coordinate_accuracy(
     elif not accuracy.is_integer():
         warnings.add("coordinate_accuracy_nonintegral")
     return accuracy
+
+
+def _coordinate_uncertainty(
+    record: Mapping[str, Any],
+    *,
+    warnings: set[str],
+) -> tuple[float | None, str | None]:
+    source_fields = (
+        "coordinate_uncertainty_m",
+        "coordinateUncertaintyInMeters",
+    )
+    for field_name in source_fields:
+        value = record.get(field_name)
+        if not _is_present(value):
+            continue
+        try:
+            uncertainty = _finite_float(value)
+        except (TypeError, ValueError):
+            warnings.add("coordinate_uncertainty_invalid")
+            return None, None
+        if uncertainty < 0.0:
+            warnings.add("coordinate_uncertainty_invalid")
+            return None, None
+        explicit_source = _optional_text(record.get("coordinate_uncertainty_source"))
+        return uncertainty, explicit_source or field_name
+    return None, None
 
 
 def _coordinate_quality_and_resolutions(
@@ -383,6 +436,43 @@ def _admin1(record: Mapping[str, Any]) -> str | None:
     if isinstance(value, Mapping):
         value = _first_present(value.get("_content"), value.get("name"))
     return _optional_text(value)
+
+
+def _bioregion(record: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    location = record.get("location")
+    nested = location if isinstance(location, Mapping) else {}
+    value = _first_present(
+        record.get("bioregion"),
+        record.get("ecoregion"),
+        nested.get("bioregion"),
+        nested.get("ecoregion"),
+    )
+    if isinstance(value, Mapping):
+        value = _first_present(value.get("_content"), value.get("name"))
+    bioregion = _optional_text(value)
+    if bioregion is None:
+        return None, None
+    source = _optional_text(record.get("bioregion_source"))
+    return bioregion, source or "source_metadata"
+
+
+def _geography_source_quality(
+    *,
+    coordinate_quality: str,
+    coordinate_accuracy: float | None,
+    coordinate_uncertainty_m: float | None,
+) -> str:
+    if coordinate_quality in {"missing", "invalid"}:
+        return coordinate_quality
+    if coordinate_uncertainty_m is not None:
+        return "metric_uncertainty_available"
+    if (
+        coordinate_accuracy is not None
+        and 1.0 <= coordinate_accuracy <= 16.0
+        and coordinate_accuracy.is_integer()
+    ):
+        return "provider_accuracy_supported"
+    return "provider_precision_unknown"
 
 
 def _first_present(*values: object) -> object | None:

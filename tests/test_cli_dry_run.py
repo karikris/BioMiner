@@ -708,7 +708,7 @@ def test_registry_commands_parse_query_curation_json() -> None:
     assert compile_args.query_curation_json == "examples/species/papilio_demoleus/query_curation.json"
 
 
-def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
+def test_run_cli_exposes_registry_build_control() -> None:
     parser = build_parser()
 
     args = parser.parse_args(
@@ -725,13 +725,32 @@ def test_run_cli_exposes_comment_and_registry_build_controls() -> None:
             "--workstore-backend",
             "sqlite",
             "--build-registry-if-missing",
-            "--comments-max-api-calls",
-            "17",
         ]
     )
 
     assert args.build_registry_if_missing is True
-    assert args.comments_max_api_calls == 17
+
+
+def test_removed_comment_commands_and_run_limit_fail_to_parse() -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dev", "comments", "fetch", "--photo-id", "1"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run",
+                "--taxon",
+                "Danaus plexippus",
+                "--comments-max-api-calls",
+                "17",
+            ]
+        )
+
+
+def test_removed_plan_only_dynamic_pooling_command_fails_to_parse() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["dynamic-pooling", "plan-pools"])
 
 
 def test_storage_and_workstore_doctor_commands_parse() -> None:
@@ -1963,7 +1982,6 @@ def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsy
             str(scope),
             "--report-dir",
             str(reports),
-            "--skip-classification",
         ]
     )
 
@@ -1979,68 +1997,13 @@ def test_registry_build_cli_reuses_source_json_and_writes_report(tmp_path, capsy
     assert Path(payload["report_md"]).exists()
 
 
-def test_registry_build_cli_skip_classification_omits_artifacts(tmp_path, capsys) -> None:
-    scope = tmp_path / "scope.json"
-    scope.write_text(
-        json.dumps(
-            {
-                "scope_id": "test-scope",
-                "root": {"scientific_name": "Papilionoidea", "rank": "SUPERFAMILY"},
-                "included_families": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    source = tmp_path / "registry_source.json"
-    source.write_text(
-        json.dumps(
-            {
-                "source": "GBIF",
-                "source_version": "gbif-species-api",
-                "retrieved_at": "2026-06-20T00:00:00+00:00",
-                "taxa": [
-                    {
-                        "accepted_taxon_key": "gbif:1",
-                        "scientific_name": "Papilionoidea",
-                        "rank": "SUPERFAMILY",
-                    }
-                ],
-                "names": [],
-                "source_assertions": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    output = tmp_path / "registry"
+def test_registry_build_cli_has_no_removed_classification_switch() -> None:
     parser = build_parser()
+    registry = parser._subparsers._group_actions[0].choices["registry"]
+    build = registry._subparsers._group_actions[0].choices["build"]
+    options = {option for action in build._actions for option in action.option_strings}
 
-    assert (
-        run(
-            parser.parse_args(
-                [
-                    "registry",
-                    "build",
-                    "--source-json",
-                    str(source),
-                    "--reuse-source-json",
-                    "--output-dir",
-                    str(output),
-                    "--registry-version",
-                    "test-registry",
-                    "--scope-json",
-                    str(scope),
-                    "--skip-classification",
-                ]
-            )
-        )
-        == 0
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["manifest"]["classification_skipped"] is True
-    assert not (output / "classification_nodes.parquet").exists()
-    assert not (output / "classification_edges.parquet").exists()
-    assert not (output / "classification_leaf_paths.parquet").exists()
+    assert "--skip-classification" not in options
 
 
 def test_registry_seed_flickr_queries_cli_loads_query_definitions_into_state(tmp_path, capsys) -> None:
@@ -2167,28 +2130,6 @@ def test_registry_audit_cli_summarizes_registry_parquet_with_duckdb(tmp_path, ca
     assert payload["qa_by_severity"] == {"warning": 1}
     assert payload["language_target_coverage_report"].startswith(str(report_dir))
     assert payload["curated_vernacular_gap_report"].startswith(str(report_dir))
-
-
-def test_comments_enrichment_cli(tmp_path, capsys) -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "dev",
-            "comments",
-            "fetch",
-            "--photo-id",
-            "1",
-            "--state-db",
-            str(tmp_path / "comments.sqlite"),
-            "--dry-run",
-        ]
-    )
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["implemented"] is True
-    assert payload["comment_fetch_scope"] == "selected_candidate_records_only"
-    assert payload["photo_ids_requested"] == ["1"]
-    assert payload["queued_comment_candidates_added"] == 1
 
 
 def _fake_cloud_config() -> BioMinerConfig:

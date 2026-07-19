@@ -204,6 +204,42 @@ mandatory human review before final inclusion
 
 unless a valid independent calibrator is explicitly available.
 
+## Geography-conditioned dynamic pooling
+
+The accepted architecture and human governance records are:
+
+```text
+docs/architecture/geography_conditioned_dynamic_pooling.md
+docs/architecture/statistical_support_and_human_verification.md
+docs/governance/geography_conditioned_dynamic_pooling_policy.md
+docs/schemas/geography_conditioned_dynamic_pooling_contracts.md
+```
+
+Software and fixture behavior is implemented through Phase 15, including
+exact downstream handoffs and a complete 24-variant pilot decision. The pilot
+outcome is `insufficient_evidence`: zero variants are eligible, no candidate
+strategy, pool variant or fusion method is selected, and runtime settings are
+unchanged.
+
+The following remain mandatory:
+
+- preserve the complete target-aware candidate union under every family and
+  geography schedule;
+- give every candidate global evidence and either local evidence or an exact
+  local-unavailable reason;
+- keep the immutable image embedding key independent of pool membership and
+  reuse compatible embeddings across pool changes;
+- preserve raw components, disagreement, coverage and alternatives rather than
+  relabelling a fused score as probability;
+- keep representative review, targeted discovery and occurrence-release work
+  as separate contracts; and
+- bind any later production selection to eligible live/review evidence and its
+  exact fingerprints.
+
+A fixture projection, CLI plan, successful handoff or consumer import does not
+authorize a production default, human verification, statistical support,
+occurrence release or publication maturity.
+
 ## Human review and release
 
 Flickr scoring may precede review. Final inclusion may not.

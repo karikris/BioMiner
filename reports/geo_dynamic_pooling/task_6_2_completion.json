@@ -1,0 +1,233 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-6.2",
+  "title": "Add family and dynamic-pool matrix cache indexes",
+  "status": "completed",
+  "completed_at": "2026-07-18T06:59:15Z",
+  "starting_sha": "a9ec8bc647037a206e5ef2db256861b69028dd14",
+  "pushed_implementation_sha": "597f233c7f8cbcb9a3ba032c0033bc322666e3b3",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-6.2.1",
+      "commit": "9327b0af38232d9f98e276dd02df1bac34d6634e",
+      "subject": "perf(bioclip): cache family matrices"
+    },
+    {
+      "subtask_id": "geo-pool-6.2.2",
+      "commit": "929d27dae9c44bee501f7d8c159b71afa5fd4068",
+      "subject": "perf(bioclip): cache dynamic pool matrices"
+    },
+    {
+      "subtask_id": "geo-pool-6.2.3",
+      "commit": "597f233c7f8cbcb9a3ba032c0033bc322666e3b3",
+      "subject": "perf(run): sort geographic scoring work"
+    }
+  ],
+  "matrix_contract": {
+    "versions": {
+      "cached_vector_matrix": "cached-vector-matrix-v1",
+      "family_signature": "family-prototype-matrix-signature-v1",
+      "candidate_signature": "candidate-prototype-matrix-signature-v1",
+      "pool_signature": "dynamic-pool-reference-matrix-signature-v1",
+      "candidate_pool_signature": "candidate-pool-signature-v1"
+    },
+    "storage": "immutable contiguous native-Float32 row-major bytes",
+    "properties": [
+      "family, candidate and pool rows are canonicalized before signature derivation",
+      "each signature binds route, full-frame visual-input kind, model identity, source artifact identity, row identities and Float32 vector content",
+      "family and candidate matrices reject duplicate taxon keys, mixed dimensions and non-unit vectors",
+      "pool matrices reject duplicate reference media identities, mixed dimensions and non-unit vectors",
+      "candidate and pool capacities are independent and use thread-safe bounded least-recently-used retention",
+      "candidate or pool changes never invoke an image encoder"
+    ],
+    "default_maximum_entries": {
+      "family": 64,
+      "candidate": 256,
+      "pool": 2048
+    }
+  },
+  "cache_metrics_contract": {
+    "family": [
+      "requests",
+      "hits",
+      "misses",
+      "materializations",
+      "current entries",
+      "rows materialized",
+      "bytes materialized",
+      "evictions",
+      "hit rate"
+    ],
+    "candidate_and_pool": [
+      "independent candidate counters",
+      "independent pool counters",
+      "combined dynamic-matrix counters"
+    ],
+    "fixture": {
+      "evidence_class": "deterministic implementation fixture; not live throughput, accelerator-memory or scientific evidence",
+      "family": {
+        "requests": 2,
+        "hits": 1,
+        "misses": 1,
+        "materializations": 1,
+        "entries": 1,
+        "rows_materialized": 2,
+        "bytes_materialized": 16,
+        "evictions": 0,
+        "hit_rate": 0.5
+      },
+      "candidate": {
+        "requests": 2,
+        "hits": 1,
+        "misses": 1,
+        "materializations": 1,
+        "entries": 1,
+        "rows_materialized": 2,
+        "bytes_materialized": 16,
+        "evictions": 0,
+        "hit_rate": 0.5
+      },
+      "pool": {
+        "requests": 2,
+        "hits": 1,
+        "misses": 1,
+        "materializations": 1,
+        "entries": 1,
+        "rows_materialized": 2,
+        "bytes_materialized": 16,
+        "evictions": 0,
+        "hit_rate": 0.5
+      },
+      "combined_dynamic": {
+        "requests": 4,
+        "hits": 2,
+        "misses": 2,
+        "materializations": 2,
+        "entries": 2,
+        "rows_materialized": 4,
+        "bytes_materialized": 32,
+        "evictions": 0,
+        "hit_rate": 0.5
+      }
+    }
+  },
+  "work_order_contract": {
+    "work_schema_version": "geographic-scoring-work-v1",
+    "order_version": "geographic-scoring-order-v1",
+    "primary_sort": [
+      "route",
+      "visual_input_kind",
+      "family_partition",
+      "geographic_scope",
+      "candidate_pool_signature"
+    ],
+    "deterministic_tie_breakers": [
+      "candidate_matrix_signature",
+      "pool_matrix_signature",
+      "result_order_key",
+      "work_id"
+    ],
+    "properties": [
+      "work, candidate, pool and payload fingerprints are validated before sorting",
+      "duplicate work IDs or work fingerprints fail closed",
+      "canonical result order is independent of cache-local execution order",
+      "reversed input produces the same ordered work identities and ordering fingerprint",
+      "metrics expose locality runs, unique signatures, reuse opportunities and adjacent reuse"
+    ],
+    "fixture": {
+      "work_items": 4,
+      "unique_candidate_matrix_signatures": 2,
+      "unique_pool_matrix_signatures": 2,
+      "candidate_pool_locality_runs": 2,
+      "candidate_matrix_reuse_opportunities": 2,
+      "pool_matrix_reuse_opportunities": 2,
+      "adjacent_candidate_matrix_reuses": 2,
+      "adjacent_pool_matrix_reuses": 2
+    }
+  },
+  "gate": {
+    "cache_and_order_suite": {
+      "command": "uv run pytest -q tests/test_bioclip_matrix_cache.py tests/test_geographic_scoring_work.py tests/test_dynamic_pool_contracts.py tests/test_dynamic_pool_planner.py tests/test_dynamic_pool_scores.py tests/test_reference_scoring.py",
+      "result": "passed",
+      "passed": 89,
+      "duration_seconds": 3.97,
+      "wall_seconds": 4.21
+    },
+    "full_regression": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2855,
+      "duration_seconds": 107.26,
+      "wall_seconds": 108.08,
+      "tested_implementation_sha": "597f233c7f8cbcb9a3ba032c0033bc322666e3b3"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 143,
+      "required_records": [
+        "geo-pool-6.2",
+        "geo-pool-6.2.1",
+        "geo-pool-6.2.2",
+        "geo-pool-6.2.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 3,
+      "required_field_matches": 12,
+      "origin_chain_verified": true
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "calls_made_for_task": 0,
+    "availability": "The user prohibited further GitHits calls for the remainder of the active goal.",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "Phase 0 cached-embedding and dynamic-pooling architecture",
+      "Phase 5 immutable pool membership and cached expansion identities",
+      "Task 6.1 durable Flickr embedding and full-frame input contracts",
+      "existing BioMiner semantic fingerprints and deterministic artifact sorting"
+    ],
+    "assessment": "Four skipped_user_directive records preserve task/subtask provenance without a call. No GitHits repository, solution, result, code, prose or architecture is claimed."
+  },
+  "selection_state": {
+    "candidate_strategy_selected": null,
+    "production_default_changed": false,
+    "live_matrix_workload_executed": false,
+    "live_mps_memory_measured": false,
+    "live_throughput_measured": false,
+    "raw_dynamic_scoring_implemented": false,
+    "production_release_authorized": false,
+    "reason": "Only deterministic matrix-cache and work-order fixtures ran; Task 7.1 implements raw scoring next."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "597f233c7f8cbcb9a3ba032c0033bc322666e3b3",
+    "verified_remote_sha": "597f233c7f8cbcb9a3ba032c0033bc322666e3b3",
+    "verified_at": "2026-07-18T06:59:15Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 6.2 provides deterministic, bounded family, candidate and reference-pool matrix indexes over already-cached unit vectors.",
+      "Candidate and pool matrices are reused only when their complete semantic signatures match.",
+      "Scoring work is deterministically grouped by the required cache-locality fields while retaining an independent canonical result order.",
+      "The exact implementation commit passes 89 focused tests, 2,855 repository tests and repository-wide lint."
+    ],
+    "blocked": [
+      "Fixture cache hits prove live-corpus throughput, latency, memory reduction or MPS performance.",
+      "A live BioCLIP model or accelerator was used by this task gate.",
+      "Raw family, global or local dynamic-pool component scoring is implemented by this task.",
+      "A candidate strategy is selected, empirically superior or production-defaulted.",
+      "Accuracy, calibration, taxonomic verification, human review, occurrence release or production deployment is complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}

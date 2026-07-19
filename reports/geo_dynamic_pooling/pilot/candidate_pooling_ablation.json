@@ -1,0 +1,86 @@
+{
+  "australian_case_count": 5,
+  "candidate_taxon_count_per_case": 5,
+  "case_count": 7,
+  "classification_accuracy": {
+    "reason": "fixture_expected_taxa_are_not_source_bound_human_labels",
+    "status": "unavailable"
+  },
+  "complete_union_preserved_result_count": 21,
+  "evidence_basis": "current_fixture_backed_execution",
+  "historical_real_source_inventory_used_as_current_results": false,
+  "located_case_count": 6,
+  "no_geo_case_count": 1,
+  "pilot_id": "geo-dynamic-pool-pilot-20260718-v1",
+  "plan_fingerprint": "sha256:ac63c18f391164e8bcdb474190a70c6200ff28dfdda93c5c3ad11fe7de9b0092",
+  "report_fingerprint": "sha256:162f35fd5f43d9a564bf54fe936ab67fc0b9294c3fc046b28196e67388a2544a",
+  "result_row_count": 21,
+  "result_set_fingerprint": "sha256:ad466876d18977b52387ebf425b959e8ecb0f583c19f5a14071da62e9d8f750d",
+  "schema_version": "dynamic-pool-pilot-candidate-ablation-report-v1.0.0",
+  "scientific_claims": {
+    "candidate_order_is_classification_accuracy": false,
+    "fixture_labels_are_human_reviews": false,
+    "missing_geography_is_biological_absence": false,
+    "occurrence_release_authorized": false,
+    "raw_scores_are_probabilities": false
+  },
+  "selection": {
+    "production_default_eligible": false,
+    "reason": "fixture_evidence_cannot_select_a_production_default",
+    "selected_candidate_strategy": null,
+    "status": "insufficient_evidence"
+  },
+  "strategy_count": 3,
+  "strategy_metrics": [
+    {
+      "accuracy_interpretation": "unavailable_fixture_only",
+      "case_count": 7,
+      "complete_union_preserved_count": 7,
+      "located_target_candidate_recall_at_1": 1.0,
+      "maximum_target_rank": 1,
+      "mean_target_rank": 1.0,
+      "no_geo_target_candidate_recall_at_1": 1.0,
+      "order_differs_from_source_count": 3,
+      "strategy_name": "geography_first",
+      "target_candidate_recall_at_1": 1.0,
+      "target_candidate_recall_at_3": 1.0,
+      "target_candidate_recall_at_5": 1.0,
+      "target_preserved_count": 7
+    },
+    {
+      "accuracy_interpretation": "unavailable_fixture_only",
+      "case_count": 7,
+      "complete_union_preserved_count": 7,
+      "located_target_candidate_recall_at_1": 0.16666666666666666,
+      "maximum_target_rank": 3,
+      "mean_target_rank": 2.7142857142857144,
+      "no_geo_target_candidate_recall_at_1": 0.0,
+      "order_differs_from_source_count": 6,
+      "strategy_name": "family_first_safe",
+      "target_candidate_recall_at_1": 0.14285714285714285,
+      "target_candidate_recall_at_3": 1.0,
+      "target_candidate_recall_at_5": 1.0,
+      "target_preserved_count": 7
+    },
+    {
+      "accuracy_interpretation": "unavailable_fixture_only",
+      "case_count": 7,
+      "complete_union_preserved_count": 7,
+      "located_target_candidate_recall_at_1": 1.0,
+      "maximum_target_rank": 1,
+      "mean_target_rank": 1.0,
+      "no_geo_target_candidate_recall_at_1": 1.0,
+      "order_differs_from_source_count": 2,
+      "strategy_name": "parallel_family_geography_union",
+      "target_candidate_recall_at_1": 1.0,
+      "target_candidate_recall_at_3": 1.0,
+      "target_candidate_recall_at_5": 1.0,
+      "target_preserved_count": 7
+    }
+  ],
+  "target_preserved_result_count": 21,
+  "timing": {
+    "reason": "structural_schedule_ablation_only",
+    "status": "not_instrumented"
+  }
+}

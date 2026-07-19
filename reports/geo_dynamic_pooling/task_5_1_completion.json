@@ -1,0 +1,203 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-5.1",
+  "title": "Define and implement dynamic reference-pool policy",
+  "status": "completed",
+  "completed_at": "2026-07-18T05:26:10Z",
+  "starting_sha": "8cceba128054df54a27d9b152935963385a474c7",
+  "pushed_implementation_sha": "b1ae26d15e6b3c866ea57c5c8a972444a4860e0d",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-5.1.1",
+      "commit": "8f5b2f9f25565e95868de5d900b45f1cdc663df7",
+      "subject": "feat(bioclip): define dynamic pool policy"
+    },
+    {
+      "subtask_id": "geo-pool-5.1.2",
+      "commit": "86cedcf9d01348770eca95a96f46bdf37dd84ba9",
+      "subject": "feat(bioclip): plan global local pools"
+    },
+    {
+      "subtask_id": "geo-pool-5.1.3",
+      "commit": "746e5259922c057e0f7864643a861844c8fdf03f",
+      "subject": "feat(bioclip): balance dynamic reference pools"
+    },
+    {
+      "subtask_id": "geo-pool-5.1.4",
+      "commit": "b1ae26d15e6b3c866ea57c5c8a972444a4860e0d",
+      "subject": "feat(reports): report pool coverage shortfalls"
+    }
+  ],
+  "policy": {
+    "schema_version": "dynamic-reference-pool-policy-v1.0.0",
+    "policy_version": "geography-conditioned-safe-v1",
+    "default_policy_fingerprint": "sha256:08a5983f4e3c9d92894b5bcca2fbb18dd7a6d74114fdc90523ad29fde654cdc5",
+    "controls": [
+      "nondecreasing initial, uncertainty-expansion and selective-rescore member limits",
+      "global and local per-candidate minima and maxima",
+      "safety and total pool budgets",
+      "round-robin equal-quota class balance",
+      "canonical exact-local through global geographic fallback order",
+      "observer, locality, burst, country and independent-observation diversity",
+      "bounded margin-triggered expansion increment, rank limit and round count",
+      "mandatory target and complete safety-union retention",
+      "prohibited family and geography hard pruning",
+      "deterministic UInt64 seed and complete policy fingerprint"
+    ]
+  },
+  "planner": {
+    "inputs": [
+      "family_geo_candidate_sets",
+      "reference_geography_index",
+      "global_reference_anchors",
+      "dynamic reference-pool policy",
+      "optional observation-to-burst identities"
+    ],
+    "outputs": [
+      "dynamic_reference_pool_plans.parquet",
+      "dynamic_reference_pool_members.parquet",
+      "dynamic_reference_pool_summary.parquet"
+    ],
+    "semantics": [
+      "select biological reference observations rather than arbitrary media volume",
+      "prefer committed global anchors and exact workload-cluster local references",
+      "reuse cached embedding fingerprints without copying embedding vectors",
+      "deduplicate observations, duplicate groups and supplied burst groups across a plan",
+      "round-robin candidate taxa under stage and total budgets",
+      "cap observer and locality reuse and preserve one validated route/domain",
+      "record unmaterialized distance as unavailable rather than fabricating a value",
+      "emit the Phase 0 immutable plan, member and summary contracts"
+    ]
+  },
+  "coverage_reporting": {
+    "artifact": "dynamic_pool_coverage_shortfalls.parquet",
+    "schema_version": "dynamic-pool-coverage-v1.0.0",
+    "grain": "one dynamic pool plan and source candidate taxon",
+    "statuses": [
+      "complete",
+      "usable_with_shortfalls",
+      "insufficient_global",
+      "no_reference_support"
+    ],
+    "properties": [
+      "zero-member candidates remain materialized",
+      "global, local, safety and independent-observation shortfalls remain separate",
+      "local-unavailable and fallback reasons remain exact",
+      "no-geo is evidence unavailability and never taxon absence",
+      "coverage reporting never authorizes production release"
+    ]
+  },
+  "fixture_round_trip": {
+    "evidence_class": "deterministic implementation fixture; not live reference-pool evidence",
+    "policy_fingerprint": "sha256:a9f8c1044d33b74422afad20385a1c1b98a055eac765ec22f7a29cfaec36cbbe",
+    "plans": {
+      "rows": 1,
+      "fingerprint": "sha256:452b441eabb2e7963b1520c91a0c7a9551837420013e299758fa9910896253d6"
+    },
+    "members": {
+      "rows": 3,
+      "global": 2,
+      "local": 1,
+      "fingerprint": "sha256:7552d843f50240cc82ed0b1a31e8f2d9f206ce4b9690425b1d16091669165547"
+    },
+    "summaries": {
+      "rows": 2,
+      "fingerprint": "sha256:c296f05a2873b0780eec9ed700c25cd9332cae1a5f324ede6edb5007d4d21528"
+    },
+    "coverage": {
+      "rows": 1,
+      "complete": 1,
+      "fingerprint": "sha256:9d30c0675ec0adeaa63a1ced1173024ec07841fb8f5885221296d0f51e1abc5b",
+      "report_fingerprint": "sha256:9e2a714db8664b40cf8f1723f115883bfa7d569eec0ef4de441d4442e53ac018",
+      "production_release_authorized": false
+    },
+    "counterexamples": [
+      "a five-member shared stage budget produced balanced class counts of three and two",
+      "one repeated observer and locality was capped to one member under the strict fixture policy",
+      "two observations in one supplied burst group filled only one slot",
+      "pinned-specimen route/domain evidence did not enter an adult-field plan",
+      "a candidate with no references remained in coverage as no_reference_support",
+      "a no-geo request remained global-only with no_geo_global_fallback"
+    ]
+  },
+  "gate": {
+    "pool_planner_suite": {
+      "command": "uv run pytest -q tests/test_dynamic_pool_planner.py tests/test_dynamic_pool_policy.py tests/test_dynamic_pool_contracts.py tests/test_global_reference_anchors.py tests/test_reference_geography_index.py",
+      "result": "passed",
+      "passed": 82,
+      "duration_seconds": 1.4
+    },
+    "full_regression": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2796,
+      "duration_seconds": 103.97,
+      "tested_implementation_sha": "b1ae26d15e6b3c866ea57c5c8a972444a4860e0d"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 131,
+      "required_records": [
+        "geo-pool-5.1",
+        "geo-pool-5.1.1",
+        "geo-pool-5.1.2",
+        "geo-pool-5.1.3",
+        "geo-pool-5.1.4"
+      ],
+      "githits_status": "all_five_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 4,
+      "required_field_matches": 16,
+      "origin_chain_verified": true
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "calls_made_for_task": 0,
+    "availability": "The user prohibited further GitHits calls for the remainder of the active goal.",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "Phase 0 immutable dynamic pool plan/member/summary contracts",
+      "Phase 2 reference geography index and global anchors",
+      "Phase 4 complete candidate union and fail-closed evaluation",
+      "BioMiner policy fingerprint and shortfall-report conventions"
+    ],
+    "assessment": "Five skipped_user_directive records preserve the required task/subtask provenance without a call. No GitHits repository, solution, result, code, prose or architecture is claimed."
+  },
+  "selection_state": {
+    "candidate_strategy_selected": null,
+    "production_default_changed": false,
+    "live_dynamic_pool_planned": false,
+    "reason": "Only deterministic planner fixtures ran; no live reference bank or production Flickr workload was planned."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "b1ae26d15e6b3c866ea57c5c8a972444a4860e0d",
+    "verified_remote_sha": "b1ae26d15e6b3c866ea57c5c8a972444a4860e0d",
+    "verified_at": "2026-07-18T05:26:10Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 5.1 implements an immutable safe policy and deterministic observation-level global/local planner.",
+      "Planner fixtures enforce class balance, diversity, route/domain isolation and exact shortfall reporting.",
+      "The planner reuses cached embedding identities and emits the accepted Phase 0 artifacts.",
+      "The full software regression and repository-wide lint gates pass."
+    ],
+    "blocked": [
+      "The fixture proves live reference coverage, accuracy, throughput, memory or cache performance.",
+      "A live dynamic reference pool has been built or scored.",
+      "Missing local references or geography prove taxon absence.",
+      "A candidate strategy is selected or empirically superior.",
+      "Calibration, statistical support, human verification, occurrence release or production deployment are complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}

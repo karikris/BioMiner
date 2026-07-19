@@ -1,0 +1,170 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-12.2",
+  "title": "Reuse all unaffected evidence",
+  "status": "completed",
+  "completed_at": "2026-07-18T11:51:12Z",
+  "starting_sha": "29228e18cb2a714dfa9cea0a724db1b92e77d109",
+  "pushed_implementation_sha": "074e8671c7aac2e6a32705c8aa82b8b07c06b042",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-12.2.1",
+      "commit": "743e0514d8fb97a1bff4a3adde1d94aedafa29ed",
+      "subject": "perf(bioclip): reuse reference embeddings after pool revision"
+    },
+    {
+      "subtask_id": "geo-pool-12.2.2",
+      "commit": "fb0ec8e9925b2ac13b946543b3f92e9481dee087",
+      "subject": "perf(bioclip): reuse Flickr embeddings after pool revision"
+    },
+    {
+      "subtask_id": "geo-pool-12.2.3",
+      "commit": "074e8671c7aac2e6a32705c8aa82b8b07c06b042",
+      "subject": "perf(run): selectively rebuild dynamic pools"
+    }
+  ],
+  "contracts": {
+    "reference_embedding_reuse": {
+      "version": "dynamic-reference-embedding-reuse-v1.0.0",
+      "basis": [
+        "complete old/new reference revision inventory",
+        "input-content fingerprint",
+        "producer/model fingerprint",
+        "preprocessing fingerprint",
+        "validated cache artifact fingerprint"
+      ],
+      "outcomes": [
+        "reuse_reference_embedding",
+        "embed_new_reference_image",
+        "reembed_changed_reference_image",
+        "filter_excluded_reference",
+        "skip_excluded_reference"
+      ],
+      "metadata_only_change_can_reuse_vector": true,
+      "media_id_only_reuse": false
+    },
+    "flickr_embedding_reuse": {
+      "version": "dynamic-flickr-embedding-reuse-v1.0.0",
+      "grain": "unique declared Flickr embedding fingerprint",
+      "shared_across_scoring_records": true,
+      "source_image_binding_required": true,
+      "cached_artifact_fingerprint_must_match_dependency": true,
+      "reference_pool_change_forces_flickr_reencode": false
+    },
+    "selective_execution": {
+      "plan_version": "dynamic-selective-rerun-plan-v1.0.0",
+      "receipt_version": "dynamic-selective-rerun-receipt-v1.0.0",
+      "stages": [
+        "reference/Flickr embedding cache misses",
+        "affected reference pools",
+        "affected scoring matrices",
+        "affected individual scoring records"
+      ],
+      "preflight_all_required_executors": true,
+      "invoke_reuse_actions": false,
+      "whole_partition_rescore": false,
+      "tamper_evident_operations_and_receipts": true
+    }
+  },
+  "fixture_evidence": {
+    "reference_embedding_requirements": 5,
+    "reference_embeddings_reused": 2,
+    "reference_embeddings_to_materialize": 2,
+    "references_excluded": 1,
+    "unique_flickr_embedding_requirements": 2,
+    "flickr_embeddings_reused": 1,
+    "flickr_embeddings_to_materialize": 1,
+    "scoring_records_bound_to_flickr_embeddings": 3,
+    "affected_scoring_records": 2,
+    "reusable_scoring_records": 1,
+    "selective_plan_operations": 14,
+    "operations_executed": 7,
+    "operations_reused_without_execution": 6,
+    "operations_excluded_without_execution": 1,
+    "executed_by_artifact_kind": {
+      "reference_embedding": 2,
+      "flickr_embedding": 1,
+      "reference_pool": 1,
+      "scoring_matrix": 1,
+      "scoring_record": 2
+    },
+    "estimated_runtime_savings_seconds": null,
+    "runtime_savings_status": "not_instrumented",
+    "evidence_scope": "deterministic software fixture with fake executors"
+  },
+  "gate": {
+    "selective_rerun_suite": {
+      "command": ".venv/bin/pytest -q tests/test_dynamic_pool_selective_rerun.py tests/test_dynamic_pool_revision_impact.py tests/test_incremental_feature_reuse.py tests/test_flickr_embeddings.py tests/test_bioclip_matrix_cache.py tests/test_dynamic_pool_scoring.py tests/test_reference_model_rebuild.py tests/test_flickr_selective_rescore.py",
+      "result": "passed",
+      "passed": 85,
+      "duration_seconds": 2.34
+    },
+    "full_regression": {
+      "command": ".venv/bin/pytest -q",
+      "result": "passed",
+      "passed": 3091,
+      "duration_seconds": 121.11,
+      "tested_implementation_sha": "074e8671c7aac2e6a32705c8aa82b8b07c06b042"
+    },
+    "lint_and_format": {
+      "commands": [
+        "uvx ruff check src/biominer/run/dynamic_pool_selective_rerun.py tests/test_dynamic_pool_selective_rerun.py",
+        "uvx ruff format --check src/biominer/run/dynamic_pool_selective_rerun.py tests/test_dynamic_pool_selective_rerun.py",
+        "git diff --check"
+      ],
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "required_records": [
+        "geo-pool-12.2",
+        "geo-pool-12.2.1",
+        "geo-pool-12.2.2",
+        "geo-pool-12.2.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    }
+  },
+  "githits_architecture_impact": {
+    "calls_made_for_task": 0,
+    "direct_external_code_contribution": "none",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "BioMiner incremental feature reuse",
+      "BioMiner durable Flickr embeddings",
+      "BioMiner dynamic matrix cache",
+      "BioMiner Task 12.1 exact impact graph"
+    ]
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "074e8671c7aac2e6a32705c8aa82b8b07c06b042",
+    "verified_remote_sha": "074e8671c7aac2e6a32705c8aa82b8b07c06b042",
+    "verified_at": "2026-07-18T11:51:12Z",
+    "status": "verified"
+  },
+  "live_and_human_limits": {
+    "live_bioclip_run_executed": false,
+    "live_dynamic_pool_rebuild_executed": false,
+    "live_flickr_rescore_executed": false,
+    "human_review_performed": false,
+    "calibration_or_probability_claim": false,
+    "scientific_release_authorized": false
+  },
+  "claims": {
+    "allowed": [
+      "Exact content/model/preprocessing cache identities can reuse reference and Flickr vectors after a reference-bank revision.",
+      "The fixture executor invokes only cache misses and affected pools, matrices and individual scoring records.",
+      "A shared Flickr embedding is materialized or reused once even when several scoring records depend on it.",
+      "The plan reports measured work counts and leaves runtime savings unestimated."
+    ],
+    "blocked": [
+      "The task measured live production speedup, memory reduction or cost savings.",
+      "A raw similarity or review-priority value is a probability.",
+      "Missing geographic evidence is biological absence.",
+      "The fixture result selects a fusion method, establishes scientific improvement or authorizes occurrence release."
+    ]
+  },
+  "completion_record_commit": "self"
+}

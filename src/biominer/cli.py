@@ -64,12 +64,6 @@ from biominer.flickr_fetch.australia import (
     build_australia_presence,
     compile_australia_query_plan,
 )
-from biominer.flickr_comments.comment_review import (
-    apply_comment_review_decisions_to_parquet,
-    build_comment_review_queue_from_parquet,
-    review_comments_once,
-)
-from biominer.flickr_comments.comments_enrichment import CommentsEnrichmentState, fetch_flickr_comments
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
@@ -214,11 +208,6 @@ RUN_STAGE_ALIASES = {
     "join_evidence": RunStage.JOIN_EVIDENCE,
     "summarize": RunStage.SUMMARIZE,
     "summary": RunStage.SUMMARIZE,
-    "queue_comments": RunStage.QUEUE_COMMENT_REVIEW,
-    "queue_comment_review": RunStage.QUEUE_COMMENT_REVIEW,
-    "review_comments": RunStage.REVIEW_COMMENTS,
-    "apply_comments": RunStage.APPLY_COMMENT_REVIEW,
-    "apply_comment_review": RunStage.APPLY_COMMENT_REVIEW,
 }
 
 
@@ -382,7 +371,6 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--skip-language-targets", action="store_true")
     registry_build.add_argument("--skip-curated-static-sources", action="store_true")
     registry_build.add_argument("--skip-enrichment", action="store_true")
-    registry_build.add_argument("--skip-classification", action="store_true", help=argparse.SUPPRESS)
     registry_harvest_col = registry_subparsers.add_parser("harvest-col-xr")
     registry_harvest_col.add_argument("--output-dir", default="data/sources/col/COL26.6-XR")
     registry_harvest_col.add_argument("--scope-json", default="config/butterfly_scope.json")
@@ -437,28 +425,6 @@ def build_parser() -> argparse.ArgumentParser:
     registry_seed = dev_registry_subparsers.add_parser("seed-flickr-queries")
     registry_seed.add_argument("--query-definitions", required=True)
     registry_seed.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
-    dev_comments = dev_subparsers.add_parser("comments")
-    dev_comments_subparsers = dev_comments.add_subparsers(dest="comments_command")
-    comments_fetch = dev_comments_subparsers.add_parser("fetch")
-    comments_fetch.add_argument("--photo-id", action="append", default=[])
-    comments_fetch.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
-    comments_fetch.add_argument("--limit", type=int, default=0)
-    comments_fetch.add_argument("--dry-run", action="store_true")
-    comments_fetch.add_argument("--selected-for-qa", action="store_true")
-    comments_fetch.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    comments_fetch.add_argument("--min-photos", type=int, default=2)
-    comments_fetch.add_argument("--min-users", type=int, default=2)
-    comments_queue = dev_comments_subparsers.add_parser("queue")
-    comments_queue.add_argument("--input", required=True)
-    comments_queue.add_argument("--state-db", default="data/state/comment_review.sqlite")
-    comments_review = dev_comments_subparsers.add_parser("review-once")
-    comments_review.add_argument("--state-db", default="data/state/comment_review.sqlite")
-    comments_review.add_argument("--max-api-calls", type=int, default=300)
-    comments_review.add_argument("--api-key-env", default="FLICKR_API_KEY")
-    comments_apply = dev_comments_subparsers.add_parser("apply-decisions")
-    comments_apply.add_argument("--input", required=True)
-    comments_apply.add_argument("--output", required=True)
-    comments_apply.add_argument("--state-db", default="data/state/comment_review.sqlite")
     dev_flickr = dev_subparsers.add_parser("flickr")
     dev_flickr_subparsers = dev_flickr.add_subparsers(dest="flickr_command")
     dev_poll_once = dev_flickr_subparsers.add_parser("poll-once")
@@ -622,7 +588,6 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--build-registry-if-missing", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
     production_run.add_argument("--limit-records", type=int, default=0)
-    production_run.add_argument("--comments-max-api-calls", type=int, default=300)
     return parser
 
 
@@ -860,8 +825,6 @@ def run(args: argparse.Namespace) -> int:
         return _run_workstore_command(args)
     if args.command == "run":
         return _run_production_command(args)
-    if args.command == "dev" and args.dev_command == "comments":
-        return _run_dev_comments_command(args)
     if args.command == "dev" and args.dev_command == "flickr":
         return _run_dev_flickr_command(args)
     if args.command == "registry" or (args.command == "dev" and args.dev_command == "registry"):
@@ -1050,7 +1013,6 @@ def run(args: argparse.Namespace) -> int:
                     skip_language_targets=args.skip_language_targets,
                     skip_curated_static_sources=args.skip_curated_static_sources,
                     skip_enrichment=args.skip_enrichment,
-                    skip_classification_table=args.skip_classification,
                 )
             except (FileNotFoundError, ValueError) as exc:
                 print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
@@ -1092,70 +1054,6 @@ def run(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         return 2
-    return 2
-
-
-def _run_dev_comments_command(args: argparse.Namespace) -> int:
-    if args.comments_command == "fetch":
-        state = CommentsEnrichmentState(args.state_db)
-        queued = state.queue_candidates(
-            (
-                {
-                    "source": "flickr",
-                    "flickr_photo_id": photo_id,
-                    "triage_bin": "in_review",
-                    "triage_reason": "selected_candidate",
-                }
-                for photo_id in args.photo_id
-            ),
-            selected_for_qa=args.selected_for_qa,
-        )
-        processed = {"comment_records_processed": 0, "comment_records_failed": 0, "term_observations_inserted": 0}
-        if args.limit > 0 and not args.dry_run:
-            api_key = os.environ.get(args.api_key_env)
-            if not api_key:
-                print(
-                    json.dumps(
-                        {"error": f"{args.api_key_env} is required unless --dry-run or --limit 0 is used"},
-                        indent=2,
-                        sort_keys=True,
-                    )
-                )
-                return 2
-            processed = state.process_pending(fetch_comments=fetch_flickr_comments(api_key=api_key), limit=args.limit)
-        promoted = state.promote_supported_terms(min_photos=args.min_photos, min_users=args.min_users)
-        payload = {
-            "implemented": True,
-            "comment_fetch_scope": "selected_candidate_records_only",
-            "photo_ids_requested": args.photo_id,
-            "queued_comment_candidates_added": queued,
-            **processed,
-            "promoted_terms_added": len(promoted),
-            "promoted_terms": [term.__dict__ for term in promoted],
-            **state.summary(),
-        }
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    if args.comments_command == "queue":
-        payload = build_comment_review_queue_from_parquet(input_path=args.input, state_db=args.state_db)
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    if args.comments_command == "review-once":
-        try:
-            payload = review_comments_once(
-                state_db=args.state_db,
-                max_api_calls=args.max_api_calls,
-                api_key=os.environ.get(args.api_key_env),
-            )
-        except RuntimeError as exc:
-            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-            return 2
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    if args.comments_command == "apply-decisions":
-        payload = apply_comment_review_decisions_to_parquet(input_path=args.input, output_path=args.output, state_db=args.state_db)
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
     return 2
 
 
@@ -2068,7 +1966,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             for key, value in {
                 "species": args.limit_species,
                 "records": args.limit_records,
-                "comment_api_calls": args.comments_max_api_calls,
             }.items()
             if value and value > 0
         }

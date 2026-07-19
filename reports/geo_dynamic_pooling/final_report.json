@@ -1,0 +1,350 @@
+{
+  "schema_version": "geo-dynamic-pooling-final-report-v1.0.0",
+  "title": "BioMiner geography-conditioned dynamic global/local reference pooling",
+  "status": "software_and_fixture_goal_complete_live_scientific_work_pending",
+  "generated_at": "2026-07-18T16:02:40Z",
+  "repository": "karikris/BioMiner",
+  "branch": "main",
+  "goal_starting_sha": "c7eaa9bf3696a25a0c8229837819dccec4fb9d66",
+  "phase_0_design_sha": "299914548b407b439cd36d1aa99397b41aa827f1",
+  "pre_report_workflow_sha": "98c64ec27e0aaa6aa3da333b3e4d37df3fc1c30b",
+  "final_report_containing_commit": "self",
+  "remote_main_status_at_report_write": "final_task_push_pending_and_resolved_by_task_16_2_completion_record",
+  "assistance": {
+    "primary_model": "GPT-5.6-sol",
+    "reasoning_effort": "xhigh",
+    "session_id": "019f660b-6398-7a22-a1e8-ad5bc6abc23c",
+    "origin_repository": "karikris/BioMiner"
+  },
+  "executive_result": {
+    "architecture_implemented": true,
+    "deterministic_software_and_fixture_gates_passed": true,
+    "exact_downstream_contracts_verified": true,
+    "live_scientific_execution_completed": false,
+    "source_bound_human_review_completed": false,
+    "production_selection_decision": "insufficient_evidence",
+    "eligible_variant_count": 0,
+    "production_default_authorized": false,
+    "runtime_settings_changed": false,
+    "selected_candidate_strategy": null,
+    "selected_pool_variant": null,
+    "selected_fusion_method": null,
+    "occurrence_release_authorized": false,
+    "reason": "The complete software workflow and fixture pilot pass, but zero completed real reviews, unavailable reviewed precision/subgroups, uninstrumented comparable runtime and unavailable MPS peak memory fail the frozen production-selection policy."
+  },
+  "workflow_scope": {
+    "tasks_completed": 33,
+    "subtask_records_completed": 105,
+    "corrective_records_completed": 1,
+    "task_completion_reports_after_task_closure": 33,
+    "required_subtask_commit_evidence": "Every numbered subtask is listed with its exact commit and subject in reports/geo_dynamic_pooling/task_*_completion.json.",
+    "verified_task_pushes_before_final_task_push": 32,
+    "verified_task_pushes_after_task_closure": 33,
+    "direct_main_workflow": true,
+    "feature_branch_created": false,
+    "pull_request_created": false,
+    "force_push_or_history_rewrite": false
+  },
+  "evidence_layers": {
+    "implemented_contract": "Producer, validator, schema, identity and fail-closed behavior exist and pass deterministic tests.",
+    "fixture_executed": "Bounded synthetic or repository fixture exercised the contract; values are not live biological performance.",
+    "live_executed": "Current source/model corpus execution with exact manifests and instrumentation; not completed for this goal.",
+    "human_reviewed": "Source-hash-bound decisive independent review; zero completed real reviews in the pilot.",
+    "statistically_supported": "Eligible representative reviewed evidence satisfies the frozen policy; unavailable.",
+    "release_authorized": "All item and downstream release gates pass; false."
+  },
+  "minimum_required_artifact_contracts": {
+    "common_status": "implemented_contract_and_fixture_validated_live_materialization_not_run_unless_noted",
+    "reference_indexing": [
+      {"requested": "reference_geography_index.parquet", "implemented": "reference_geography_index.parquet"},
+      {"requested": "global_reference_anchors.parquet", "implemented": "global_reference_anchors.parquet"},
+      {"requested": "geographic_reference_neighbours.parquet", "implemented": "geographic_reference_neighbours.parquet"},
+      {"requested": "reference_geography_index_manifest.json", "implemented": "reference_geography_index_manifest.json"}
+    ],
+    "flickr_partitioning": [
+      {"requested": "flickr_scoring_units.parquet", "implemented": "flickr_scoring_units.parquet"},
+      {"requested": "flickr_geo_taxon_partitions.parquet", "implemented": "flickr_geo_taxon_partitions.parquet"},
+      {"requested": "flickr_partition_summary.parquet", "implemented": "flickr_partition_summary.parquet"}
+    ],
+    "candidates_and_pools": [
+      {"requested": "family_geo_candidate_sets.parquet", "implemented": "family_geo_candidate_sets.parquet"},
+      {"requested": "dynamic_reference_pool_plans.parquet", "implemented": "dynamic_reference_pool_plans.parquet"},
+      {"requested": "dynamic_reference_pool_members.parquet", "implemented": "dynamic_reference_pool_members.parquet"},
+      {"requested": "dynamic_reference_pool_summary.parquet", "implemented": "dynamic_reference_pool_summary.parquet"},
+      {"requested": "pool_shortfalls.parquet", "implemented": "dynamic_pool_coverage_shortfalls.parquet", "note": "versioned exact-name replacement"}
+    ],
+    "scores": [
+      {"requested": "dynamic_pool_candidate_scores.parquet", "implemented": "dynamic_pool_candidate_scores.parquet"},
+      {"requested": "dynamic_pool_photo_summary.parquet", "implemented": "dynamic_pool_photo_summary.parquet"},
+      {"requested": "dynamic_pool_score_report.json", "implemented": "pilot/dynamic_pool_scoring.json", "note": "fixture execution report; production CLI emits dynamic_pool_score_manifest.json plans and live adapters fail closed"}
+    ],
+    "review_and_statistics": [
+      {"requested": "dynamic_pool_review_sampling_frame.parquet", "implemented": "dynamic_pool_audit_frame.parquet"},
+      {"requested": "review_evidence_policy.json", "implemented": "review_evidence_policy.json"},
+      {"requested": "review_sample_plan.parquet", "implemented": "dynamic_pool_probability_audit_register.parquet plus dynamic_pool_probability_audit_sample.parquet"},
+      {"requested": "dynamic_pool_dataset_split_manifest.parquet", "implemented": "dynamic_pool_evaluation_splits.parquet"},
+      {"requested": "dynamic_pool_training_features.parquet", "implemented": "dynamic_pool_features.parquet"},
+      {"requested": "dynamic_pool_calibration_artifacts.json", "implemented": "fingerprinted grouped-OOF calibrator and validation-reliability contracts"},
+      {"requested": "dynamic_pool_quality_metrics.parquet", "implemented": "dynamic-pool-quality-report-v1.0.0 overall rows"},
+      {"requested": "dynamic_pool_metrics_by_family.parquet", "implemented": "dynamic-pool-quality-report-v1.0.0 family rows"},
+      {"requested": "dynamic_pool_metrics_by_species.parquet", "implemented": "dynamic-pool-quality-report-v1.0.0 species rows"},
+      {"requested": "dynamic_pool_metrics_by_geography.parquet", "implemented": "dynamic-pool-quality-report-v1.0.0 five-level geography rows"},
+      {"requested": "dynamic_pool_review_queue.parquet", "implemented": "dynamic_pool_occurrence_release_review_queue.parquet"},
+      {"requested": "dynamic_pool_reference_escalation.parquet", "implemented": "dynamic-pool-escalation-report-v1.0.0"}
+    ],
+    "outcome_lanes": [
+      {"requested": "human_reviewed_release_candidates.parquet", "implemented": "human-reviewed-release-lane-v1.0.0"},
+      {"requested": "statistically_supported_screening_candidates.parquet", "implemented": "audited-screening-candidate-lane-v1.0.0"},
+      {"requested": "dynamic_pool_review_required.parquet", "implemented": "unresolved-candidate-queue-lane-v1.0.0"}
+    ],
+    "incremental_remediation": [
+      {"requested": "dynamic_pool_revision_impact.parquet", "implemented": "typed pool, matrix and scoring-record revision-impact artifacts"},
+      {"requested": "dynamic_pool_rebuild_manifest.json", "implemented": "dynamic selective-rerun plan and receipt contracts"},
+      {"requested": "dynamic_pool_rescore_manifest.json", "implemented": "flickr_rescore_plan.parquet plus selective-rerun receipt"}
+    ],
+    "product_handoffs": [
+      {"requested": "taxalens_dynamic_pool_handoff.json", "implemented": "taxalens_dynamic_pool_handoff.json", "consumer_pin": "e845dd98493979f37b04dbb6538e0d7b8758ca11"},
+      {"requested": "butterflylens_dynamic_pool_handoff.json", "implemented": "butterflylens_dynamic_pool_handoff.json", "consumer_pin": "1cea643623f2f20a2bea72afc754c7b194db3278"},
+      {"requested": "cross_repository_compatibility_report.json", "implemented": "tests/fixtures/product_pool_handoff_compatibility.json plus task 14 completion reports"}
+    ],
+    "normative_catalog": "docs/schemas/geography_conditioned_dynamic_pooling_contracts.md"
+  },
+  "fixture_and_live_metrics": {
+    "reference_geography_index": {
+      "live_reference_geography_rows": null,
+      "live_unavailable_reason": "no live current-policy reference corpus executed",
+      "fixture_normalized_reference_geography_rows": 2,
+      "fixture_reference_index_rows": 2,
+      "fixture_global_anchor_rows": 2,
+      "fixture_geographic_neighbour_rows": 18,
+      "fixture_manifest_fingerprint": "sha256:f34cdf26acd156b93cc2a411dd591a1d603e1b1f76af020bbd88eda74306eda1",
+      "species_with_local_support": null,
+      "species_with_global_only_support": null,
+      "pilot_no_geo_fallback_cases": 1
+    },
+    "flickr_and_embeddings": {
+      "live_flickr_photos_processed": null,
+      "live_yoloe_eligible_photos": null,
+      "live_unavailable_reason": "pilot used deterministic cached vectors, not live Flickr/YOLOE/BioCLIP execution",
+      "fixture_scoring_cases": 7,
+      "fixture_unique_query_embeddings": 7,
+      "fixture_query_embedding_consumptions": 14,
+      "fixture_query_embedding_reuse_events": 7,
+      "fixture_encoder_invocations": 0,
+      "fixture_image_materializations": 0,
+      "fixture_family_matrix_requests": 14,
+      "fixture_family_matrix_cache_hits": 13,
+      "fixture_unique_pool_matrices": 35,
+      "fixture_pool_matrix_references": 100,
+      "fixture_pool_matrix_cache_hits": 65
+    },
+    "pools": {
+      "live_average_global_references": null,
+      "live_average_local_references": null,
+      "live_average_total_pool_size": null,
+      "live_pool_expansions": null,
+      "live_pool_shortfalls": null,
+      "live_average_nearest_reference_distance": null,
+      "live_unavailable_reason": "no live dynamic-pool artifact set executed",
+      "fixture_unique_pool_matrix_rows": 70,
+      "fixture_average_rows_per_unique_pool_matrix": 2.0,
+      "fixture_pool_expansion_status": "not_executed_in_bounded_pilot"
+    },
+    "candidate_and_scoring": {
+      "selected_candidate_strategy": null,
+      "reviewed_family_candidate_recall": null,
+      "reviewed_species_candidate_recall": null,
+      "reviewed_recall_unavailable_reason": "zero completed real reviews",
+      "fixture_complete_union_preservation_fraction": 1.0,
+      "fixture_target_recall_at_5_all_strategies": 1.0,
+      "fixture_hard_family_pruning_correct_species_lost": 1,
+      "fixture_hard_family_pruning_eligible_correct_species": 2,
+      "fixture_hard_family_pruning_loss_rate": 0.5,
+      "fixture_average_candidate_set_size": 5.0,
+      "live_dynamic_scoring_throughput": null,
+      "live_peak_mps_memory_bytes": null,
+      "mps_policy_limit_bytes": 536870912
+    },
+    "review_and_statistical_quality": {
+      "representative_human_reviews_completed": 0,
+      "decisive_human_reviews_completed": 0,
+      "live_audit_strata_represented": 0,
+      "effective_real_review_count": 0,
+      "minimum_effective_real_review_count": 86,
+      "effective_real_review_shortfall": 86,
+      "target_precision_objective": 0.95,
+      "confidence_level": 0.95,
+      "estimated_reviewed_precision": null,
+      "reviewed_precision_lower_bound": null,
+      "calibration_state": "unavailable_no_eligible_reviewed_labels",
+      "species_with_sufficient_evidence": 0,
+      "families_with_sufficient_evidence": 0,
+      "geographies_with_sufficient_evidence": 0,
+      "fixture_representative_items_planned": 7,
+      "fixture_targeted_items_planned": 7,
+      "fixture_analysis_strata": 7
+    },
+    "outcomes": {
+      "human_reviewed_release_candidates": 0,
+      "statistically_supported_screening_candidates": 0,
+      "review_required_candidates_from_live_run": 0,
+      "unreviewed_occurrence_exports": 0,
+      "required_unreviewed_occurrence_exports": 0
+    },
+    "remediation": {
+      "references_statistically_flagged": 0,
+      "references_sent_to_human_review": 0,
+      "references_excluded": 0,
+      "affected_species_rebuilt": 0,
+      "flickr_records_selectively_rescored": 0,
+      "fixture_query_embedding_reuse_events": 7,
+      "live_status": "not_run_no_eligible_statistical_flags"
+    }
+  },
+  "production_selection": {
+    "variant_count": 24,
+    "selection_criterion_count": 9,
+    "eligible_variant_count": 0,
+    "passing_software_or_fixture_gates": 3,
+    "blocking_criteria": [
+      "target_candidate_recall_is_fixture_structural_only",
+      "reviewed_precision_and_confidence_bounds_unavailable",
+      "family_and_geographic_subgroup_behavior_unavailable",
+      "review_workload_unmet",
+      "comparable_computation_uninstrumented",
+      "mps_peak_memory_unavailable"
+    ],
+    "current_and_resulting_settings_fingerprint": "sha256:0fd197b2650a79d99970cada3dcbabe9980c5a265d9d71f929bbcf6f51e13e7d",
+    "decision_fingerprint": "sha256:43d034983485e789b8fa7c0428131f13c826d695781a28130b011e13b3bf3fb2",
+    "selection_table_fingerprint": "sha256:7368a623b9fbd9a665e2ae135c7da24c2adf9ed3a87b8e36241a3a2f14a676ec",
+    "pilot_report_fingerprint": "sha256:ade039c9914c6fc720773eee7fbfb2141ff087f3abf869d9ab56b5f54dfa5d09",
+    "decision": "insufficient_evidence_not_rejection_of_measured_production_performance"
+  },
+  "downstream": {
+    "taxalens": {
+      "pinned_sha": "e845dd98493979f37b04dbb6538e0d7b8758ca11",
+      "status": "exact_committed_contract_and_immutable_handoff_fixture_verified_live_publication_not_run",
+      "release_authority_in_biominer_handoff": false
+    },
+    "butterflylens": {
+      "pinned_sha": "1cea643623f2f20a2bea72afc754c7b194db3278",
+      "status": "exact_committed_schema_database_migration_vocabulary_and_handoff_fixture_verified_live_database_not_run",
+      "database_write_authority_in_biominer_handoff": false,
+      "release_authority_in_biominer_handoff": false
+    },
+    "compatibility": "passed artifact-first exact-pin parity; no sibling implementation source was bulk-copied"
+  },
+  "release_verification": {
+    "technical_receipt": "reports/geo_dynamic_pooling/release_technical_verification.json",
+    "scientific_semantics_receipt": "reports/geo_dynamic_pooling/release_scientific_semantics.json",
+    "full_pytest": {"status": "passed", "passed": 3233, "duration_seconds": 169.62},
+    "ruff_all_tracked_python": "passed",
+    "strict_mode": {"status": "passed", "passed": 77, "duration_seconds": 17.04},
+    "adaptive_mode": {"status": "passed", "passed": 68, "duration_seconds": 7.56},
+    "dynamic_pooling": {"status": "passed", "passed": 428, "duration_seconds": 60.94},
+    "scientific_semantics": {"status": "passed", "passed": 21, "duration_seconds": 0.34},
+    "cli": {"status": "passed", "passed": 146, "duration_seconds": 8.73},
+    "configured_schema_parity": {"status": "passed", "passed": 44, "duration_seconds": 0.84},
+    "handoffs": {"status": "passed", "passed": 85, "duration_seconds": 5.87},
+    "dependency_audit": {"status": "passed", "known_vulnerabilities": 0, "local_unpublished_package_skipped": true},
+    "secret_scan": {"status": "passed_no_high_confidence_pattern_with_heuristic_findings_retained", "heuristic_findings": 453, "private_key_or_common_live_token_prefix_matches": 0},
+    "large_file_inspection": {"tracked_files_over_1_mib": 0, "source_media_or_model_weights_tracked": 0},
+    "git_diff_check": "passed",
+    "performance": "software counters and bounded fake-MPS behavior pass; live throughput, avoided seconds and peak MPS memory are unavailable"
+  },
+  "acceptance_criteria": {
+    "total": 70,
+    "architecture_1_10": {
+      "status": "verified_software_contract",
+      "criteria": ["no hard family pruning", "family remains scored/scheduling evidence", "geography is evidence not proof", "each eligible scoring unit has a plan contract", "global support is mandatory when available", "georeferenced plans attempt local support", "no-geo has explicit global fallback", "target and safety candidates remain scoreable", "GBIF support remains provider-asserted provisional", "Flickr release requires human review"]
+    },
+    "efficiency_11_20": {
+      "status": "verified_software_and_fixture_live_performance_unavailable",
+      "criteria": ["reference embedding identity is one-time", "Flickr embedding identity is one-time", "pool changes reuse embeddings", "expansion reuses embeddings", "family/pool matrices are fingerprint cached", "work is signature sorted", "expansion is bounded", "adaptive MPS batches pass fake-device behavior but live peak is unavailable", "unaffected records are not rescored", "avoided work counts are measured while seconds/cost remain null"]
+    },
+    "dynamic_pooling_21_30": {
+      "status": "verified_software_contract",
+      "criteria": ["immutable pool IDs/fingerprints", "member roles/reasons retained", "global/local counts explicit", "distance/fallback explicit", "observation/photographer independence", "balanced candidate opportunities", "shortfalls visible", "disagreement first class", "deterministic expansion", "complete raw components retained"]
+    },
+    "statistical_quality_31_44": {
+      "status": "verified_contract_live_estimates_unavailable",
+      "criteria": ["review x calculated from policy", "no universal stratum count", "representative and targeted samples separate", "probabilities/grouping preserved", "independent reviewed calibration labels", "independent validation threshold selection", "held-out final test", "precision confidence bounds", "insufficient metrics unavailable", "family/geography subgroup audits", "reviewer/owner/duplicate dependence", "statistical support is not human verification", "unreviewed screening cannot export occurrence", "human-reviewed release lane separate"]
+    },
+    "cross_repository_45_52": {
+      "status": "verified_exact_committed_fixtures",
+      "criteria": ["TaxaLens artifact-first", "ButterflyLens artifact-first", "no bulk sibling source copy", "field source/maturity provenance", "TaxaLens geographic-quality semantics", "ButterflyLens model/review/map constraints", "exact sibling pins", "compatibility fixtures pass"]
+    },
+    "scientific_semantics_53_60": {
+      "status": "verified_software_contract",
+      "criteria": ["YOLOE is not species classifier", "target-aware input remains full frame", "raw scores not probabilities", "missing geography not absence", "provider labels not ground truth", "statistical flags do not prove an individual reference wrong", "nondecisive review states are not positive labels", "scientific release fails closed"]
+    },
+    "git_and_provenance_61_70": {
+      "status": "verified_through_subtask_16_2_3_final_task_push_resolved_by_task_16_2_completion",
+      "criteria": ["direct main", "no feature branch/PR", "focused subtask commits", "task pushes verified", "no force/history rewrite", "task GitHits records", "subtask GitHits records", "accurate SHAs/tests", "user work preserved", "tracked secret/media/weights/cache gate passed"]
+    }
+  },
+  "githits_impact": {
+    "records": 139,
+    "task_records": 33,
+    "subtask_records": 105,
+    "corrective_records": 1,
+    "status_counts": {
+      "used_patterns_only_no_code_copied": 3,
+      "available": 1,
+      "unavailable_timeout": 23,
+      "unavailable": 1,
+      "unavailable_no_qualified_result": 1,
+      "skipped_user_directive": 110
+    },
+    "records_with_nonnull_solution_ids": 6,
+    "direct_external_code_contribution": "none",
+    "material_architecture_contribution": "limited early precedent only",
+    "early_influence": [
+      "Phase 0 baseline/audit framing used pattern-only precedents for immutable evidence, cache separation and artifact-first handoffs.",
+      "The canonical Flickr grain task reviewed a typed source/image/candidate locator precedent.",
+      "All external patterns were adapted to BioMiner-owned schemas, tests and scientific authority boundaries; no external implementation was copied."
+    ],
+    "dominant_architecture_source": "BioMiner local ADRs, existing adaptive contracts, task-specific tests, exact downstream consumer fixtures and human governance decisions",
+    "user_directive_effect": "No GitHits call was made after the user disabled it; every remaining task/subtask record uses skipped_user_directive with null solution_id."
+  },
+  "scientific_claims": {
+    "allowed": [
+      "The geography-conditioned dynamic-pooling software architecture, schemas, validators, CLI plans, selective-rerun graph and exact downstream handoff fixtures are implemented and deterministically tested.",
+      "The bounded synthetic pilot evaluated all 24 candidate/pool/fusion variants structurally and observed embedding/matrix reuse without encoder work.",
+      "The correct frozen-policy decision is insufficient evidence, with zero eligible variants, unchanged settings and no production default.",
+      "All ten required scientific software semantics and the complete technical release gate pass."
+    ],
+    "blocked": [
+      "Any strategy, pool variant or fusion method is empirically superior or selected for production.",
+      "Fixture target ordering is biological accuracy, reviewed precision or statistical support.",
+      "Comparable production throughput, avoided runtime or peak MPS memory was measured.",
+      "Any live Flickr occurrence is human verified, release ready or published.",
+      "Missing geography implies biological absence or provider labels are ground truth."
+    ]
+  },
+  "live_steps_not_executed": [
+    "current-policy live reference acquisition/index materialization",
+    "live Flickr/YOLOE/BioCLIP dynamic-pool execution",
+    "instrumented comparable strategy throughput and MPS peak-memory run",
+    "source-bound representative and targeted human review",
+    "reviewed calibration, subgroup quality and held-out performance evaluation",
+    "evidence-triggered remediation and selective live rerun",
+    "live TaxaLens/ButterflyLens publication or consumer database ingestion",
+    "occurrence release"
+  ],
+  "human_work_remaining": [
+    "Complete at least the policy-derived 86 effective source-bound reviews under the frozen representative design.",
+    "Meet required 30-independent-record subgroup floors and adjudication/independence rules.",
+    "Review any statistically triggered reference remediation; do not infer individual error from a population flag.",
+    "Approve a production default only if every frozen evidence, computation and MPS gate passes together.",
+    "Authorize occurrence release separately for each decisive source-bound item and downstream consumer."
+  ],
+  "known_limitations": [
+    "The pilot uses deterministic fixture vectors and expected taxa; it is not live model validation.",
+    "There are zero completed real reviews, so precision, confidence bounds, calibration and subgroup estimates are unavailable.",
+    "The technical secret scan is heuristic, though common live-token/private-key patterns have zero matches.",
+    "Exact-pin consumer fixtures do not replace live downstream database execution.",
+    "The final report cannot embed its own Git object ID; the containing commit is represented as self and resolved by the Task 16.2 completion record."
+  ],
+  "exact_next_recommended_action": "Run one bounded, instrumented current-policy live execution that materializes the reference index and dynamic-pool score artifacts, records comparable throughput and MPS peak memory, then execute the frozen representative human-review plan before reconsidering any production default."
+}

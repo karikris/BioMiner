@@ -55,16 +55,136 @@ def adaptive_stage_dependencies(
         (RunStage.REFERENCE_METADATA, (), True, "always"),
         (RunStage.REFERENCE_MEDIA, (RunStage.REFERENCE_METADATA,), True, "always"),
         (RunStage.REFERENCE_DEDUPLICATION, (RunStage.REFERENCE_MEDIA,), True, "always"),
-        (RunStage.REFERENCE_QUALITY_ROUTING, (RunStage.REFERENCE_DEDUPLICATION,), True, "always"),
-        (RunStage.REFERENCE_ADMISSION, (RunStage.REFERENCE_QUALITY_ROUTING,), True, "always"),
-        (RunStage.REFERENCE_EMBEDDINGS, (RunStage.REFERENCE_ADMISSION,), True, "admission_blocks_first_scoring"),
-        (RunStage.REFERENCE_PROTOTYPES, (RunStage.REFERENCE_EMBEDDINGS,), True, "always"),
-        (RunStage.PROVISIONAL_FLICKR_SCORING, (RunStage.REFERENCE_PROTOTYPES,), True, "reference_review_not_required"),
-        (RunStage.FLICKR_HUMAN_VERIFICATION, (RunStage.PROVISIONAL_FLICKR_SCORING,), True, "blocks_final_inclusion"),
-        (RunStage.STATISTICAL_REFERENCE_AUDIT, (RunStage.FLICKR_HUMAN_VERIFICATION,), True, "blocks_species_quality_approval"),
-        (RunStage.TARGETED_REFERENCE_REVIEW, (RunStage.STATISTICAL_REFERENCE_AUDIT,), flagged, "statistically_flagged_species" if flagged else "no_flagged_species"),
-        (RunStage.AFFECTED_REFERENCE_REBUILD, (RunStage.TARGETED_REFERENCE_REVIEW,), revised, "bank_revision_available" if revised else "no_bank_revision"),
-        (RunStage.AFFECTED_RECORD_RESCORE, (RunStage.AFFECTED_REFERENCE_REBUILD,), revised, "bank_revision_available" if revised else "no_bank_revision"),
+        (
+            RunStage.REFERENCE_QUALITY_ROUTING,
+            (RunStage.REFERENCE_DEDUPLICATION,),
+            True,
+            "always",
+        ),
+        (
+            RunStage.REFERENCE_ADMISSION,
+            (RunStage.REFERENCE_QUALITY_ROUTING,),
+            True,
+            "always",
+        ),
+        (
+            RunStage.REFERENCE_EMBEDDINGS,
+            (RunStage.REFERENCE_ADMISSION,),
+            True,
+            "admission_blocks_first_scoring",
+        ),
+        (
+            RunStage.REFERENCE_GEOGRAPHY_INDEX,
+            (RunStage.REFERENCE_EMBEDDINGS,),
+            True,
+            "embedding_bound_reference_index",
+        ),
+        (
+            RunStage.REFERENCE_PROTOTYPES,
+            (RunStage.REFERENCE_EMBEDDINGS,),
+            True,
+            "always",
+        ),
+        (
+            RunStage.FLICKR_DETECTION,
+            (RunStage.POLL_FLICKR,),
+            True,
+            "canonical_organism_routing",
+        ),
+        (
+            RunStage.FLICKR_EMBEDDING,
+            (RunStage.FLICKR_DETECTION,),
+            True,
+            "durable_full_frame_embeddings",
+        ),
+        (
+            RunStage.FLICKR_GEO_TAXON_PARTITIONING,
+            (
+                RunStage.FLICKR_GEO_CLUSTERING,
+                RunStage.FLICKR_DETECTION,
+                RunStage.FLICKR_EMBEDDING,
+                RunStage.REGIONAL_CANDIDATE_GENERATION,
+            ),
+            True,
+            "canonical_scoring_grains_ready",
+        ),
+        (
+            RunStage.FAMILY_ROUTING,
+            (
+                RunStage.REFERENCE_PROTOTYPES,
+                RunStage.FLICKR_GEO_TAXON_PARTITIONING,
+            ),
+            True,
+            "retrieval_accelerator_not_hard_gate",
+        ),
+        (
+            RunStage.DYNAMIC_POOL_PLANNING,
+            (
+                RunStage.REFERENCE_GEOGRAPHY_INDEX,
+                RunStage.FLICKR_GEO_TAXON_PARTITIONING,
+                RunStage.FAMILY_ROUTING,
+            ),
+            True,
+            "global_local_pool_inputs_ready",
+        ),
+        (
+            RunStage.DYNAMIC_POOL_SCORING,
+            (
+                RunStage.REFERENCE_EMBEDDINGS,
+                RunStage.FLICKR_EMBEDDING,
+                RunStage.DYNAMIC_POOL_PLANNING,
+            ),
+            True,
+            "cached_vectors_and_pool_plans_ready",
+        ),
+        (
+            RunStage.PROVISIONAL_FLICKR_SCORING,
+            (RunStage.DYNAMIC_POOL_SCORING,),
+            True,
+            "reference_review_not_required",
+        ),
+        (
+            RunStage.REVIEW_SAMPLE_PLANNING,
+            (RunStage.PROVISIONAL_FLICKR_SCORING,),
+            True,
+            "probability_sample_before_review",
+        ),
+        (
+            RunStage.FLICKR_HUMAN_VERIFICATION,
+            (RunStage.REVIEW_SAMPLE_PLANNING,),
+            True,
+            "blocks_final_inclusion",
+        ),
+        (
+            RunStage.RISK_CONTROLLED_AUDIT,
+            (RunStage.FLICKR_HUMAN_VERIFICATION,),
+            True,
+            "preregistered_quality_evaluation",
+        ),
+        (
+            RunStage.STATISTICAL_REFERENCE_AUDIT,
+            (RunStage.RISK_CONTROLLED_AUDIT,),
+            True,
+            "blocks_species_quality_approval",
+        ),
+        (
+            RunStage.TARGETED_REFERENCE_REVIEW,
+            (RunStage.STATISTICAL_REFERENCE_AUDIT,),
+            flagged,
+            "statistically_flagged_species" if flagged else "no_flagged_species",
+        ),
+        (
+            RunStage.AFFECTED_REFERENCE_REBUILD,
+            (RunStage.TARGETED_REFERENCE_REVIEW,),
+            revised,
+            "bank_revision_available" if revised else "no_bank_revision",
+        ),
+        (
+            RunStage.AFFECTED_RECORD_RESCORE,
+            (RunStage.AFFECTED_REFERENCE_REBUILD,),
+            revised,
+            "bank_revision_available" if revised else "no_bank_revision",
+        ),
         (
             RunStage.FINAL_QUALITY_GATE,
             (
@@ -101,7 +221,9 @@ def validate_adaptive_stage_start(
 ) -> None:
     dependencies = {item.stage: item for item in adaptive_stage_dependencies(state)}
     if stage not in dependencies:
-        raise ValueError(f"stage is outside the adaptive dependency graph: {stage.value}")
+        raise ValueError(
+            f"stage is outside the adaptive dependency graph: {stage.value}"
+        )
     item = dependencies[stage]
     if not item.active:
         raise ValueError(

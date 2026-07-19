@@ -1,0 +1,160 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-4.1",
+  "title": "Implement three candidate-selection strategies",
+  "status": "completed",
+  "completed_at": "2026-07-18T04:35:28Z",
+  "starting_sha": "1e4483dc4c0f7bc6d1be8fa462da59e090b3ecf8",
+  "pushed_implementation_sha": "b372ce18d6be62c1b66025b700d5c4e4a884428c",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-4.1.1",
+      "commit": "efb0c576d085986ea4a3549d551ddc8ae960ee5e",
+      "subject": "experiment(candidates): add geography-first strategy"
+    },
+    {
+      "subtask_id": "geo-pool-4.1.2",
+      "commit": "88e662861dc86ec25ff443035acf18b395f1cc26",
+      "subject": "experiment(candidates): add safe family-first strategy"
+    },
+    {
+      "subtask_id": "geo-pool-4.1.3",
+      "commit": "b372ce18d6be62c1b66025b700d5c4e4a884428c",
+      "subject": "experiment(candidates): add hybrid parallel union"
+    }
+  ],
+  "artifacts": [
+    {
+      "file": "candidate_strategy_plans.parquet",
+      "schema_version": "candidate-strategy-plan-v1.0.0",
+      "grain": "one strategy plan and accepted candidate taxon"
+    }
+  ],
+  "strategies": [
+    {
+      "name": "geography_first",
+      "version": "geography-first-complete-union-v1.0.0",
+      "semantics": "schedule available regional evidence first, then required safety, family expansion and complete-union remainder"
+    },
+    {
+      "name": "family_first_safe",
+      "version": "family-first-safe-complete-union-v1.0.0",
+      "semantics": "schedule family-priority candidates first while independently retaining the complete target, query, geography, visual and safety union"
+    },
+    {
+      "name": "parallel_family_geography_union",
+      "version": "parallel-family-geography-union-v1.0.0",
+      "semantics": "merge family, geography, query, visual, target and safety axes independently, followed by complete-union remainder"
+    }
+  ],
+  "contracts": {
+    "result": "passed",
+    "properties": [
+      "all strategies schedule one immutable family/geography candidate source set rather than creating competing truth layers",
+      "every source candidate appears exactly once in every strategy plan",
+      "target preservation and complete-union membership are true for every strategy row",
+      "family evidence may change scheduling but never membership",
+      "geography-first no-geo inputs retain target and global safety candidates",
+      "family-first wrong-family inputs retain the target, geographic, query, visual and explicit safety union",
+      "parallel union records every active inclusion axis and deduplicates at accepted-taxon grain",
+      "strategy scores and order are raw scheduling evidence, not calibrated probabilities or release authority"
+    ]
+  },
+  "gate": {
+    "strategy_and_target_preservation_suite": {
+      "command": "uv run pytest -q tests/test_candidate_strategy_ablation.py tests/test_family_geo_candidates.py tests/test_regional_candidate_species.py tests/test_visual_neighbour_species.py tests/test_target_aware_scoring.py tests/test_target_aware_fusion.py tests/test_target_aware_output.py tests/test_bioclip_classification_modes.py tests/test_current_reference_pooling_audit.py",
+      "result": "passed",
+      "passed": 82,
+      "duration_seconds": 1.25
+    },
+    "artifact_reproducibility": {
+      "command": "bounded five-candidate fixture; build, write, reload and validate all three strategy plans",
+      "result": "passed",
+      "source_candidate_count": 5,
+      "strategy_count": 3,
+      "rows_per_strategy": 5,
+      "identical_membership": true,
+      "target_preserved": true,
+      "complete_union_preserved": true,
+      "aggregate_fingerprint": "sha256:b59f4f883e1359fe9a7ea8faa5a189771daa06a14562619164fff2a274ba8b9e",
+      "physical_sha256": {
+        "geography_first": "sha256:b10741b49c98ec4bd801d699124b79fb1e33530ad320378aec254207338e5113",
+        "family_first_safe": "sha256:3cec5bee042fa20fdaf4817424bdbd84a9bda26a6a11cdecce5fe18dc4d6f09f",
+        "parallel_family_geography_union": "sha256:e4a8f8742bddcbb05f01f8cb0628df57ccecd71e80d2994a0f5440bbfc4c1e79"
+      }
+    },
+    "full_regression": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2756,
+      "duration_seconds": 102.92,
+      "tested_implementation_sha": "b372ce18d6be62c1b66025b700d5c4e4a884428c"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 122,
+      "required_records": [
+        "geo-pool-4.1",
+        "geo-pool-4.1.1",
+        "geo-pool-4.1.2",
+        "geo-pool-4.1.3"
+      ],
+      "githits_status": "all_four_bounded_attempts_timed_out_and_are_recorded_without_invented_results"
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 3,
+      "required_field_matches": 12
+    },
+    "secret_and_generated_artifact_inspection": {
+      "task_commit_changed_files": 3,
+      "secret_prefix_scan": "passed",
+      "generated_binary_or_runtime_artifacts_committed": 0,
+      "user_owned_untracked_files_staged": 0,
+      "result": "passed"
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "availability": "All four required bounded searches timed out.",
+    "material_architecture_contribution": "none from returned external evidence",
+    "first_party_basis": [
+      "accepted family-as-index-not-gate ADR",
+      "family_geo_candidate_sets complete safety-union contract",
+      "target-aware no-hierarchy-pruning scoring contract",
+      "regional and visual-neighbour provenance contracts"
+    ],
+    "assessment": "GitHits contributed process transparency but no returned architecture or implementation evidence to Task 4.1."
+  },
+  "selection_state": {
+    "selected_strategy": null,
+    "production_default_changed": false,
+    "reason": "Task 4.2 held-out metrics and counterfactual evaluation have not run."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "b372ce18d6be62c1b66025b700d5c4e4a884428c",
+    "verified_remote_sha": "b372ce18d6be62c1b66025b700d5c4e4a884428c",
+    "verified_at": "2026-07-18T04:35:28Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 4.1 implements three deterministic, target-preserving strategy schedules over the same complete candidate union.",
+      "Wrong-family and no-geo fixtures prove that neither family nor geography can hard-prune required candidates.",
+      "The full software regression and repository-wide lint gates pass."
+    ],
+    "blocked": [
+      "Any candidate-selection strategy is empirically superior or selected for production.",
+      "Fixture schedules establish live candidate recall, accuracy, throughput, memory or cache benefit.",
+      "Family, geography, query or visual evidence proves taxonomic identity or absence.",
+      "Dynamic pools, human review, statistical support, occurrence release or production deployment are complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}

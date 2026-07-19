@@ -1,0 +1,139 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-12.1",
+  "title": "Extend revision impact analysis",
+  "status": "completed",
+  "completed_at": "2026-07-18T11:27:32Z",
+  "starting_sha": "565de3f4863f03c262f211e521c58bc09f802a7a",
+  "pushed_implementation_sha": "6b91bb2590da68697f9e3f32050a96a5afb809a8",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-12.1.1",
+      "commit": "c8142ebd328606d2e381abc5c351ba48835c29d8",
+      "subject": "feat(run): identify affected reference pools"
+    },
+    {
+      "subtask_id": "geo-pool-12.1.2",
+      "commit": "882cd15422aa3796a0306a8f2c335f04a76a7482",
+      "subject": "feat(run): identify affected candidate matrices"
+    },
+    {
+      "subtask_id": "geo-pool-12.1.3",
+      "commit": "6b91bb2590da68697f9e3f32050a96a5afb809a8",
+      "subject": "feat(run): identify affected scoring records"
+    }
+  ],
+  "impact_chain": {
+    "reference_revision": {
+      "version": "dynamic-reference-revision-v1.0.0",
+      "change_types": ["added", "removed", "modified"],
+      "bindings": [
+        "old/new reference-bank fingerprints",
+        "old/new reference-geography-index fingerprints",
+        "canonical taxon, family, route, cluster and anchor-eligibility context"
+      ]
+    },
+    "pool_impact": {
+      "version": "dynamic-pool-revision-impact-v1.0.0",
+      "affected_when": [
+        "an exact declared member changed",
+        "a newly eligible matching taxon/route global reference can alter selection",
+        "a newly eligible matching taxon/route/local-cluster reference can alter selection"
+      ],
+      "unaffected_action": "reuse_pool_without_rebuild",
+      "irrelevant_changed_references_reported": true
+    },
+    "matrix_impact": {
+      "version": "dynamic-matrix-revision-impact-v1.0.0",
+      "matrix_kinds": [
+        "family_prototype",
+        "candidate_prototype",
+        "dynamic_pool_reference"
+      ],
+      "affected_when": [
+        "a declared or newly eligible reference row changed",
+        "an exact upstream pool plan is affected"
+      ],
+      "unaffected_action": "reuse_matrix_without_materialization"
+    },
+    "record_impact": {
+      "version": "dynamic-scoring-record-impact-v1.0.0",
+      "grain": "individual Flickr scoring record",
+      "affected_when": "an exact declared plan or matrix dependency is affected",
+      "affected_action": "rescore_record_from_reused_flickr_embedding",
+      "unaffected_action": "reuse_scoring_record_without_recomputation",
+      "flickr_embedding_reusable": true
+    }
+  },
+  "safety": {
+    "analysis_is_read_only": true,
+    "filename_or_timestamp_invalidation": false,
+    "whole_partition_invalidation": false,
+    "cache_materialization": false,
+    "pool_rebuild_executed": false,
+    "record_rescore_executed": false,
+    "embedding_reencoding_executed": false
+  },
+  "gate": {
+    "impact_suite": {
+      "command": ".venv/bin/pytest -q tests/test_dynamic_pool_revision_impact.py tests/test_reference_revision_impact.py tests/test_reference_model_rebuild.py tests/test_flickr_selective_rescore.py",
+      "result": "passed",
+      "passed": 25,
+      "duration_seconds": 2.28
+    },
+    "full_regression": {
+      "command": ".venv/bin/pytest -q",
+      "result": "passed",
+      "passed": 3082,
+      "duration_seconds": 121.48,
+      "tested_implementation_sha": "6b91bb2590da68697f9e3f32050a96a5afb809a8"
+    },
+    "lint_and_format": {
+      "commands": [
+        "uvx ruff check src/biominer/run/dynamic_pool_revision_impact.py tests/test_dynamic_pool_revision_impact.py",
+        "uvx ruff format --check src/biominer/run/dynamic_pool_revision_impact.py tests/test_dynamic_pool_revision_impact.py",
+        "git diff --check"
+      ],
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "required_records": ["geo-pool-12.1", "geo-pool-12.1.1", "geo-pool-12.1.2", "geo-pool-12.1.3"],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "calls_made_for_task": 0,
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "BioMiner reference revision impact DAG",
+      "BioMiner dynamic pool planner identities",
+      "BioMiner content-addressed matrix signatures",
+      "BioMiner source-bound Flickr scoring records"
+    ]
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "6b91bb2590da68697f9e3f32050a96a5afb809a8",
+    "verified_remote_sha": "6b91bb2590da68697f9e3f32050a96a5afb809a8",
+    "verified_at": "2026-07-18T11:27:32Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "The impact graph identifies affected and reusable pools, matrices and individual scoring records from declared dependencies.",
+      "Newly eligible references can invalidate matching pools or matrices even when absent from prior members.",
+      "Two records in one partition can receive different impact states.",
+      "Score invalidation preserves the separate Flickr embedding identity."
+    ],
+    "blocked": [
+      "Impact analysis rebuilt, rescored or re-encoded any artifact.",
+      "All artifacts using a changed bank version require recomputation.",
+      "A filename, timestamp, taxon label alone or geographic proximity proves dependency.",
+      "Reuse has been measured on live production artifacts."
+    ]
+  },
+  "completion_record_commit": "self"
+}

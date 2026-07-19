@@ -50,6 +50,11 @@ another session's work. Avoid active output roots and do not start duplicate
 Flickr, reference, YOLOE, BioCLIP, evaluation, or publication jobs. Stop on
 unavoidable overlap.
 
+For the active multi-phase geography-conditioned pooling goal, treat
+[`CURRENT_STATE.md`](docs/agents/CURRENT_STATE.md) as the resumable handoff
+ledger. Read it before resuming numbered work, update it at task boundaries,
+and verify every recorded SHA and gate against local Git before relying on it.
+
 ## Core scientific invariants
 
 - Registry artifacts and source snapshots define taxonomic identity.
@@ -90,11 +95,17 @@ results are in `adaptive_release_verification.json` and `.md`. These reports
 verify software and fixture behavior only. Their listed live-source steps and
 human review remain required before scientific release claims.
 
+The completed geography-conditioned dynamic-pooling software goal is summarized
+in `reports/geo_dynamic_pooling/final_report.json` and `.md`; its technical and
+scientific-semantics receipts remain separate. The production-selection outcome
+is `insufficient_evidence`, not a selected default or scientific release.
+
 ## Task workflow
 
 1. **Discover:** inspect status, current task evidence, code, tests, ADRs, and
-   manifests; use GitHits for non-trivial precedent and Valyu for current
-   authoritative external facts.
+   manifests; use GitHits for non-trivial precedent only when available and
+   permitted by the active goal, and Valyu for current authoritative external
+   facts.
 2. **Plan:** define invariants, schemas, failures, compatibility, tests,
    cleanup, rollback, and active-file ownership.
 3. **Implement:** smallest complete change; tests with behavior; remove old code
@@ -118,7 +129,8 @@ human review remain required before scientific release claims.
 
 ## Tool and Git summary
 
-- GitHits: OSS patterns and dependency internals.
+- GitHits: OSS patterns and dependency internals when available and permitted;
+  follow active-goal overrides in `TOOLS_AND_SKILLS.md`.
 - Valyu: current official docs, primary literature, APIs, terms, provenance.
 - Skills: read the relevant `SKILL.md` before use.
 - Headroom: compress large outputs when available.

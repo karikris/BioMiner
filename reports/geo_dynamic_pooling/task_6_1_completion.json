@@ -1,0 +1,213 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-6.1",
+  "title": "Make Flickr detection and one-time full-frame embedding explicit",
+  "status": "completed",
+  "completed_at": "2026-07-18T06:36:03Z",
+  "starting_sha": "7d1213ce515b1f1b01c09d79a40806dcd55f166d",
+  "pushed_implementation_sha": "927f670f74ba670d8f0a39427e1b3c715945dc65",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-6.1.1",
+      "commit": "17f965f791d2b4819e643cef6e90690ff89f1d64",
+      "subject": "refactor(vision): unify YOLOE routing paths"
+    },
+    {
+      "subtask_id": "geo-pool-6.1.2",
+      "commit": "ba68b92e6d03aa4e095ab368c77cb457b4126118",
+      "subject": "refactor(vision): unify full-frame BioCLIP inputs"
+    },
+    {
+      "subtask_id": "geo-pool-6.1.3",
+      "commit": "927f670f74ba670d8f0a39427e1b3c715945dc65",
+      "subject": "feat(bioclip): persist reusable Flickr embeddings"
+    }
+  ],
+  "detector_routing": {
+    "schema_version": "detector-route-contract-v1.0.0",
+    "contract_version": "canonical-yoloe-routing-v1",
+    "bound_identity": [
+      "backend",
+      "model ID",
+      "model version",
+      "checkpoint",
+      "prompt classes and prompt-set fingerprint",
+      "in-process or persistent-sidecar execution mode",
+      "sidecar transport",
+      "image size, confidence, NMS and maximum detections",
+      "detection policy thresholds",
+      "routing-policy version and fingerprint"
+    ],
+    "entry_paths": [
+      "local detection pipeline",
+      "queued cloud detection work",
+      "rolling cloud vision work",
+      "YOLOE-26 in-process detector",
+      "YOLOE-26 persistent sidecar"
+    ],
+    "properties": [
+      "local policy/backend drift fails before image work",
+      "queued cloud work cannot mix or drift detector route contracts",
+      "sidecar model ID, checkpoint and prompt fingerprint cannot silently change",
+      "results expose contract version, fingerprint, execution mode and model-load count"
+    ]
+  },
+  "visual_input_contract": {
+    "contract_version": "bioclip-visual-input-contract-v1",
+    "target_aware_mode": "whole_image_reference_ensemble",
+    "dynamic_pool_mode": "geography_conditioned_dynamic_pool",
+    "full_frame_input_version": "target-full-frame-visual-input-v2",
+    "full_frame_kinds": [
+      "raw_full_image",
+      "focused_full_frame",
+      "masked_full_frame",
+      "multi_object_full_frame"
+    ],
+    "spatial_crop_permitted": false,
+    "properties": [
+      "target-aware plans bind the visual-input contract version and fingerprint",
+      "the legacy score-input materializer rejects target-aware and dynamic-pool modes before creating files",
+      "dynamic-pool score and photo-summary schemas v2 carry kind, version, contract identity and the false spatial-crop flag",
+      "legacy detector-crop ablations remain explicit and isolated from full-frame production modes"
+    ],
+    "handoff_migration": {
+      "candidate_score_schema": "dynamic-pool-candidate-score-v2.0.0",
+      "photo_summary_schema": "dynamic-pool-photo-summary-v2.0.0",
+      "taxalens_fixture_handoff_id": "taxalens-pool-handoff:9d2cabcac4f3f5de9a8ccf8a3fcdbf2e34a887f9c443ea6cf63d8856222e1164",
+      "butterflylens_fixture_handoff_id": "butterflylens-pool-handoff:acc347483d58ca6db624e5683cf069a4c91bab7c37437de28c8e04ec396bc86c"
+    }
+  },
+  "flickr_embedding_cache": {
+    "embedding_schema_version": "flickr-full-frame-embedding-v1.0.0",
+    "binding_schema_version": "flickr-embedding-binding-v1.0.0",
+    "artifacts": [
+      "flickr_full_frame_embeddings.parquet",
+      "flickr_embedding_bindings.parquet"
+    ],
+    "embedding_identity": [
+      "raw decoded-image content hash",
+      "full-frame visual-input ID, kind, version and transformation fingerprint",
+      "explicit model ID and revision",
+      "model fingerprint",
+      "resize mode",
+      "preprocessing contract and preprocessing fingerprint"
+    ],
+    "binding_identity": [
+      "source",
+      "Flickr photo ID",
+      "source-record hash",
+      "visual-input contract fingerprint",
+      "visual-input ID",
+      "embedding ID and embedding fingerprint"
+    ],
+    "validation": [
+      "exact closed schemas and canonical sorting",
+      "unique vector and binding identities",
+      "finite non-zero vectors, dimensions and norms",
+      "recomputed visual-input, embedding, row, cache, binding and binding-set fingerprints",
+      "closed binding foreign keys",
+      "model fingerprint cannot be rebound to a different model ID or revision",
+      "one encoder batch cannot report more than one model load"
+    ],
+    "fixture_reuse": {
+      "evidence_class": "deterministic implementation fixture; not live throughput or scientific evidence",
+      "flickr_photos": 2,
+      "routing_units": 3,
+      "unique_visual_inputs": 1,
+      "persisted_embedding_rows": 1,
+      "persisted_photo_bindings": 2,
+      "first_pass_encoder_calls": 1,
+      "first_pass_images_encoded": 1,
+      "first_pass_model_load_delta": 1,
+      "rerun_cache_hits": 1,
+      "rerun_encoder_calls": 0,
+      "rerun_images_encoded": 0,
+      "rerun_model_load_delta": 0,
+      "changed_content_cache_hits": 1,
+      "changed_content_cache_misses": 1,
+      "changed_content_images_encoded": 1
+    }
+  },
+  "gate": {
+    "route_input_cache_suite": {
+      "command": "uv run pytest -q tests/test_detection_route_contract.py tests/test_detection_pipeline.py tests/test_cloud_detection_work.py tests/test_yoloe26_detector.py tests/test_full_frame_yoloe_routing.py tests/test_reference_yoloe_routing.py tests/test_bioclip_input_contract.py tests/test_vision_score_inputs.py tests/test_target_full_frame.py tests/test_flickr_embeddings.py tests/test_flickr_scoring_units.py tests/test_dynamic_pool_scores.py tests/test_product_pool_handoff_compatibility.py tests/test_vision_public_api.py",
+      "result": "passed",
+      "passed": 173,
+      "duration_seconds": 1.19
+    },
+    "full_regression": {
+      "command": "uv run pytest -q",
+      "result": "passed",
+      "passed": 2838,
+      "duration_seconds": 104.28,
+      "wall_seconds": 105.03,
+      "tested_implementation_sha": "927f670f74ba670d8f0a39427e1b3c715945dc65"
+    },
+    "lint": {
+      "command": "uvx ruff check .",
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "jsonl_records": 139,
+      "required_records": [
+        "geo-pool-6.1",
+        "geo-pool-6.1.1",
+        "geo-pool-6.1.2",
+        "geo-pool-6.1.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    },
+    "trailers": {
+      "result": "passed",
+      "commits_checked": 3,
+      "required_field_matches": 12,
+      "origin_chain_verified": true
+    }
+  },
+  "githits_architecture_impact": {
+    "direct_external_code_contribution": "none",
+    "calls_made_for_task": 0,
+    "availability": "The user prohibited further GitHits calls for the remainder of the active goal.",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "Phase 0 cached-embedding and full-frame dynamic-pooling architecture",
+      "Phase 3 canonical Flickr photo and organism grains",
+      "existing BioMiner target-full-frame, reference-embedding and persistent-worker contracts"
+    ],
+    "assessment": "Four skipped_user_directive records preserve task/subtask provenance without a call. No GitHits repository, solution, result, code, prose or architecture is claimed."
+  },
+  "selection_state": {
+    "candidate_strategy_selected": null,
+    "production_default_changed": false,
+    "live_flickr_detection_executed": false,
+    "live_flickr_embedding_executed": false,
+    "live_model_load_measured": false,
+    "production_release_authorized": false,
+    "reason": "Only deterministic route, input, persistence and cache-reuse fixtures ran."
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "927f670f74ba670d8f0a39427e1b3c715945dc65",
+    "verified_remote_sha": "927f670f74ba670d8f0a39427e1b3c715945dc65",
+    "verified_at": "2026-07-18T06:36:03Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Task 6.1 binds detector routing and full-frame BioCLIP input identities at production entry boundaries.",
+      "The durable Flickr cache persists one validated vector identity separately from photo provenance bindings.",
+      "Deterministic fixtures prove reruns and duplicate photo content do not invoke the encoder again.",
+      "The exact implementation commit passes 173 focused tests, 2,838 repository tests and repository-wide lint."
+    ],
+    "blocked": [
+      "The fixtures prove live Flickr throughput, memory savings, accuracy, calibration or taxonomic correctness.",
+      "A live YOLOE or BioCLIP model was loaded by this task gate.",
+      "Every historical or external cache is compatible without explicit schema migration.",
+      "A candidate strategy is selected or empirically superior.",
+      "Human verification, occurrence release or production deployment is complete."
+    ]
+  },
+  "completion_record_commit": "self"
+}

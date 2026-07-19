@@ -1,6 +1,7 @@
 # ADR: statistical support and human-verification vocabulary
 
-- Status: accepted
+- Status: accepted and implemented in software/fixture contracts; live
+  source-bound review and statistical support remain pending
 - Date: 2026-07-18
 - Decision owner: Kris Kari
 - Scope: BioMiner evidence labels, reports, exports and downstream handoffs
@@ -25,6 +26,14 @@ In particular:
 Machine scoring may run across the Flickr corpus before review, but the
 existing source-bound human-review and release policy remains mandatory for a
 final occurrence export unless a later explicit human decision changes it.
+
+The Phase 15 fixture uses the implemented review contracts without pretending
+that planned work is completed evidence. Seven fixture units enter a complete
+within-fixture probability design and a separate seven-unit targeted queue;
+zero reviewers, assignments, completed source-bound reviews, precision bounds,
+or release candidates exist. Fixture work contributes zero to the frozen
+86-effective-review production minimum. The production decision is therefore
+`insufficient_evidence`, and all runtime selections remain unset.
 
 ## Why this vocabulary is necessary
 

@@ -1,0 +1,990 @@
+"""Tests for deterministic dynamic reference-observation planning."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import date
+
+import polars as pl
+import pytest
+
+from biominer.bioclip.dynamic_pool_contracts import (
+    validate_dynamic_reference_pool_artifacts,
+)
+from biominer.bioclip.dynamic_pool_expansion import (
+    DYNAMIC_POOL_EXPANSION_CACHE_REUSE_FILE,
+    DYNAMIC_POOL_EXPANSION_DECISIONS_FILE,
+    DYNAMIC_POOL_EXPANSION_EVIDENCE_FILE,
+    build_dynamic_pool_expansion_evidence,
+    expand_dynamic_reference_pools_from_cache,
+    validate_dynamic_pool_expansion_cache_reuse,
+    validate_dynamic_pool_expansion_execution,
+    write_dynamic_pool_expansion_artifacts,
+)
+from biominer.bioclip.dynamic_pool_planner import plan_dynamic_reference_pools
+from biominer.bioclip.dynamic_pool_policy import default_dynamic_reference_pool_policy
+from biominer.bioclip.family_geo_candidates import build_family_geo_candidate_sets
+from biominer.bioclip.global_reference_anchors import select_global_reference_anchors
+from biominer.bioclip.reference_geography_index import (
+    build_reference_geography_index,
+    reference_geography_index_artifact_fingerprint,
+)
+from biominer.reports.dynamic_pool_coverage import (
+    DYNAMIC_POOL_COVERAGE_FILE,
+    DYNAMIC_POOL_COVERAGE_REPORT_FILE,
+    DYNAMIC_POOL_COVERAGE_SUMMARY_FILE,
+    build_dynamic_pool_coverage,
+    summarize_dynamic_pool_coverage,
+    validate_dynamic_pool_coverage,
+    write_dynamic_pool_coverage_report,
+)
+
+
+TARGET = "gbif:1938069"
+
+
+def test_planner_selects_observations_into_global_and_exact_local_pools() -> None:
+    candidate_sets = _candidate_sets()
+    index = _reference_index()
+    anchors = select_global_reference_anchors(index)
+    policy = _small_policy()
+
+    plans, members, summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    validate_dynamic_reference_pool_artifacts(plans, members, summaries)
+    assert plans.height == 1
+    assert members.height == 3
+    assert members["reference_observation_id"].n_unique() == members.height
+    assert members.select("plan_id", "reference_observation_id").n_unique() == 3
+    assert members["reference_embedding_fingerprint"].n_unique() == 3
+    assert set(members["pool_scope"]) == {"global", "local"}
+    global_members = members.filter(pl.col("pool_scope") == "global")
+    local_members = members.filter(pl.col("pool_scope") == "local")
+    assert global_members.height == 2
+    assert local_members.height == 1
+    assert global_members["selection_rank"].to_list() == [1, 2]
+    assert local_members["selection_rank"].to_list() == [1]
+    assert set(global_members["inclusion_reason"]) == {"global_reference_anchor"}
+    assert local_members["inclusion_reason"].to_list() == [
+        "exact_workload_cluster"
+    ]
+    assert local_members["geographic_distance_status"].to_list() == ["unavailable"]
+    assert local_members["geographic_distance_reason"].to_list() == [
+        "query_distance_not_materialized"
+    ]
+    plan = plans.row(0, named=True)
+    assert plan["local_pool_status"] == "available"
+    assert plan["local_pool_unavailable_reason"] is None
+    assert plan["selection_policy_fingerprint"] == policy.fingerprint
+    assert plan["configured_global_per_candidate"] == 2
+    assert plan["configured_local_per_candidate"] == 1
+    assert summaries["effective_reference_count"].sum() == 3
+
+
+def test_planner_is_input_order_independent() -> None:
+    candidate_sets = _candidate_sets()
+    rows = _reference_rows()
+    forward_index = build_reference_geography_index(rows)
+    reverse_index = build_reference_geography_index(list(reversed(rows)))
+    forward_anchors = select_global_reference_anchors(forward_index)
+    reverse_anchors = select_global_reference_anchors(reverse_index)
+    policy = _small_policy()
+
+    forward = plan_dynamic_reference_pools(
+        [_request(candidate_sets, forward_index)],
+        candidate_sets,
+        forward_index,
+        forward_anchors,
+        policy=policy,
+    )
+    reverse = plan_dynamic_reference_pools(
+        [_request(candidate_sets, reverse_index)],
+        candidate_sets,
+        reverse_index,
+        reverse_anchors,
+        policy=policy,
+    )
+
+    assert all(left.equals(right) for left, right in zip(forward, reverse, strict=True))
+
+
+def test_planner_no_geo_request_is_explicitly_global_only() -> None:
+    candidate_sets = _candidate_sets(local=False)
+    index = _reference_index()
+    anchors = select_global_reference_anchors(index)
+
+    plans, members, summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index, local=False)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=_small_policy(),
+    )
+
+    plan = plans.row(0, named=True)
+    assert plan["local_pool_status"] == "unavailable"
+    assert plan["local_pool_unavailable_reason"] == "no_geo_global_fallback"
+    assert plan["local_pool_ids"] == []
+    assert set(members["pool_scope"]) == {"global"}
+    assert summaries["distance_available_count"].sum() == 0
+
+
+def test_planner_rejects_candidate_reference_name_conflict() -> None:
+    candidate_sets = _candidate_sets()
+    rows = _reference_rows()
+    rows[0]["scientific_name"] = "Papilio conflicting"
+    index = build_reference_geography_index(rows)
+
+    with pytest.raises(ValueError, match="scientific names conflict"):
+        plan_dynamic_reference_pools(
+            [_request(candidate_sets, index)],
+            candidate_sets,
+            index,
+            select_global_reference_anchors(index),
+            policy=_small_policy(),
+        )
+
+
+def test_planner_round_robins_classes_under_shared_stage_budget() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(str(index), taxon_key="gbif:second", name="Papilio second")
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 5),
+            ("uncertainty_expansion", 5),
+            ("selective_rescore", 5),
+        ),
+    )
+
+    _plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=policy,
+    )
+
+    counts = members.group_by("candidate_accepted_taxon_key").len().sort(
+        "candidate_accepted_taxon_key"
+    )
+    assert members.height == 5
+    assert sorted(counts["len"].to_list()) == [2, 3]
+    assert max(counts["len"]) - min(counts["len"]) == 1
+
+
+def test_planner_enforces_observer_locality_and_burst_independence() -> None:
+    candidate_sets = _candidate_sets()
+    rows = _reference_rows()
+    for row in rows[:3]:
+        row["observer_id_hash"] = _sha("9")
+        row["local_cell_id"] = "shared-locality"
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    strict_diversity = replace(
+        _small_policy(),
+        maximum_members_per_observer=1,
+        maximum_members_per_locality=1,
+    )
+
+    _plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=strict_diversity,
+    )
+    assert members.height == 1
+    assert members["observer_id_hash"].n_unique() == 1
+
+    index = _reference_index()
+    observations = index["reference_observation_id"].unique().sort().to_list()
+    burst_groups = {
+        str(observations[0]): "burst:shared",
+        str(observations[1]): "burst:shared",
+    }
+    _plans, burst_members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=_small_policy(),
+        burst_group_by_observation=burst_groups,
+    )
+    assert burst_members["independent_observation_group"].n_unique() == (
+        burst_members.height
+    )
+    assert burst_members.filter(
+        pl.col("independent_observation_group") == "burst:shared"
+    ).height == 1
+
+
+def test_planner_never_mixes_reference_routes_or_domains() -> None:
+    candidate_sets = _candidate_sets()
+    rows = _reference_rows()
+    rows[1].update(
+        route="pinned_specimen",
+        life_stage="unknown",
+        visual_domain="pinned_specimen",
+    )
+    index = build_reference_geography_index(rows)
+
+    _plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=_small_policy(),
+    )
+
+    assert set(members["query_route"]) == {"adult_field"}
+    assert set(members["reference_route"]) == {"adult_field"}
+
+
+def test_coverage_report_records_complete_pool_and_round_trips(tmp_path) -> None:
+    candidate_sets = _candidate_sets()
+    index = _reference_index()
+    policy = _small_policy()
+    plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=policy,
+    )
+
+    coverage = build_dynamic_pool_coverage(
+        plans,
+        members,
+        candidate_sets,
+        policy=policy,
+    )
+    summary = summarize_dynamic_pool_coverage(coverage)
+
+    row = coverage.row(0, named=True)
+    assert row["coverage_status"] == "complete"
+    assert row["global_effective"] == 2
+    assert row["local_effective"] == 1
+    assert row["independent_observation_count"] == 3
+    assert row["global_minimum_shortfall"] == 0
+    assert row["local_minimum_shortfall"] == 0
+    assert summary["complete_candidate_count"] == 1
+    assert summary["candidate_with_shortfall_count"] == 0
+    paths = write_dynamic_pool_coverage_report(coverage, tmp_path)
+    assert paths["coverage"].name == DYNAMIC_POOL_COVERAGE_FILE
+    assert paths["report"].name == DYNAMIC_POOL_COVERAGE_REPORT_FILE
+    assert paths["summary"].name == DYNAMIC_POOL_COVERAGE_SUMMARY_FILE
+    persisted = pl.read_parquet(paths["coverage"])
+    validate_dynamic_pool_coverage(persisted)
+    assert persisted.equals(coverage)
+
+
+def test_coverage_report_preserves_no_geo_as_unavailable_not_absence() -> None:
+    candidate_sets = _candidate_sets(local=False)
+    index = _reference_index()
+    policy = _small_policy()
+    plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index, local=False)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=policy,
+    )
+
+    coverage = build_dynamic_pool_coverage(
+        plans,
+        members,
+        candidate_sets,
+        policy=policy,
+    )
+
+    row = coverage.row(0, named=True)
+    assert row["no_geo"] is True
+    assert row["local_pool_status"] == "unavailable"
+    assert row["local_pool_unavailable_reason"] == "no_geo_global_fallback"
+    assert row["local_minimum_shortfall"] == 1
+    assert "local_unavailable:no_geo_global_fallback" in row["fallback_reasons"]
+    assert row["coverage_status"] == "usable_with_shortfalls"
+
+
+def test_coverage_report_materializes_zero_member_candidate_shortfall() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    index = _reference_index()
+    policy = _small_policy()
+    plans, members, _summaries = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        select_global_reference_anchors(index),
+        policy=policy,
+    )
+
+    coverage = build_dynamic_pool_coverage(
+        plans,
+        members,
+        candidate_sets,
+        policy=policy,
+    )
+    missing = coverage.filter(
+        pl.col("candidate_accepted_taxon_key") == "gbif:second"
+    ).row(0, named=True)
+    summary = summarize_dynamic_pool_coverage(coverage)
+
+    assert coverage.height == 2
+    assert missing["total_effective"] == 0
+    assert missing["coverage_status"] == "no_reference_support"
+    assert missing["global_minimum_shortfall"] == 1
+    assert "global_minimum_unmet" in missing["shortfall_reasons"]
+    assert summary["zero_reference_candidate_count"] == 1
+    assert summary["production_release_authorized"] is False
+
+
+def test_triggered_expansion_selects_only_cached_embedding_identities(
+    tmp_path,
+) -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 5),
+            ("selective_rescore", 5),
+        ),
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    assert plan["local_pool_unavailable_reason"] == (
+        "local_pool_not_selected_within_stage_budget"
+    )
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    plans, members, summaries, reuse, decisions = (
+        expand_dynamic_reference_pools_from_cache(
+            *initial,
+            evidence,
+            candidate_sets,
+            index,
+            anchors,
+            policy=policy,
+        )
+    )
+
+    validate_dynamic_reference_pool_artifacts(plans, members, summaries)
+    validate_dynamic_pool_expansion_cache_reuse(reuse)
+    assert initial[1].height == 2
+    assert members.height == 5
+    assert members.filter(pl.col("expansion_round") == 0).height == 2
+    assert members.filter(pl.col("expansion_round") == 1).height == 3
+    assert plans["scoring_stage"].to_list() == ["uncertainty_expansion"]
+    assert plans["query_embedding_fingerprint"].to_list() == [
+        plan["query_embedding_fingerprint"]
+    ]
+    cached = set(index["embedding_fingerprint"].to_list())
+    assert set(members["reference_embedding_fingerprint"].to_list()) <= cached
+    reuse_row = reuse.row(0, named=True)
+    assert reuse_row["retained_reference_count"] == 2
+    assert reuse_row["added_reference_count"] == 3
+    assert reuse_row["dropped_reference_count"] == 0
+    assert reuse_row["query_embedding_reused"] is True
+    assert reuse_row["reference_embeddings_reused"] is True
+    assert reuse_row["encoder_invocations"] == 0
+    assert reuse_row["embedding_vectors_materialized"] is False
+    decision = decisions.row(0, named=True)
+    assert decision["action"] == "expand"
+    assert decision["stop_reason"] == "round_complete_rescore_required"
+    assert decision["rescore_required"] is True
+    assert decision["added_reference_count"] == 3
+    assert decision["added_candidate_reference_counts"] == [2, 1]
+    assert max(decision["added_candidate_reference_counts"]) <= (
+        policy.uncertainty_expansion_increment
+    )
+    assert decision["production_release_authorized"] is False
+    validate_dynamic_pool_expansion_execution(evidence, reuse, decisions)
+    paths = write_dynamic_pool_expansion_artifacts(
+        evidence, reuse, decisions, tmp_path
+    )
+    assert paths["evidence"].name == DYNAMIC_POOL_EXPANSION_EVIDENCE_FILE
+    assert paths["cache_reuse"].name == DYNAMIC_POOL_EXPANSION_CACHE_REUSE_FILE
+    assert paths["decisions"].name == DYNAMIC_POOL_EXPANSION_DECISIONS_FILE
+    validate_dynamic_pool_expansion_execution(
+        pl.read_parquet(paths["evidence"]),
+        pl.read_parquet(paths["cache_reuse"]),
+        pl.read_parquet(paths["decisions"]),
+    )
+
+
+def test_untriggered_expansion_materializes_no_replacement_plan() -> None:
+    candidate_sets = _candidate_sets()
+    index = _reference_index()
+    anchors = select_global_reference_anchors(index)
+    policy = _small_policy()
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    expanded = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert all(frame.is_empty() for frame in expanded[:4])
+    decision = expanded[4].row(0, named=True)
+    assert decision["action"] == "stop"
+    assert decision["stop_reason"] == "signals_clear"
+    assert decision["next_expansion_round"] == 0
+    assert decision["rescore_required"] is False
+
+
+def test_expansion_stops_at_round_and_stage_budgets() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    round_policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 5),
+            ("selective_rescore", 5),
+        ),
+        maximum_expansion_rounds=1,
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=round_policy,
+    )
+    initial_plan = initial[0].row(0, named=True)
+    first_evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                initial_plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=round_policy.fingerprint,
+            )
+        ]
+    )
+    first = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        first_evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=round_policy,
+    )
+    expanded_plan = first[0].row(0, named=True)
+    second_evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                expanded_plan,
+                expansion_round=1,
+                species_margin=0.01,
+                selection_policy_fingerprint=round_policy.fingerprint,
+            )
+        ]
+    )
+
+    stopped_round = expand_dynamic_reference_pools_from_cache(
+        first[0],
+        first[1],
+        first[2],
+        second_evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=round_policy,
+    )
+
+    assert all(frame.is_empty() for frame in stopped_round[:4])
+    assert stopped_round[4]["stop_reason"].to_list() == [
+        "maximum_rounds_reached"
+    ]
+
+    stage_policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 2),
+            ("selective_rescore", 2),
+        ),
+    )
+    stage_initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=stage_policy,
+    )
+    stage_plan = stage_initial[0].row(0, named=True)
+    stage_evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                stage_plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=stage_policy.fingerprint,
+            )
+        ]
+    )
+    stopped_stage = expand_dynamic_reference_pools_from_cache(
+        *stage_initial,
+        stage_evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=stage_policy,
+    )
+    assert all(frame.is_empty() for frame in stopped_stage[:4])
+    assert stopped_stage[4]["stop_reason"].to_list() == [
+        "stage_budget_exhausted"
+    ]
+
+
+def test_expansion_stops_when_cached_index_has_no_additional_members() -> None:
+    candidate_sets = _candidate_sets()
+    index = _reference_index()
+    anchors = select_global_reference_anchors(index)
+    policy = _small_policy()
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    result = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert all(frame.is_empty() for frame in result[:4])
+    decision = result[4].row(0, named=True)
+    assert decision["action"] == "stop"
+    assert decision["stop_reason"] == "no_cached_reference_additions"
+    assert decision["added_reference_count"] == 0
+
+    with pytest.raises(ValueError, match="species-margin thresholds differ"):
+        expand_dynamic_reference_pools_from_cache(
+            *initial,
+            evidence,
+            candidate_sets,
+            index,
+            anchors,
+            policy=replace(policy, uncertainty_margin_threshold=0.04),
+        )
+
+
+def test_expansion_intersects_candidate_rank_and_per_candidate_increment() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 2),
+            ("uncertainty_expansion", 5),
+            ("selective_rescore", 5),
+        ),
+        uncertainty_candidate_rank_limit=1,
+        uncertainty_expansion_increment=1,
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    result = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert result[1].height == initial[1].height + 1
+    decision = result[4].row(0, named=True)
+    assert decision["candidate_rank_limit"] == 1
+    assert decision["per_candidate_increment"] == 1
+    assert decision["added_candidate_accepted_taxon_keys"] == [TARGET]
+    assert decision["added_candidate_reference_counts"] == [1]
+
+
+def test_expansion_stops_at_total_pool_budget() -> None:
+    candidate_sets = _candidate_sets_two_taxa()
+    rows = [
+        *_reference_rows(),
+        *[
+            _reference_row(
+                str(index),
+                taxon_key="gbif:second",
+                name="Papilio second",
+            )
+            for index in range(5, 8)
+        ],
+    ]
+    index = build_reference_geography_index(rows)
+    anchors = select_global_reference_anchors(index)
+    policy = replace(
+        _small_policy(),
+        stage_member_limits=(
+            ("initial", 4),
+            ("uncertainty_expansion", 4),
+            ("selective_rescore", 4),
+        ),
+        maximum_total_reference_members=4,
+    )
+    initial = plan_dynamic_reference_pools(
+        [_request(candidate_sets, index)],
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+    plan = initial[0].row(0, named=True)
+    evidence = build_dynamic_pool_expansion_evidence(
+        [
+            _expansion_evidence_row(
+                plan,
+                species_margin=0.01,
+                selection_policy_fingerprint=policy.fingerprint,
+            )
+        ]
+    )
+
+    result = expand_dynamic_reference_pools_from_cache(
+        *initial,
+        evidence,
+        candidate_sets,
+        index,
+        anchors,
+        policy=policy,
+    )
+
+    assert initial[1].height == 4
+    assert all(frame.is_empty() for frame in result[:4])
+    decision = result[4].row(0, named=True)
+    assert decision["stop_reason"] == "total_budget_exhausted"
+    assert decision["remaining_total_budget"] == 0
+
+
+def _small_policy():
+    return replace(
+        default_dynamic_reference_pool_policy(),
+        minimum_global_per_candidate=1,
+        maximum_global_per_candidate=2,
+        minimum_local_per_candidate=1,
+        maximum_local_per_candidate=1,
+        maximum_safety_per_candidate=1,
+        minimum_independent_observation_groups_per_candidate=2,
+        minimum_global_countries_per_candidate=1,
+    )
+
+
+def _expansion_evidence_row(
+    plan: dict[str, object],
+    *,
+    selection_policy_fingerprint: str,
+    expansion_round: int = 0,
+    species_margin: float = 0.20,
+) -> dict[str, object]:
+    return {
+        "run_id": plan["run_id"],
+        "plan_id": plan["plan_id"],
+        "plan_fingerprint": plan["plan_fingerprint"],
+        "candidate_scores_fingerprint": _sha("9"),
+        "selection_policy_fingerprint": selection_policy_fingerprint,
+        "model_fingerprint": plan["model_fingerprint"],
+        "expansion_round": expansion_round,
+        "family_margin": 0.20,
+        "species_margin": species_margin,
+        "global_local_disagreement": 0.05,
+        "prototype_method_disagreement": 0.05,
+        "visual_input_disagreement": 0.05,
+        "local_support_ratio": 1.0,
+        "subject_area_ratio": 0.5,
+        "known_competitor_margin": 0.20,
+        "no_geo_global_fallback": False,
+        "out_of_distribution_score": 0.1,
+        "route_domain_compatible": True,
+        "unavailable_signal_reasons": {},
+    }
+
+
+def _request(
+    candidate_sets: pl.DataFrame,
+    index: pl.DataFrame,
+    *,
+    local: bool = True,
+) -> dict[str, object]:
+    first = candidate_sets.row(0, named=True)
+    return {
+        "run_id": "run-dynamic-planner",
+        "flickr_query_id": first["flickr_query_id"],
+        "flickr_photo_id": first["flickr_photo_id"],
+        "organism_unit_id": first["organism_unit_id"],
+        "visual_input_id": _sha("a"),
+        "query_embedding_fingerprint": _sha("b"),
+        "scoring_stage": "initial",
+        "query_route": "adult_field",
+        "registry_version": first["registry_version"],
+        "reference_bank_version": "reference-bank-v3",
+        "reference_geography_index_fingerprint": (
+            reference_geography_index_artifact_fingerprint(index)
+        ),
+        "candidate_set_id": first["candidate_set_id"],
+        "candidate_set_fingerprint": first["candidate_set_fingerprint"],
+        "query_geo_cluster_id": "cluster-query" if local else None,
+        "query_coordinate_quality": "local" if local else "no_geo",
+        "model_id": "bioclip-2.5",
+        "model_revision": "revision-1",
+        "model_weights_sha256": _sha("c"),
+        "model_fingerprint": _sha("d"),
+        "preprocessing_fingerprint": _sha("e"),
+    }
+
+
+def _candidate_sets(*, local: bool = True) -> pl.DataFrame:
+    return build_family_geo_candidate_sets([_candidate_row(local=local)])
+
+
+def _candidate_sets_two_taxa() -> pl.DataFrame:
+    target = _candidate_row(local=True)
+    second = {
+        **target,
+        "candidate_accepted_taxon_key": "gbif:second",
+        "candidate_scientific_name": "Papilio second",
+        "candidate_priority": 1,
+        "candidate_reasons": ["complete_union"],
+        "family_evidence_rank": 2,
+        "family_evidence_raw_score": 0.8,
+        "query_evidence_status": "not_applicable",
+        "query_evidence_reason": "not_query_associated",
+        "query_evidence_ids": [],
+        "query_associated": False,
+        "safety_union_membership": False,
+        "safety_union_reasons": [],
+        "target_candidate": False,
+    }
+    return build_family_geo_candidate_sets([target, second])
+
+
+def _candidate_row(*, local: bool) -> dict[str, object]:
+    return {
+                "run_id": "run-dynamic-planner",
+                "flickr_query_id": "query-target",
+                "flickr_photo_id": "photo-1",
+                "organism_unit_id": "organism-1",
+                "scoring_stage": "initial",
+                "registry_version": "butterflies-v2-20260718",
+                "target_accepted_taxon_key": TARGET,
+                "target_scientific_name": "Papilio demoleus",
+                "query_geo_cluster_id": "cluster-query" if local else None,
+                "query_coordinate_quality": "local" if local else "no_geo",
+                "candidate_accepted_taxon_key": TARGET,
+                "candidate_scientific_name": "Papilio demoleus",
+                "family_key": "gbif:9417",
+                "family_name": "Papilionidae",
+                "genus_key": "gbif:1920494",
+                "genus_name": "Papilio",
+                "candidate_priority": 0,
+                "candidate_reasons": ["target", "query_associated"],
+                "family_evidence_status": "available",
+                "family_evidence_reason": None,
+                "family_evidence_rank": 1,
+                "family_evidence_raw_score": 0.9,
+                "family_priority_match": True,
+                "family_changed_membership": False,
+                "geographic_evidence_status": "available" if local else "unavailable",
+                "geographic_evidence_reason": None if local else "no_geo",
+                "geographic_scopes": ["exact_local_cell"] if local else [],
+                "geographic_evidence_score": 0.8 if local else None,
+                "occurrence_support": 3 if local else 0,
+                "query_evidence_status": "available",
+                "query_evidence_reason": None,
+                "query_evidence_ids": ["query-evidence-1"],
+                "query_associated": True,
+                "visual_neighbour_evidence_status": "not_applicable",
+                "visual_neighbour_evidence_reason": "not_visual_neighbour",
+                "visual_neighbour_graph_fingerprint": None,
+                "visual_neighbour_rank": None,
+                "visual_neighbour_raw_similarity": None,
+                "visual_neighbour": False,
+                "safety_union_membership": True,
+                "safety_union_reasons": ["target", "query_associated"],
+                "target_candidate": True,
+                "target_preserved": True,
+                "included_in_complete_union": True,
+                "source_versions": ["registry:v1", "candidate:v1"],
+    }
+
+
+def _reference_index() -> pl.DataFrame:
+    return build_reference_geography_index(_reference_rows())
+
+
+def _reference_rows() -> list[dict[str, object]]:
+    rows = [_reference_row(str(index)) for index in range(1, 5)]
+    rows[3].update(
+        reference_observation_id=rows[0]["reference_observation_id"],
+        duplicate_group_id=rows[0]["duplicate_group_id"],
+        visual_input_kind="focused_full_frame",
+    )
+    return rows
+
+
+def _reference_row(
+    suffix: str,
+    *,
+    taxon_key: str = TARGET,
+    name: str = "Papilio demoleus",
+) -> dict[str, object]:
+    return {
+        "registry_version": "butterflies-v2-20260718",
+        "reference_bank_version": "reference-bank-v3",
+        "reference_media_id": f"reference-media:{suffix * 64}",
+        "reference_observation_id": f"reference-observation:{suffix * 64}",
+        "source": "gbif",
+        "source_dataset_key": f"dataset-{suffix}",
+        "accepted_taxon_key": taxon_key,
+        "scientific_name": name,
+        "family_key": "gbif:9417",
+        "family_name": "Papilionidae",
+        "genus_key": "gbif:1920494",
+        "genus_name": "Papilio",
+        "route": "adult_field",
+        "life_stage": "adult",
+        "visual_domain": "live_field",
+        "visual_input_kind": "raw_full_image",
+        "country_code": "AU",
+        "admin1": "Queensland",
+        "bioregion": "Wet Tropics",
+        "geo_cluster_id": "cluster-query",
+        "coarse_cell_id": f"coarse-{suffix}",
+        "regional_cell_id": f"regional-{suffix}",
+        "local_cell_id": f"local-{suffix}",
+        "latitude": -16.9 - int(suffix) / 100,
+        "longitude": 145.7 + int(suffix) / 100,
+        "coordinate_uncertainty_m": 25.0,
+        "coordinate_quality": "local",
+        "global_anchor_eligible": True,
+        "local_anchor_eligible": True,
+        "duplicate_group_id": f"reference-duplicate-group:{suffix * 32}",
+        "observer_id_hash": _sha(suffix),
+        "observation_date": date(2026, 1, int(suffix)),
+        "admission_mode": "adaptive_gbif_fast_start",
+        "admission_policy_fingerprint": _sha("f"),
+        "reference_quality_flags": ["provisional"],
+        "embedding_fingerprint": _sha(suffix),
+    }
+
+
+def _sha(character: str) -> str:
+    return f"sha256:{character * 64}"

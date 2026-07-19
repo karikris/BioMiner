@@ -1195,7 +1195,6 @@ def test_registry_build_promotes_translation_outputs(tmp_path, monkeypatch) -> N
         report_dir=tmp_path / "reports",
         workers=1,
         translation_target_locales_json=locales,
-        skip_classification_table=True,
     )
 
     registry = tmp_path / "registry"

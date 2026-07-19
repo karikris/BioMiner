@@ -1,0 +1,157 @@
+{
+  "schema_version": "geo-dynamic-pooling-task-completion-v1.0.0",
+  "task_id": "geo-pool-13.2",
+  "title": "Add dynamic-pooling CLI and configuration",
+  "status": "completed",
+  "completed_at": "2026-07-18T12:25:06Z",
+  "starting_sha": "fa6001fd40cbae35d42bd71d75d0520ee37d6eb1",
+  "pushed_implementation_sha": "5166cf8408331898694cfd1ab5994c075a62458b",
+  "task_commits": [
+    {
+      "subtask_id": "geo-pool-13.2.1",
+      "commit": "c5fdc29ddda8a9061dff0f657c1cf09ed7cc3440",
+      "subject": "feat(config): expose dynamic pool settings"
+    },
+    {
+      "subtask_id": "geo-pool-13.2.2",
+      "commit": "ddc60b13371417e567550bc61cc23e1b40152b03",
+      "subject": "feat(cli): expose dynamic pooling workflow"
+    },
+    {
+      "subtask_id": "geo-pool-13.2.3",
+      "commit": "5166cf8408331898694cfd1ab5994c075a62458b",
+      "subject": "test(cli): validate dynamic pooling plans"
+    }
+  ],
+  "configuration": {
+    "schema_version": "dynamic-pooling-settings-v1.0.0",
+    "artifact": "dynamic_pooling_settings.json",
+    "typed_reference_pool_policy_reused": true,
+    "semantic_fingerprint_required": true,
+    "default_selection_status": "unselected",
+    "candidate_strategy_default": null,
+    "fusion_method_default": null,
+    "selected_values_require_evidence_fingerprints": true,
+    "safety_invariants": {
+      "release_requires_human_review": true,
+      "representative_probability_sampling_required": true,
+      "selective_rerun_enabled": true,
+      "missing_geography_is_biological_absence": false,
+      "raw_scores_are_probabilities": false
+    }
+  },
+  "cli": {
+    "root_command": "biominer dynamic-pooling",
+    "operation_count": 7,
+    "operations": [
+      "build-reference-geography-index",
+      "plan-pools",
+      "score-pools",
+      "build-review-sample",
+      "audit-quality",
+      "selective-rerun",
+      "export-handoff"
+    ],
+    "declared_stage_references": 10,
+    "required_named_input_bindings": 22,
+    "intended_output_bindings": 15,
+    "accepted_artifact_uri_classes": [
+      "local path",
+      "file URI with local host",
+      "s3 URI with bucket and artifact path"
+    ],
+    "live_adapter_status": "not_connected",
+    "non_dry_run_behavior": "fails_closed_before_plan_write_or_adapter_execution"
+  },
+  "plan_contract": {
+    "schema_version": "dynamic-pool-command-plan-v1.0.0",
+    "deterministic": true,
+    "fingerprinted": true,
+    "round_trip_validation": true,
+    "exact_input_names_required": true,
+    "exact_output_names_required": true,
+    "tamper_detection": true,
+    "structural_validation_separate_from_selection_readiness": true,
+    "representative_and_targeted_review_outputs_separate": true,
+    "scientific_authority": {
+      "calibration": false,
+      "human_verification": false,
+      "occurrence_release": false,
+      "statistical_support": false
+    }
+  },
+  "gate": {
+    "focused_configuration_and_cli": {
+      "command": ".venv/bin/pytest -q tests/test_dynamic_pool_cli.py tests/test_dynamic_pool_config.py",
+      "result": "passed",
+      "passed": 27,
+      "duration_seconds": 0.49
+    },
+    "cli_suite": {
+      "command": ".venv/bin/pytest -q tests/test_adaptive_cli_defaults.py tests/test_cli_dry_run.py tests/test_dynamic_pool_cli.py tests/test_evaluation_cli.py tests/test_reference_negative_manifest_cli.py tests/test_reference_readiness_cli.py tests/test_reference_review_cli.py tests/test_target_aware_workflow_cli.py tests/test_vision_live_benchmark_cli.py",
+      "result": "passed",
+      "passed": 137,
+      "duration_seconds": 11.29
+    },
+    "full_regression": {
+      "command": ".venv/bin/pytest -q",
+      "result": "passed",
+      "passed": 3123,
+      "duration_seconds": 115.05,
+      "tested_implementation_sha": "5166cf8408331898694cfd1ab5994c075a62458b"
+    },
+    "lint_and_format": {
+      "commands": [
+        "uvx ruff check src/biominer/cli.py src/biominer/run/dynamic_pool_config.py src/biominer/run/dynamic_pool_cli.py tests/test_dynamic_pool_config.py tests/test_dynamic_pool_cli.py",
+        "uvx ruff format --check src/biominer/run/dynamic_pool_config.py src/biominer/run/dynamic_pool_cli.py tests/test_dynamic_pool_config.py tests/test_dynamic_pool_cli.py",
+        "git diff --check"
+      ],
+      "result": "passed"
+    },
+    "provenance": {
+      "result": "passed",
+      "required_records": [
+        "geo-pool-13.2",
+        "geo-pool-13.2.1",
+        "geo-pool-13.2.2",
+        "geo-pool-13.2.3"
+      ],
+      "githits_status": "all_four_skipped_user_directive_with_null_solution_ids_and_no_invented_external_results"
+    }
+  },
+  "githits_architecture_impact": {
+    "calls_made_for_task": 0,
+    "direct_external_code_contribution": "none",
+    "material_architecture_contribution": "none from GitHits",
+    "first_party_basis": [
+      "BioMiner typed dynamic-pooling policies and semantic fingerprints",
+      "BioMiner adaptive stage vocabulary and artifact dependencies",
+      "BioMiner argparse, JSON error and atomic-write conventions"
+    ]
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "5166cf8408331898694cfd1ab5994c075a62458b",
+    "verified_remote_sha": "5166cf8408331898694cfd1ab5994c075a62458b",
+    "verified_at": "2026-07-18T12:25:06Z",
+    "status": "verified"
+  },
+  "claims": {
+    "allowed": [
+      "Seven dynamic-pooling commands expose exact, fingerprinted dry-run artifact plans.",
+      "Typed settings preserve human-review, probability-sampling, no-geo and raw-score safety semantics.",
+      "A persisted command plan detects fingerprint, stage, input, output and derived-field tampering.",
+      "Unselected strategy or fusion requirements remain visible without silently selecting a default.",
+      "Non-dry-run invocation fails before a plan artifact is written or a production adapter is called."
+    ],
+    "blocked": [
+      "A dry-run plan proves any model, audit, selective rerun or handoff executed.",
+      "Structural plan validation is calibration, human verification or statistical support.",
+      "A selected strategy or fusion method authorizes occurrence release.",
+      "Raw dynamic-pool scores are calibrated probabilities.",
+      "Missing geography represents biological absence."
+    ]
+  },
+  "completion_record_commit": "self"
+}

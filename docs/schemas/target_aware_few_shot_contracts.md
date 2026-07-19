@@ -1,10 +1,12 @@
 # Target-aware few-shot artifact contracts
 
-Status: normative design contract for the target-aware few-shot migration.
+Status: normative historical target-aware contract with implemented producers
+and validators. Geography-conditioned dynamic-pooling extensions are defined
+in [geography_conditioned_dynamic_pooling_contracts.md](geography_conditioned_dynamic_pooling_contracts.md).
 
 This document fixes artifact ownership, row grains, schemas, fingerprints, and
-migration boundaries before runtime implementation. It does not add production
-logic. Later tasks may add fields through a new schema version, but may not
+migration boundaries. It does not itself add production logic. Later schema
+families may add fields through a new version, but may not
 silently change a field's meaning or reuse an existing version for an
 incompatible physical schema.
 

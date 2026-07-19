@@ -14,6 +14,7 @@ import polars as pl
 from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import DecodedImage, ObjectDetector
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, detection_is_bioclip_eligible
+from biominer.detection.route_contract import build_detector_route_contract
 from biominer.detection.routing import route_detection
 from biominer.detection.schema import (
     DETECTION_OUTPUT_SCHEMA,
@@ -47,6 +48,10 @@ class DetectionPipelineResult:
     detector_batch_size_initial: int = 4
     detector_batch_size_final: int = 4
     detector_batch_size_min: int = 1
+    detector_route_contract_version: str = ""
+    detector_route_contract_fingerprint: str = ""
+    detector_execution_mode: str = "injected"
+    detector_model_load_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -99,6 +104,7 @@ def run_detection_pipeline(
     executor_factory: ExecutorFactory = ThreadPoolExecutor,
 ) -> DetectionPipelineResult:
     policy = detection_policy or DetectionPolicy(backend=detector.backend)
+    build_detector_route_contract(detector, policy)
     runtime = run_policy or DetectionRunPolicy()
     if runtime.detector_batch_size <= 0:
         raise ValueError("detector_batch_size must be positive")
@@ -185,6 +191,7 @@ def run_detection_pipeline(
             schema=DETECTION_OUTPUT_SCHEMA,
         )
         frame = pl.read_parquet(output)
+        route_contract = build_detector_route_contract(detector, policy)
         return DetectionPipelineResult(
             frame=frame,
             output_path=output,
@@ -201,6 +208,10 @@ def run_detection_pipeline(
             detector_batch_size_initial=runtime.detector_batch_size,
             detector_batch_size_final=detector_batch_state.current_batch_size,
             detector_batch_size_min=runtime.min_detector_batch_size,
+            detector_route_contract_version=route_contract.contract_version,
+            detector_route_contract_fingerprint=route_contract.fingerprint,
+            detector_execution_mode=route_contract.execution_mode,
+            detector_model_load_count=_detector_model_load_count(detector),
         )
     finally:
         if batch_dir.exists():
@@ -212,6 +223,13 @@ def _prepare_detection_batch_dir(output_path: Path) -> Path:
     if batch_dir.exists():
         rmtree(batch_dir)
     return batch_dir
+
+
+def _detector_model_load_count(detector: ObjectDetector) -> int:
+    value = getattr(detector, "model_load_count", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("detector model_load_count must be a non-negative integer")
+    return value
 
 
 def _prepare_debug_crop_writer(output_path: Path, *, policy: DetectionPolicy) -> _DebugCropWriter | None:

@@ -1,0 +1,266 @@
+{
+  "schema_version": "dynamic-pool-pilot-plan-v1.0.0",
+  "pilot_id": "geo-dynamic-pool-pilot-20260718-v1",
+  "title": "Bounded geography-conditioned dynamic reference pooling pilot",
+  "frozen_at": "2026-07-18T14:14:22Z",
+  "producer_commit": "088bd99cd1b0efafba5c553a6a65a4772ac2012d",
+  "evidence_boundary": {
+    "current_execution_basis": "fixture_backed",
+    "historical_real_source_inventory_present": true,
+    "historical_outputs_count_as_current_execution": false,
+    "fixture_expected_taxa_are_human_labels": false,
+    "current_human_reviewed_label_count": 0,
+    "live_network_calls_planned": false,
+    "live_model_execution_planned": false,
+    "production_default_authorized": false,
+    "occurrence_release_authorized": false
+  },
+  "durable_inputs": [
+    {
+      "relative_path": "data/registry/butterflies-v2-20260712/manifest.json",
+      "sha256": "sha256:a71955d2a1f8366c0d4d0965d2659cea9d0d03d5356c4080a47f25695c235ced",
+      "byte_count": 4905,
+      "evidence_kind": "committed_registry",
+      "pilot_use": "freeze registry version and scope identity",
+      "scientific_authority": "taxonomy_identity_only"
+    },
+    {
+      "relative_path": "data/registry/butterflies-v2-20260712/taxa.parquet",
+      "sha256": "sha256:402588ba807f77648a6275bc4d25f39462eacfc74991ee6f502e9cbe36a85677",
+      "byte_count": 540991,
+      "evidence_kind": "committed_taxon_table",
+      "pilot_use": "resolve the five fixture taxa to accepted registry identities",
+      "scientific_authority": "taxonomy_identity_only"
+    },
+    {
+      "relative_path": "data/source_snapshots/papilio_demoleus_multilingual_t5/2026-07-static-v1.csv",
+      "sha256": "sha256:cc91279768d54b66c54936d1bb927c28f8dd0f10199ff96254d91f86b49d513f",
+      "byte_count": 71877,
+      "evidence_kind": "committed_source_snapshot",
+      "pilot_use": "record durable Papilio demoleus discovery provenance",
+      "scientific_authority": "discovery_metadata_only"
+    },
+    {
+      "relative_path": "examples/species/papilio_demoleus/pilot_prototype_support_bank_manifest.json",
+      "sha256": "sha256:da558c04ac9b9c93941ee627532e3da657398415b707ad94757c903e0e51f76c",
+      "byte_count": 4026,
+      "evidence_kind": "historical_real_execution_manifest",
+      "pilot_use": "record historical provider-supported reference-bank counts and shortfalls",
+      "scientific_authority": "historical_execution_evidence_only"
+    },
+    {
+      "relative_path": "examples/species/papilio_demoleus/pilot_prototype_embeddings_manifest.json",
+      "sha256": "sha256:381cc9a1266c30e744c12b320de4d4f3b11119c4c80b9136c25f6a0b9d9ecb0b",
+      "byte_count": 5638,
+      "evidence_kind": "historical_real_execution_manifest",
+      "pilot_use": "record historical frozen BioCLIP embedding and model-load evidence",
+      "scientific_authority": "historical_execution_evidence_only"
+    },
+    {
+      "relative_path": "examples/species/papilio_demoleus/pilot_staged_flickr_manifest.json",
+      "sha256": "sha256:4f4aeeadb559e962eb11802301c3b2d691be674094c7449aab0ab061a4b362e3",
+      "byte_count": 7703,
+      "evidence_kind": "historical_real_execution_manifest",
+      "pilot_use": "record historical unreviewed Flickr scoring volume and retryable failures",
+      "scientific_authority": "historical_execution_evidence_only"
+    },
+    {
+      "relative_path": "examples/species/papilio_demoleus/pilot_prototype_b0_b16_manifest.json",
+      "sha256": "sha256:dfe21afbc8998ae5fc8eb4aa0157afc4f17ede336635f62af7cb888f141d3bf0",
+      "byte_count": 4847,
+      "evidence_kind": "historical_real_execution_manifest",
+      "pilot_use": "record prior prototype ablation availability without treating it as current execution",
+      "scientific_authority": "historical_execution_evidence_only"
+    }
+  ],
+  "taxon_catalog": [
+    {
+      "accepted_taxon_key": "gbif:1938069",
+      "scientific_name": "Papilio demoleus",
+      "family_key": "gbif:9417",
+      "family": "Papilionidae",
+      "genus_key": "gbif:10175914",
+      "genus": "Papilio",
+      "pilot_roles": ["primary_target", "cross_region_target"],
+      "registry_evidence": "butterflies-v2-20260712"
+    },
+    {
+      "accepted_taxon_key": "gbif:1937698",
+      "scientific_name": "Papilio anactus",
+      "family_key": "gbif:9417",
+      "family": "Papilionidae",
+      "genus_key": "gbif:10175914",
+      "genus": "Papilio",
+      "pilot_roles": ["australian_scope", "stress_same_genus_competitor"],
+      "registry_evidence": "butterflies-v2-20260712"
+    },
+    {
+      "accepted_taxon_key": "gbif:1937712",
+      "scientific_name": "Papilio aegeus",
+      "family_key": "gbif:9417",
+      "family": "Papilionidae",
+      "genus_key": "gbif:10175914",
+      "genus": "Papilio",
+      "pilot_roles": ["australian_scope", "stress_same_genus_competitor"],
+      "registry_evidence": "butterflies-v2-20260712"
+    },
+    {
+      "accepted_taxon_key": "gbif:5803065",
+      "scientific_name": "Graphium macleayanus",
+      "family_key": "gbif:9417",
+      "family": "Papilionidae",
+      "genus_key": "gbif:1937188",
+      "genus": "Graphium",
+      "pilot_roles": ["australian_scope", "same_family_competitor"],
+      "registry_evidence": "butterflies-v2-20260712"
+    },
+    {
+      "accepted_taxon_key": "gbif:1937474",
+      "scientific_name": "Ornithoptera richmondia",
+      "family_key": "gbif:9417",
+      "family": "Papilionidae",
+      "genus_key": "gbif:1937440",
+      "genus": "Ornithoptera",
+      "pilot_roles": ["australian_scope", "same_family_competitor"],
+      "registry_evidence": "butterflies-v2-20260712"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "fixture-papilio-demoleus-india-maharashtra",
+      "accepted_taxon_key": "gbif:1938069",
+      "fixture_media_id": "fixture-media:papilio-demoleus:india-maharashtra",
+      "country_code": "IN",
+      "region_id": "fixture-region:in-maharashtra",
+      "geographic_evidence_status": "located_fixture_context",
+      "expected_label_basis": "fixture_expected_taxon_not_human_review",
+      "biological_occurrence_claim": false,
+      "review_status": "not_human_reviewed_fixture"
+    },
+    {
+      "case_id": "fixture-papilio-demoleus-australia-queensland",
+      "accepted_taxon_key": "gbif:1938069",
+      "fixture_media_id": "fixture-media:papilio-demoleus:australia-queensland",
+      "country_code": "AU",
+      "region_id": "fixture-region:au-queensland",
+      "geographic_evidence_status": "located_fixture_context",
+      "expected_label_basis": "fixture_expected_taxon_not_human_review",
+      "biological_occurrence_claim": false,
+      "review_status": "not_human_reviewed_fixture"
+    },
+    {
+      "case_id": "fixture-papilio-demoleus-no-geography",
+      "accepted_taxon_key": "gbif:1938069",
+      "fixture_media_id": "fixture-media:papilio-demoleus:no-geography",
+      "country_code": null,
+      "region_id": null,
+      "geographic_evidence_status": "missing_source_geography",
+      "expected_label_basis": "fixture_expected_taxon_not_human_review",
+      "biological_occurrence_claim": false,
+      "review_status": "not_human_reviewed_fixture"
+    },
+    {
+      "case_id": "fixture-papilio-anactus-australia-new-south-wales",
+      "accepted_taxon_key": "gbif:1937698",
+      "fixture_media_id": "fixture-media:papilio-anactus:australia-new-south-wales",
+      "country_code": "AU",
+      "region_id": "fixture-region:au-new-south-wales",
+      "geographic_evidence_status": "located_fixture_context",
+      "expected_label_basis": "fixture_expected_taxon_not_human_review",
+      "biological_occurrence_claim": false,
+      "review_status": "not_human_reviewed_fixture"
+    },
+    {
+      "case_id": "fixture-papilio-aegeus-australia-northern-territory",
+      "accepted_taxon_key": "gbif:1937712",
+      "fixture_media_id": "fixture-media:papilio-aegeus:australia-northern-territory",
+      "country_code": "AU",
+      "region_id": "fixture-region:au-northern-territory",
+      "geographic_evidence_status": "located_fixture_context",
+      "expected_label_basis": "fixture_expected_taxon_not_human_review",
+      "biological_occurrence_claim": false,
+      "review_status": "not_human_reviewed_fixture"
+    },
+    {
+      "case_id": "fixture-graphium-macleayanus-australia-victoria",
+      "accepted_taxon_key": "gbif:5803065",
+      "fixture_media_id": "fixture-media:graphium-macleayanus:australia-victoria",
+      "country_code": "AU",
+      "region_id": "fixture-region:au-victoria",
+      "geographic_evidence_status": "located_fixture_context",
+      "expected_label_basis": "fixture_expected_taxon_not_human_review",
+      "biological_occurrence_claim": false,
+      "review_status": "not_human_reviewed_fixture"
+    },
+    {
+      "case_id": "fixture-ornithoptera-richmondia-australia-southeast-queensland",
+      "accepted_taxon_key": "gbif:1937474",
+      "fixture_media_id": "fixture-media:ornithoptera-richmondia:australia-southeast-queensland",
+      "country_code": "AU",
+      "region_id": "fixture-region:au-southeast-queensland",
+      "geographic_evidence_status": "located_fixture_context",
+      "expected_label_basis": "fixture_expected_taxon_not_human_review",
+      "biological_occurrence_claim": false,
+      "review_status": "not_human_reviewed_fixture"
+    }
+  ],
+  "ablations": {
+    "candidate_strategies": [
+      "geography_first",
+      "family_first_safe",
+      "parallel_family_geography_union"
+    ],
+    "pool_variants": ["global_only_control", "dynamic_global_local"],
+    "fusion_methods": [
+      "unweighted_component_mean",
+      "validation_fitted_linear",
+      "maximum_scope_evidence",
+      "robust_rank_aggregation"
+    ],
+    "variant_count": 24,
+    "comparability": {
+      "same_case_register": true,
+      "same_candidate_union": true,
+      "same_fixture_embeddings": true,
+      "target_pruning_allowed": false,
+      "raw_scores_are_probabilities": false,
+      "strategy_order_is_accuracy_claim": false
+    }
+  },
+  "execution_limits": {
+    "fixture_case_count": 7,
+    "maximum_unique_fixture_media": 7,
+    "encode_each_unique_media_once": true,
+    "reuse_reference_embeddings": true,
+    "reuse_candidate_and_pool_matrices": true,
+    "live_network_calls_allowed": false,
+    "source_media_bytes_in_artifacts": false,
+    "maximum_matrix_cache_bytes": 536870912,
+    "random_seed": 20260718
+  },
+  "acceptance_policy": {
+    "policy_version": "dynamic-pool-production-selection-v1.0.0",
+    "eligible_evidence_basis": "real_source_bound_human_review",
+    "fixture_evidence_can_select_default": false,
+    "minimum_target_candidate_recall": 1.0,
+    "minimum_reviewed_precision_lower_bound": 0.95,
+    "minimum_effective_reviewed_records": 86,
+    "minimum_subgroup_independent_records": 30,
+    "no_target_pruning_regressions_required": true,
+    "embedding_reuse_required": true,
+    "matrix_reuse_required": true,
+    "mps_memory_limit_bytes": 536870912,
+    "unsupported_statistical_claims_allowed": false,
+    "allowed_decisions": ["select", "reject", "insufficient_evidence"],
+    "fixture_forced_decision": "insufficient_evidence"
+  },
+  "scientific_invariants": [
+    "raw_scores_are_not_probabilities",
+    "missing_geography_is_not_biological_absence",
+    "representative_and_targeted_review_are_separate",
+    "provider_asserted_support_is_not_human_verification",
+    "fixture_metrics_cannot_select_a_production_default",
+    "occurrence_release_requires_source_bound_human_review"
+  ],
+  "plan_fingerprint": "sha256:ac63c18f391164e8bcdb474190a70c6200ff28dfdda93c5c3ad11fe7de9b0092"
+}

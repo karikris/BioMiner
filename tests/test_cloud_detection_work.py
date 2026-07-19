@@ -313,7 +313,9 @@ def test_run_cloud_detection_batch_routes_image_failure_without_scoring() -> Non
             raise AssertionError("image failure must not reach detection")
 
     result = run_cloud_detection_batch(
-        work_items=_detection_work_items(1),
+        work_items=_detection_work_items(
+            1, prompt_set_fingerprint="sha256:" + "c" * 64
+        ),
         detector=PromptedDetector(),
         image_loader=lambda _record: (_ for _ in ()).throw(ValueError("bad image")),
     )
@@ -409,7 +411,9 @@ def test_run_cloud_detection_batch_adaptive_batching_reports_min_batch_failure()
         )
 
 
-def _detection_work_items(count: int) -> list[dict[str, object]]:
+def _detection_work_items(
+    count: int, *, prompt_set_fingerprint: str = ""
+) -> list[dict[str, object]]:
     work_items: list[dict[str, object]] = []
     for index in range(count):
         payload = detection_work_item(
@@ -421,7 +425,13 @@ def _detection_work_items(count: int) -> list[dict[str, object]]:
             },
             run_id="run-1",
             source_shard_uri="s3://biominer/source.parquet",
-            detector={"backend": "fake", "model_id": "fake-detector", "model_version": "test", "checkpoint": "fake-checkpoint"},
+            detector={
+                "backend": "fake",
+                "model_id": "fake-detector",
+                "model_version": "test",
+                "checkpoint": "fake-checkpoint",
+                "prompt_set_fingerprint": prompt_set_fingerprint,
+            },
         )
         work_items.append({"work_key": payload["work_key"], "payload": payload})
     return work_items
