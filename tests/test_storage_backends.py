@@ -26,7 +26,6 @@ from biominer.storage.paths import (
     build_report_uri,
     safe_path_component,
 )
-from biominer.storage.shard_paths import build_parquet_part_uri, build_parquet_shard_uri
 from biominer.storage.s3 import S3StorageBackend
 from biominer.storage.uri import is_cloud_uri, is_s3_uri, join_uri, normalize_local_uri
 
@@ -300,10 +299,10 @@ def test_local_storage_exposes_no_append_api_and_targets_unique_shards(
     storage = LocalStorageBackend()
     assert not hasattr(storage, "append_parquet")
 
-    shard_a = build_parquet_shard_uri(
+    shard_a = build_evidence_shard_uri(
         tmp_path, stage="poll_once", run_id="run-1", worker_id="w1", batch_id=1
     )
-    shard_b = build_parquet_shard_uri(
+    shard_b = build_evidence_shard_uri(
         tmp_path, stage="poll_once", run_id="run-1", worker_id="w2", batch_id=1
     )
 
@@ -929,39 +928,6 @@ def test_uri_helpers_classify_and_join_paths(tmp_path) -> None:
     assert (
         join_uri("local/base/", "evidence", "batch=000001.parquet")
         == "local/base/evidence/batch=000001.parquet"
-    )
-
-
-def test_build_parquet_shard_uri_is_stable_for_local_and_s3() -> None:
-    assert (
-        build_parquet_shard_uri(
-            "s3://biominer/biominer",
-            stage="poll_once",
-            run_id="run-2026",
-            worker_id="worker-3",
-            batch_id=7,
-        )
-        == "s3://biominer/biominer/evidence/stage=poll_once/run_id=run-2026/worker=worker-3/batch=000007.parquet"
-    )
-    assert (
-        build_parquet_shard_uri(
-            "staging",
-            stage="filter",
-            run_id="r",
-            worker_id="w",
-            batch_id="abc",
-        )
-        == "staging/evidence/stage=filter/run_id=r/worker=w/batch=abc.parquet"
-    )
-    assert (
-        build_parquet_part_uri(
-            "s3://biominer/biominer",
-            stage="score_bioclip",
-            run_id="run-2026",
-            worker_id="worker-3",
-            part_id=7,
-        )
-        == "s3://biominer/biominer/evidence/stage=score_bioclip/run_id=run-2026/worker=worker-3/part=000007.parquet"
     )
 
 
