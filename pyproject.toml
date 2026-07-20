@@ -7,10 +7,12 @@ dependencies = [
   "duckdb>=1.2",
   "httpcore>=1.0.9,<1.1",
   "httpx>=0.28,<1",
+  "matplotlib>=3.10",
   "pillow>=12",
   "polars>=1.30",
   "pyarrow>=18",
   "pydantic>=2.10",
+  "python-pptx>=1.0.2",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +29,6 @@ postgres = [
 ]
 test = [
     "h3>=4.5,<5",
-    "matplotlib>=3.10",
     "pytest>=8",
 ]
 
