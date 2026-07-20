@@ -1244,24 +1244,25 @@ def poll_once(
             if not claimed:
                 break
             work_items_claimed += len(claimed)
-            if min_call_interval_seconds > 0:
-                delay = min_call_interval_seconds - (time.monotonic() - last_dispatch_at)
-                if delay > 0:
-                    time.sleep(delay)
+            pending: dict[Future[tuple[dict[str, Any], int]], tuple[str, FlickrQuery]] = {}
+            for work_item_id, query in claimed:
+                if min_call_interval_seconds > 0:
+                    delay = min_call_interval_seconds - (time.monotonic() - last_dispatch_at)
+                    if delay > 0:
+                        time.sleep(delay)
+                pending[
+                    pool.submit(
+                        _fetch_with_retries,
+                        state=state,
+                        work_item_id=work_item_id,
+                        query=query,
+                        fetcher=fetcher,
+                        max_api_calls=max_api_calls,
+                        max_retries=max_retries,
+                        retry_backoff_seconds=retry_backoff_seconds,
+                    )
+                ] = (work_item_id, query)
                 last_dispatch_at = time.monotonic()
-            pending: dict[Future[tuple[dict[str, Any], int]], tuple[str, FlickrQuery]] = {
-                pool.submit(
-                    _fetch_with_retries,
-                    state=state,
-                    work_item_id=work_item_id,
-                    query=query,
-                    fetcher=fetcher,
-                    max_api_calls=max_api_calls,
-                    max_retries=max_retries,
-                    retry_backoff_seconds=retry_backoff_seconds,
-                ): (work_item_id, query)
-                for work_item_id, query in claimed
-            }
             while pending:
                 done, _ = wait(pending, return_when=FIRST_COMPLETED)
                 for future in done:
