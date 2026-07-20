@@ -1,56 +1,20 @@
-# Vision and classification
+# Vision evidence scope
 
-BioMiner uses YOLOE for coarse quality and life-stage routing and BioCLIP for
-full-frame embedding and comparison. YOLOE does not decide species identity.
-The durable detector contract is `object-detection-v2`; every row preserves
-the normalized detector prompt, actual class ID, ordered prompt-set
-fingerprint, route decision, routing-policy fingerprint, box geometry, and an
-optional normalized mask polygon.
+No production image bank or model output currently exists. Visual work begins
+only after the GBIF-grounded Flickr discovery and media-ingestion stages have
+produced immutable, rights-aware candidate artifacts.
 
-Production comparison routes are:
+YOLOE is to be optimized and evaluated as a visual-domain router for the photo
+bank. Its routes distinguish butterflies, moths, other insects, appropriate
+life stages, specimens, artifacts, no-organism images, and ambiguous material.
+YOLOE does not establish taxonomy, and a detector score is not a probability.
 
-- `adult_butterfly_field` → `adult_field`;
-- `caterpillar_field` → `larval`;
-- `pinned_specimen` → `pinned_specimen`;
-- ambiguous evidence → review when the active routing policy allows it; and
-- pupa, moth/other insect, artwork, no-organism, and failure states → retained
-  but unscored evidence.
+Eligible images are evaluated as full frames by BioCLIP. The evidence path
+retains candidates at order, superfamily, family, genus, and species, plus
+source-bound common-name associations. Higher-rank evidence must not silently
+eliminate a species candidate. Scores, margins, and ranking remain model
+evidence, not verified identities or occurrence-release decisions.
 
-The canonical BioCLIP input is the full decoded image. Adult, larval, and
-specimen scoring units from one photo share one content-addressed raw image
-embedding while retaining separate detector evidence. Focused, masked, and
-multi-object variants preserve the canvas; they do not spatially crop or
-manufacture detail. A small or unsuitable subject lowers evidence, abstains,
-or enters review.
-
-The detection schema retains nullable historical `crop_*` columns so existing
-Parquet readers do not break. Current producers always leave them null with
-`crop_storage_policy=not_created`. No crop generator, crop batching policy,
-debug-crop writer, crop scorer, or crop runtime profile remains callable.
-
-Adaptive scoring uses the complete target-preserving candidate union and
-versioned global/local reference pools. Family and geography accelerate
-retrieval; neither is an identity gate. Raw similarities, margins, detector
-scores, component scores, and provisional fusion scores are not probabilities.
-Calibration, human verification, representative statistical support, and
-release authority remain separate contracts.
-
-The classification-v3 staged-rank cache, hierarchical cascade, 0.90 genus
-shortcut, bucket rules, object-evidence join, cloud rolling worker, and their
-production dispatch have been removed. Their generic hierarchical metrics,
-visual-QA, review-queue, charts, Xie adapter, row compatibility branches, and
-classification-mode aliases are also absent. Current evaluation is
-target-aware and dynamic-pool-specific; no adaptive run can select or fall
-back to the retired implementation. See
-[cascade and crop runtime removal](migrations/cascade-crop-runtime-removal.md)
-and [hierarchical evaluation runtime removal](migrations/hierarchical-evaluation-runtime-removal.md).
-
-Developer-only model installation checks remain under `biominer dev vision`:
-
-```bash
-uv run biominer dev vision bioclip-runtime-check --device mps
-uv run biominer dev vision yoloe26-runtime-check --device mps
-```
-
-These checks prove only that a pinned runtime can load. Accuracy and release
-claims require reviewed evidence and the corresponding scientific gates.
+Human review, calibration, quality estimation, rights, and occurrence release
+are independent downstream gates. The complete production ordering is defined
+in [GBIF ground-zero pipeline](PIPELINE_GROUND_ZERO.md).

@@ -91,15 +91,15 @@ architecture.
 
 ## Commit trailers
 
-Use the exact trailers required by the current goal. The active adaptive goal
-has used this pattern:
+Use the exact trailers required by the current authorized work. A suitable
+pattern is:
 
 ```text
 AI-Assistance: OpenAI Codex
 AI-Primary-Model: exact-model-id
 AI-Reasoning-Effort: exact-value
 AI-Session: exact-session-id
-Build-Week-Scope: new | modified-existing
+Scope-Status: new | modified-existing
 GitHits-Log: provenance/githits.jsonl#task-id
 Human-Decision: concise decision
 Human-Reviewed-By: Kris Kari
@@ -178,11 +178,10 @@ Use the current goal's provenance structure. Common locations include:
 
 ```text
 provenance/githits.jsonl
-reports/gbif_fast_start/
 docs/architecture/
 run manifests
 artifact manifests
-phase completion JSON/Markdown
+stage completion JSON/Markdown
 ```
 
 Every phase report should include:
