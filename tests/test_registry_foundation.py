@@ -5,7 +5,7 @@ import json
 import polars as pl
 
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries_from_frame
-from biominer.registry.compiler import compile_registry_fixture, query_definitions_from_names
+from biominer.registry.compiler import compile_registry_fixture
 from biominer.registry.scope import load_scope
 
 
@@ -416,82 +416,6 @@ def test_compile_registry_fixture_allows_reviewed_generated_translation_queries(
 
     assert reviewed.select("query_eligible").to_series().to_list() == [True]
     assert queries.filter(pl.col("normalized_match_key") == "limettenfalter").select("search_field").to_series().to_list() == ["tags", "text"]
-
-
-def test_query_definitions_recompute_stale_query_eligibility_columns() -> None:
-    taxa = pl.DataFrame(
-        [
-            {
-                "accepted_taxon_key": "gbif:100",
-                "scientific_name": "Papilio demoleus",
-                "rank": "SPECIES",
-                "family_key": "gbif:10",
-                "family": "Papilionidae",
-                "genus_key": "gbif:90",
-                "genus": "Papilio",
-                "species_key": "gbif:100",
-                "species": "Papilio demoleus",
-            }
-        ]
-    )
-    names = pl.DataFrame(
-        [
-            {
-                "name_id": "name-scientific",
-                "accepted_taxon_key": "gbif:100",
-                "verbatim_name": "Papilio demoleus",
-                "display_name": "Papilio demoleus",
-                "normalized_match_key": "papilio demoleus",
-                "language": "la",
-                "api_language_code": "la",
-                "script": "Latn",
-                "region": "",
-                "bcp47": "la",
-                "bbox": "",
-                "name_class": "accepted_scientific",
-                "source": "GBIF",
-                "source_record_id": "gbif:100",
-                "trust_tier": "T1",
-                "precision_tier": "high",
-                "confidence": "high",
-                "enabled": True,
-                "review_state": "accepted",
-                "corroborated": False,
-                "query_eligible": True,
-                "query_disabled_reason": "",
-                "species_specificity_score": 1.0,
-            },
-            {
-                "name_id": "name-stale-queen",
-                "accepted_taxon_key": "gbif:100",
-                "verbatim_name": "Queen",
-                "display_name": "Queen",
-                "normalized_match_key": "queen",
-                "language": "eng",
-                "api_language_code": "en",
-                "script": "Latn",
-                "region": "",
-                "bcp47": "en",
-                "bbox": "",
-                "name_class": "vernacular_alias",
-                "source": "fixture",
-                "source_record_id": "fixture:queen",
-                "trust_tier": "T2",
-                "precision_tier": "medium",
-                "confidence": "medium",
-                "enabled": True,
-                "review_state": "accepted",
-                "corroborated": False,
-                "query_eligible": True,
-                "query_disabled_reason": "",
-                "species_specificity_score": 0.6,
-            },
-        ]
-    )
-
-    queries = query_definitions_from_names(names, taxa, registry_version="test-registry")
-
-    assert queries.select("normalized_match_key").to_series().to_list() == ["papilio demoleus", "papilio demoleus"]
 
 
 def test_compile_registry_fixture_canonicalizes_cross_species_common_name_collisions(tmp_path) -> None:

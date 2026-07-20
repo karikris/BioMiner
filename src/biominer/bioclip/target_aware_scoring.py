@@ -8,16 +8,13 @@ from math import isfinite
 from typing import Literal, Protocol
 
 from biominer.bioclip.candidate_sets import CandidateSet
-from biominer.bioclip.classification_modes import (
-    TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-    ClassificationMode,
-    is_target_aware_classification,
-    normalize_classification_mode,
-)
 
 
 TARGET_AWARE_CANDIDATE_POLICY_VERSION = "target-aware-complete-regional-union-v1.0.0"
 TARGET_AWARE_COMPLETE_SET_SCORING_VERSION = "target-aware-complete-set-scoring-v1.0.0"
+TARGET_AWARE_CLASSIFICATION_MODE: Literal[
+    "target_aware_few_shot_classification"
+] = "target_aware_few_shot_classification"
 
 TargetAwareClassKind = Literal[
     "species",
@@ -90,11 +87,8 @@ class TargetAwareScoringPlan:
     family_diagnostic_classes: tuple[TargetAwareScoringClass, ...]
     genus_diagnostic_classes: tuple[TargetAwareScoringClass, ...]
     candidate_policy_version: str = TARGET_AWARE_CANDIDATE_POLICY_VERSION
-    classification_mode: ClassificationMode = TARGET_AWARE_FEW_SHOT_CLASSIFICATION
 
     def __post_init__(self) -> None:
-        classification_mode = normalize_classification_mode(self.classification_mode)
-        object.__setattr__(self, "classification_mode", classification_mode)
         _required_text(self.candidate_set_id, field="candidate_set_id")
         if not self.candidate_set_id.startswith("regional:"):
             raise ValueError(
@@ -110,10 +104,6 @@ class TargetAwareScoringPlan:
             field="target_accepted_taxon_key",
         )
         _required_text(self.target_scientific_name, field="target_scientific_name")
-        if not is_target_aware_classification(classification_mode):
-            raise ValueError(
-                "target-aware scoring plan has an invalid classification mode"
-            )
         if self.candidate_policy_version != TARGET_AWARE_CANDIDATE_POLICY_VERSION:
             raise ValueError(
                 "target-aware scoring plan has an unsupported candidate policy"
@@ -159,6 +149,12 @@ class TargetAwareScoringPlan:
             raise ValueError("target-aware scoring class IDs must be unique")
 
     @property
+    def classification_mode(
+        self,
+    ) -> Literal["target_aware_few_shot_classification"]:
+        return TARGET_AWARE_CLASSIFICATION_MODE
+
+    @property
     def scoring_classes(self) -> tuple[TargetAwareScoringClass, ...]:
         return (
             *self.species_classes,
@@ -195,7 +191,6 @@ class TargetAwareScoredClass:
 class TargetAwareCompleteSetResult:
     scoring_version: str
     candidate_policy_version: str
-    classification_mode: ClassificationMode
     candidate_set_id: str
     candidate_set_fingerprint: str
     geo_cluster_id: str
@@ -207,12 +202,8 @@ class TargetAwareCompleteSetResult:
     hierarchy_rankings_diagnostic_only: bool = True
 
     def __post_init__(self) -> None:
-        classification_mode = normalize_classification_mode(self.classification_mode)
-        object.__setattr__(self, "classification_mode", classification_mode)
         if self.scoring_version != TARGET_AWARE_COMPLETE_SET_SCORING_VERSION:
             raise ValueError("target-aware result has an unsupported scoring version")
-        if not is_target_aware_classification(classification_mode):
-            raise ValueError("target-aware result has an invalid classification mode")
         _canonical_sha256(
             self.candidate_set_fingerprint,
             field="candidate_set_fingerprint",
@@ -234,6 +225,12 @@ class TargetAwareCompleteSetResult:
             or target.decision_score != self.target_decision_score
         ):
             raise ValueError("target-aware result target score or rank is inconsistent")
+
+    @property
+    def classification_mode(
+        self,
+    ) -> Literal["target_aware_few_shot_classification"]:
+        return TARGET_AWARE_CLASSIFICATION_MODE
 
     @property
     def species_scores(self) -> tuple[TargetAwareScoredClass, ...]:
@@ -269,7 +266,6 @@ def build_target_aware_scoring_plan(
     *,
     known_negative_classes: Sequence[TargetAwareAuxiliaryClass],
     visual_domain_classes: Sequence[TargetAwareAuxiliaryClass],
-    classification_mode: ClassificationMode = TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
 ) -> TargetAwareScoringPlan:
     if not isinstance(candidate_set, CandidateSet):
         raise TypeError("candidate_set must be a CandidateSet")
@@ -380,7 +376,6 @@ def build_target_aware_scoring_plan(
         visual_domain_classes=domain_items,
         family_diagnostic_classes=family_items,
         genus_diagnostic_classes=genus_items,
-        classification_mode=classification_mode,
     )
 
 
@@ -446,7 +441,6 @@ def score_target_aware_candidate_union(
     return TargetAwareCompleteSetResult(
         scoring_version=TARGET_AWARE_COMPLETE_SET_SCORING_VERSION,
         candidate_policy_version=plan.candidate_policy_version,
-        classification_mode=plan.classification_mode,
         candidate_set_id=plan.candidate_set_id,
         candidate_set_fingerprint=plan.candidate_set_fingerprint,
         geo_cluster_id=plan.geo_cluster_id,
@@ -557,6 +551,7 @@ def _canonical_sha256(value: object, *, field: str) -> str:
 
 
 __all__ = [
+    "TARGET_AWARE_CLASSIFICATION_MODE",
     "TARGET_AWARE_CANDIDATE_POLICY_VERSION",
     "TARGET_AWARE_COMPLETE_SET_SCORING_VERSION",
     "TargetAwareAuxiliaryClass",

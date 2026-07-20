@@ -158,29 +158,6 @@ def compile_registry_frames(
     return frames, manifest
 
 
-def query_definitions_from_names(
-    names: pl.DataFrame,
-    taxa: pl.DataFrame,
-    *,
-    registry_version: str,
-    global_names_for_collision: pl.DataFrame | None = None,
-    query_curation_rules: tuple[QueryCurationRule, ...] = (),
-) -> pl.DataFrame:
-    """Build Flickr query definitions from names-shaped rows.
-
-    This public wrapper lets enrichment append retrieval-only query rows for
-    candidate terms without duplicating the registry query schema.
-    """
-
-    return _query_definitions_frame(
-        names,
-        taxa,
-        registry_version=registry_version,
-        global_names_for_collision=global_names_for_collision,
-        query_curation_rules=query_curation_rules,
-    )
-
-
 def _taxa_frame(
     rows: list[dict[str, Any]],
     *,

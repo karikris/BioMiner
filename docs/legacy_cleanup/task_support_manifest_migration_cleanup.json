@@ -1,0 +1,36 @@
+{
+  "schema_version": "legacy-cleanup-task-completion-v1.0.0",
+  "task_id": "legacy-cleanup-2.3",
+  "title": "Drop legacy strict reference support manifest migration",
+  "status": "completed",
+  "completed_at": "2026-07-19T06:50:12Z",
+  "starting_sha": "fc33b2e5e5f30b8ca3de6aebd66eaadf80979ccf",
+  "pushed_implementation_sha": "91ffe11",
+  "task_commits": [
+    {
+      "subtask_id": "legacy-cleanup-2.3",
+      "commit": "91ffe11",
+      "subject": "chore(references): drop legacy support-manifest migration path"
+    }
+  ],
+  "tests": [
+    "uv run pytest tests/test_reference_readiness.py",
+    "uv run pytest tests/test_reference_contracts.py",
+    "uv run pytest tests/test_reference_admission_policy.py"
+  ],
+  "release_notes": [
+    "Removed migration functions and legacy schema constants from readiness manifests.",
+    "Updated schema docs to explicitly reject historical v2 manifest reuse under v3 admission.",
+    "Kept compatibility path recoverable from Git history only (no in-place mutation)."
+  ],
+  "githits_status": "skipped_user_directive",
+  "solution_id": null,
+  "push": {
+    "remote": "origin",
+    "branch": "main",
+    "pushed_through_sha": "91ffe11",
+    "verified_remote_sha": "91ffe11",
+    "verified_at": "2026-07-19T06:50:12Z",
+    "status": "verified"
+  }
+}

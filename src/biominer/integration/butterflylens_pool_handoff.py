@@ -22,8 +22,8 @@ BUTTERFLYLENS_POOL_HANDOFF_SCHEMA_VERSION = (
 )
 BUTTERFLYLENS_POOL_HANDOFF_FILE = "butterflylens_dynamic_pool_handoff.json"
 BUTTERFLYLENS_REPOSITORY = "karikris/ButterflyLens"
-BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT = "fcee1a76886e37cb2f0d9badbe91b70a18a0e7c3"
-BUTTERFLYLENS_PINNED_COMMIT = "1cea643623f2f20a2bea72afc754c7b194db3278"
+BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT = "3d6486da87f32136c35e29aeed6cb6291da66a17"
+BUTTERFLYLENS_PINNED_COMMIT = "1ca6d9e15b03147df26a15deb309d32aed7ea9f7"
 BUTTERFLYLENS_REQUIRED_ARTIFACT_ROLES = (
     "project",
     "run",
@@ -45,8 +45,25 @@ BUTTERFLYLENS_TARGET_CONTRACTS = {
     "geographic_impact_snapshot": ("butterflylens-geographic-impact-snapshot:v1.0.0"),
     "verification_campaign": "butterflylens-verification-campaign:v1.0.0",
     "verification_assignment": "butterflylens-verification-assignment:v1.0.0",
+    "verification_adjudication": "butterflylens-verification-adjudication:v1.0.0",
     "verification_event": "butterflylens-verification-event:v1.0.0",
     "verification_consensus": "butterflylens-verification-consensus:v1.0.0",
+    "layered_consensus_policy": "butterflylens-layered-consensus-policy:v1.0.0",
+    "reviewer_reliability": "butterflylens-reviewer-reliability:v1.0.0",
+    "quality_snapshot": "butterflylens-quality-snapshot:v1.0.0",
+    "quality_policy": "butterflylens-representative-audit-policy:v1.0.0",
+    "quality_estimator": "butterflylens-dataset-quality-estimator:v1.0.0",
+    "flickr_public_display_policy": (
+        "butterflylens-flickr-public-display-policy:v1.0.0"
+    ),
+    "sensitive_location_policy": "butterflylens-sensitive-location-policy:v1.0.0",
+    "public_location_decision": "butterflylens-public-location-decision:v1.0.0",
+    "occurrence_release_policy": "butterflylens-occurrence-release:v1.0.0",
+    "occurrence_release_decision": ("butterflylens-occurrence-release-decision:v1.0.0"),
+    "darwin_core_export": "butterflylens-darwin-core-export:v1.0.0",
+    "darwin_core_export_policy": ("butterflylens-darwin-core-export-policy:v1.0.0"),
+    "ala_contribution": "butterflylens-ala-contribution:v1.0.0",
+    "ala_contribution_policy": "butterflylens-ala-contribution-policy:v1.0.0",
     "model_evidence_migration": "20260717212553_model_evidence_schema.sql",
     "release_candidate_migration": "20260717214211_map_impact_schema.sql",
     "rls_policy_migration": "20260717215002_rls_role_policies.sql",
@@ -57,6 +74,21 @@ BUTTERFLYLENS_TARGET_CONTRACTS = {
     "append_only_review_migration": (
         "20260718015500_append_only_review_submission.sql"
     ),
+    "conflict_adjudication_migration": (
+        "20260718021000_conflict_adjudication_workflow.sql"
+    ),
+    "reviewer_control_migration": "20260718022000_reviewer_control_items.sql",
+    "reviewer_reliability_migration": (
+        "20260718023500_reviewer_reliability_estimates.sql"
+    ),
+    "layered_consensus_migration": "20260718030042_layered_consensus_policy.sql",
+    "dataset_quality_migration": "20260718040000_dataset_quality_estimates.sql",
+    "flickr_public_display_migration": (
+        "20260718045950_flickr_public_display_policy.sql"
+    ),
+    "sensitive_location_migration": ("20260718100000_sensitive_location_controls.sql"),
+    "media_takedown_migration": "20260718103000_media_takedown_workflow.sql",
+    "occurrence_release_migration": ("20260718110000_occurrence_release_policy.sql"),
 }
 BUTTERFLYLENS_ROLE_DEFAULTS = {
     "project": (
@@ -297,14 +329,12 @@ def _consumer_compatibility() -> dict[str, object]:
     return {
         "previous_audited_commit": BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT,
         "current_audited_commit": BUTTERFLYLENS_PINNED_COMMIT,
-        "decision": "compatible_additive_with_stricter_review_controls",
+        "decision": "compatible_contract_scope_unchanged_after_runtime_removal",
         "wire_schema_breaking_changes": False,
-        "database_adapter_changes_required": True,
-        "required_adapter_changes": [
-            "create repeated independent assignments under downstream policy",
-            "keep model evidence and peer decisions blind until review submission",
-            "submit append-only review events with correction lineage",
-        ],
+        "producer_wire_schema_compatible": True,
+        "database_adapter_changes_required": False,
+        "producer_artifact_changes_required": False,
+        "required_adapter_changes": [],
         "silent_pin_movement": False,
     }
 
@@ -349,6 +379,12 @@ def _authority_boundary() -> dict[str, object]:
         "table_grants_enforced_downstream": True,
         "row_level_security_enforced_downstream": True,
         "rls_bypass_claimed_by_biominer": False,
+        "public_display_decisions_in_handoff": False,
+        "sensitive_location_decisions_in_handoff": False,
+        "occurrence_release_decisions_in_handoff": False,
+        "darwin_core_release_authority": False,
+        "ala_submission_authority": False,
+        "media_takedown_authority": False,
     }
 
 
@@ -399,6 +435,9 @@ def _field_projections() -> dict[str, object]:
                 "observation_group_id",
             ],
             "database_primary_keys_excluded": True,
+            "target_policy": "flickr_public_display_policy",
+            "public_display_authority": False,
+            "rights_and_takedown_decisions_owned_downstream": True,
         },
         "model_evidence": {
             "source_role": "model_evidence",
@@ -434,6 +473,8 @@ def _field_projections() -> dict[str, object]:
             ],
             "candidate_only_is_occurrence": False,
             "missing_baseline_is_absence": False,
+            "raw_coordinates_excluded": True,
+            "sensitive_location_decision_owned_downstream": True,
         },
         "review_inputs": {
             "source_roles": [
@@ -443,6 +484,11 @@ def _field_projections() -> dict[str, object]:
             "target_contracts": [
                 "verification_campaign",
                 "verification_assignment",
+            ],
+            "downstream_decision_contracts": [
+                "verification_adjudication",
+                "reviewer_reliability",
+                "quality_snapshot",
             ],
             "fields": [
                 "campaign_id",
@@ -459,10 +505,19 @@ def _field_projections() -> dict[str, object]:
                 "reviewer_database_pk",
                 "assignment_database_pk",
             ],
+            "adjudication_authority": False,
+            "reviewer_reliability_authority": False,
+            "quality_estimate_authority": False,
         },
         "release": {
             "source_roles": ["classification_maturity", "release_state"],
-            "target_contract": "classification_maturity",
+            "target_contracts": [
+                "classification_maturity",
+                "occurrence_release_policy",
+                "occurrence_release_decision",
+                "sensitive_location_policy",
+                "public_location_decision",
+            ],
             "required_maturity_fields": [
                 "butterfly_detected",
                 "species_candidate_available",
@@ -472,6 +527,19 @@ def _field_projections() -> dict[str, object]:
                 "release_ready",
             ],
             "producer_release_authority": False,
+            "producer_public_location_authority": False,
+        },
+        "publication": {
+            "target_contracts": [
+                "darwin_core_export",
+                "darwin_core_export_policy",
+                "ala_contribution",
+                "ala_contribution_policy",
+            ],
+            "darwin_core_preparation_authority": False,
+            "occurrence_publication_authority": False,
+            "ala_submission_authority": False,
+            "human_submission_required_downstream": True,
         },
     }
 

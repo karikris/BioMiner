@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-import json
-from math import isfinite, log
+from math import isfinite
 import re
 from statistics import NormalDist
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import polars as pl
 
@@ -115,28 +114,6 @@ class TargetCalibrationDiagnostics:
     input_fingerprint: str
     configuration_fingerprint: str
     diagnostics_fingerprint: str
-
-
-def score_margin(
-    row: dict[str, object],
-    score_column: str = "species_top5_rerank_scores",
-) -> float | None:
-    value = row.get(score_column)
-    if value is None and score_column == "species_top5_rerank_scores":
-        value = row.get("species_top5_scores")
-    scores = _float_list(value)
-    if len(scores) < 2:
-        return None
-    return float(scores[0] - scores[1])
-
-
-def topk_entropy(scores: Sequence[float] | object) -> float | None:
-    values = [max(0.0, value) for value in _float_list(scores)]
-    total = sum(values)
-    if total <= 0:
-        return None
-    probabilities = [value / total for value in values if value > 0]
-    return float(-sum(probability * log(probability) for probability in probabilities))
 
 
 def build_target_calibration_diagnostics(
@@ -693,117 +670,6 @@ def _ratio(numerator: float, denominator: float) -> float | None:
     return numerator / denominator if denominator > 0.0 else None
 
 
-def add_uncertainty_fields(
-    frame: pl.DataFrame,
-    *,
-    low_margin_threshold: float = 0.05,
-) -> pl.DataFrame:
-    rows = []
-    for row in frame.to_dicts():
-        species_margin = _optional_float(row.get("species_top1_margin"))
-        if species_margin is None:
-            species_margin = score_margin(row)
-        family_margin = _optional_float(row.get("family_margin"))
-        if family_margin is None:
-            family_margin = score_margin(row, "family_top3_scores")
-        entropy = (
-            None
-            if _is_path_cascade_row(row)
-            else topk_entropy(
-                row.get("species_top5_rerank_scores") or row.get("species_top5_scores")
-            )
-        )
-        low_margin = any(
-            margin is not None and margin <= low_margin_threshold
-            for margin in (species_margin, family_margin)
-        )
-        rows.append(
-            {
-                **row,
-                "species_top1_margin": species_margin,
-                "family_margin": family_margin,
-                "species_top5_entropy": entropy,
-                "low_margin_flag": bool(low_margin),
-                "family_species_conflict_flag": _family_species_conflict(row),
-            }
-        )
-    return (
-        pl.DataFrame(rows)
-        if rows
-        else frame.with_columns(
-            [
-                pl.lit(None).cast(pl.Float64).alias("species_top5_entropy"),
-                pl.lit(False).cast(pl.Boolean).alias("low_margin_flag"),
-                pl.lit(False).cast(pl.Boolean).alias("family_species_conflict_flag"),
-            ]
-        )
-    )
-
-
-def _family_species_conflict(row: Mapping[str, Any]) -> bool:
-    if _is_path_cascade_row(row):
-        return False
-    selected_key = _text(row.get("selected_family_key"))
-    species_family_key = _text(row.get("species_candidate_family_key"))
-    if selected_key and species_family_key and selected_key != species_family_key:
-        return True
-    selected_name = _text(row.get("selected_family")).casefold()
-    species_family = _text(row.get("species_candidate_family")).casefold()
-    return bool(selected_name and species_family and selected_name != species_family)
-
-
-def _is_path_cascade_row(row: Mapping[str, Any]) -> bool:
-    return _text(row.get("classifier_schema_version")).startswith(
-        "butterfly-cascade-output-"
-    )
-
-
-def _float_list(value: object) -> list[float]:
-    if value is None:
-        return []
-    if isinstance(value, list | tuple):
-        return [
-            _float for item in value if (_float := _optional_float(item)) is not None
-        ]
-    if isinstance(value, pl.Series):
-        return [
-            _float
-            for item in value.to_list()
-            if (_float := _optional_float(item)) is not None
-        ]
-    if isinstance(value, int | float):
-        return [float(value)]
-    text = str(value).strip()
-    if not text:
-        return []
-    if text.startswith("["):
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, list):
-            return [
-                _float
-                for item in parsed
-                if (_float := _optional_float(item)) is not None
-            ]
-    numeric = _optional_float(text)
-    return [] if numeric is None else [numeric]
-
-
-def _optional_float(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except TypeError, ValueError:
-        return None
-
-
-def _text(value: object) -> str:
-    return " ".join(str(value or "").strip().split())
-
-
 __all__ = [
     "CALIBRATED_TARGET_PROBABILITY_KIND",
     "CALIBRATION_CONFIDENCE_INTERVAL_METHOD",
@@ -813,9 +679,6 @@ __all__ = [
     "TARGET_THRESHOLD_OPERATING_POINT_SCHEMA",
     "TARGET_THRESHOLD_OPERATING_POINT_SCHEMA_VERSION",
     "TargetCalibrationDiagnostics",
-    "add_uncertainty_fields",
     "build_target_calibration_diagnostics",
-    "score_margin",
-    "topk_entropy",
     "validate_target_calibration_diagnostics",
 ]

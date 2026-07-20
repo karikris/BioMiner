@@ -15,19 +15,7 @@ from biominer.config import (
     StorageConfig,
     WorkStoreConfig,
 )
-from biominer.cli import (
-    _create_production_vision_runtime,
-    _production_vision_settings_from_args,
-    build_parser,
-    run,
-)
-from biominer.bioclip.classification_modes import (
-    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
-    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    TARGET_AWARE_FEW_SHOT_CLASSIFICATION,
-    TARGET_SCOPE_OBJECT_SCREENING,
-)
-from biominer.detection.policy import VisionRuntimeSettings
+from biominer.cli import build_parser, run
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES
 from biominer.registry.translation_harvester import (
     MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT,
@@ -57,11 +45,11 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
 
     assert "run" in commands
     assert "vision" not in commands
-    assert "evidence" in commands
+    assert "evidence" not in commands
     assert "references" in commands
     assert "storage" in commands
     assert "workstore" in commands
-    assert "bioclip" in commands
+    assert "bioclip" not in commands
     assert "detect" not in commands
     assert "species" not in commands
     assert "dev" in commands
@@ -89,176 +77,6 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert poll_once.max_api_calls == 3500
     assert poll_once.run_id == "run-1"
     assert poll_once.worker_id == "worker-001"
-
-
-def test_production_vision_runtime_wires_persistent_sidecars(monkeypatch) -> None:
-    created: dict[str, Any] = {}
-
-    class FakeDetector:
-        def __init__(self, **kwargs):  # noqa: ANN003
-            created["detector"] = kwargs
-
-        def close(self) -> None:
-            created["detector_closed"] = True
-
-    class FakePersistent:
-        def __init__(self, **kwargs):  # noqa: ANN003
-            created["persistent"] = kwargs
-
-        def close(self) -> None:
-            created["persistent_closed"] = True
-
-    class FakeCropScorer:
-        def __init__(self, **kwargs):  # noqa: ANN003
-            created["crop_scorer"] = kwargs
-
-    runtime = SimpleNamespace(
-        model=SimpleNamespace(model_name="imageomics/bioclip", checkpoint="revision-1"),
-        package_version="3.3.0",
-    )
-    monkeypatch.setattr("biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector", FakeDetector)
-    monkeypatch.setattr("biominer.bioclip.bioclip.PersistentBioClipScorer", FakePersistent)
-    monkeypatch.setattr("biominer.bioclip.object_runner.EphemeralCropBioClipScorer", FakeCropScorer)
-    monkeypatch.setattr("biominer.cli._bioclip_runtime", lambda **_kwargs: runtime)
-
-    detector, image_loader, scorer, resources = _create_production_vision_runtime(VisionRuntimeSettings())
-
-    assert detector is not None
-    assert callable(image_loader)
-    assert scorer is not None
-    assert resources == [created["crop_scorer"]["scorer"], detector]
-    assert created["detector"]["runtime_python"]
-    assert created["persistent"]["device"] == "auto"
-    assert created["persistent"]["image_resize_mode"] == "longest"
-    assert created["crop_scorer"]["model_checkpoint"] == "revision-1"
-
-
-def test_production_vision_runtime_honours_profile_model_without_target_resize(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    created: dict[str, Any] = {}
-
-    class FakeDetector:
-        def __init__(self, **_kwargs):  # noqa: ANN003
-            pass
-
-    class FakePersistent:
-        def __init__(self, **kwargs):  # noqa: ANN003
-            created["persistent"] = kwargs
-
-    class FakeCropScorer:
-        def __init__(self, **kwargs):  # noqa: ANN003
-            created["crop_scorer"] = kwargs
-
-    def fake_runtime(**kwargs):  # noqa: ANN003, ANN202 - captures runtime wiring.
-        created["runtime_kwargs"] = kwargs
-        return SimpleNamespace(
-            model=SimpleNamespace(
-                model_name=kwargs["model_name"],
-                checkpoint="revision-1",
-            ),
-            package_version="3.3.0",
-        )
-
-    monkeypatch.setattr(
-        "biominer.detection.yoloe26_detector.YoloE26SidecarObjectDetector",
-        FakeDetector,
-    )
-    monkeypatch.setattr(
-        "biominer.bioclip.bioclip.PersistentBioClipScorer",
-        FakePersistent,
-    )
-    monkeypatch.setattr(
-        "biominer.bioclip.object_runner.EphemeralCropBioClipScorer",
-        FakeCropScorer,
-    )
-    monkeypatch.setattr("biominer.cli._bioclip_runtime", fake_runtime)
-    settings = VisionRuntimeSettings(
-        profile_name="mac_m5pro_64gb",
-        bioclip_model="hf-hub:imageomics/bioclip-2.5-vith14",
-    )
-
-    _create_production_vision_runtime(
-        settings,
-        classification_mode=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    )
-
-    assert created["runtime_kwargs"]["model_name"] == settings.bioclip_model
-    assert created["persistent"]["image_resize_mode"] is None
-    assert created["crop_scorer"]["model_id"] == "imageomics/bioclip-2.5-vith14"
-
-
-def test_build_text_embedding_cache_command_builds_v3_cache_and_closes_worker(tmp_path, monkeypatch, capsys) -> None:
-    runtime_python = tmp_path / "python"
-    runtime_python.touch()
-    closed: list[bool] = []
-    runtime = SimpleNamespace(
-        model=SimpleNamespace(model_name="imageomics/bioclip", checkpoint="revision-1"),
-        package_version="3.3.0",
-    )
-
-    class FakePersistent:
-        def __init__(self, **_kwargs):
-            self.runtime = runtime
-
-        def embed_text_labels(self, labels):  # noqa: ANN001, ANN201
-            return [[1.0, 0.0] for _label in labels]
-
-        def close(self) -> None:
-            closed.append(True)
-
-    store = SimpleNamespace(
-        classification_fingerprint="sha256:classification",
-        hierarchy_fingerprint="sha256:hierarchy",
-    )
-    frame = pl.DataFrame([{"embedding_cache_fingerprint": "sha256:cache"}])
-    builder_calls: list[tuple[object, str, str, int]] = []
-
-    def fake_build_cache(
-        taxonomy_store,
-        *,
-        model_id,
-        model_checkpoint,
-        embed_labels,
-        batch_size,
-    ):  # noqa: ANN001, ANN201 - dependency-boundary fake.
-        assert callable(embed_labels)
-        builder_calls.append((taxonomy_store, model_id, model_checkpoint, batch_size))
-        return frame
-
-    monkeypatch.setattr("biominer.bioclip.bioclip.PersistentBioClipScorer", FakePersistent)
-    monkeypatch.setattr(
-        "biominer.bioclip.path_taxonomy_store.PathTaxonomyStore.read",
-        lambda _path: store,
-    )
-    monkeypatch.setattr(
-        "biominer.bioclip.taxonomy_embedding_cache.build_taxonomy_text_embedding_cache",
-        fake_build_cache,
-    )
-    output = tmp_path / "text-embeddings.parquet"
-    args = build_parser().parse_args(
-        [
-            "dev",
-            "vision",
-            "build-text-embedding-cache",
-            "--registry-dir",
-            str(tmp_path / "taxonomy"),
-            "--output",
-            str(output),
-            "--runtime-python",
-            str(runtime_python),
-        ]
-    )
-
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert output.exists()
-    assert payload["embedding_cache_fingerprint"] == "sha256:cache"
-    assert payload["classification_fingerprint"] == "sha256:classification"
-    assert payload["hierarchy_fingerprint"] == "sha256:hierarchy"
-    assert "taxonomy_fingerprint" not in payload
-    assert builder_calls == [(store, "imageomics/bioclip", "revision-1", 256)]
-    assert closed == [True]
 
 
 def test_registry_public_cli_exposes_only_build_and_audit() -> None:
@@ -327,189 +145,51 @@ def test_registry_build_source_defaults_exclude_blocked_providers() -> None:
     assert "swedish" not in source_names
 
 
-def test_run_cli_vision_profile_populates_m5pro_defaults_and_overrides() -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "s3://biominer/biominer/registry/current",
-            "--output-prefix",
-            "s3://biominer/biominer/runs/papilio_demoleus",
-            "--vision-profile",
-            "mac_m5pro_64gb",
-        ]
-    )
-
-    settings = _production_vision_settings_from_args(args)
-
-    assert settings.profile_name == "mac_m5pro_64gb"
-    assert settings.device == "mps"
-    assert settings.yolo_checkpoint == "yoloe-26s-seg.pt"
-    assert settings.yolo_imgsz == 768
-    assert settings.detector_batch_size == 16
-    assert settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
-    assert settings.crop_batch_size == 24
-    assert settings.bioclip_top_k == 10
-    assert settings.crop_padding_ratio == 0.08
-    assert settings.parquet_compression == "zstd"
-    assert settings.delete_images_after_commit is True
-    assert settings.adaptive_batching is False
-    assert settings.yolo_sidecar_transport == "json_b64"
-    assert settings.possible_adult_route_enabled is True
-    assert settings.possible_adult_route_threshold == 0.20
-    assert settings.ambiguous_insect_review_enabled is False
-    assert settings.ambiguous_insect_review_threshold == 0.20
-
-    overridden = parser.parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "s3://biominer/biominer/registry/current",
-            "--output-prefix",
-            "s3://biominer/biominer/runs/papilio_demoleus",
-            "--vision-profile",
-            "mac_m5pro_64gb",
-            "--device",
-            "cpu",
-            "--yolo-batch",
-            "7",
-            "--adaptive-batching",
-            "--yolo-sidecar-transport",
-            "image_path",
-            "--no-possible-adult-route",
-            "--possible-adult-route-threshold",
-            "0.35",
-            "--ambiguous-insect-review",
-            "--ambiguous-insect-review-threshold",
-            "0.25",
-            "--no-delete-images-after-commit",
-        ]
-    )
-
-    overridden_settings = _production_vision_settings_from_args(overridden)
-
-    assert overridden_settings.device == "cpu"
-    assert overridden_settings.detector_batch_size == 7
-    assert overridden_settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
-    assert overridden_settings.adaptive_batching is True
-    assert overridden_settings.yolo_sidecar_transport == "image_path"
-    assert overridden_settings.possible_adult_route_enabled is False
-    assert overridden_settings.possible_adult_route_threshold == 0.35
-    assert overridden_settings.ambiguous_insect_review_enabled is True
-    assert overridden_settings.ambiguous_insect_review_threshold == 0.25
-    assert overridden_settings.delete_images_after_commit is False
-    assert overridden_settings.yolo_imgsz == 768
-    assert overridden_settings.crop_padding_ratio == 0.08
-
-    invalid = parser.parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "s3://biominer/biominer/registry/current",
-            "--output-prefix",
-            "s3://biominer/biominer/runs/papilio_demoleus",
-            "--vision-profile",
-            "mac_m5pro_64gb",
-            "--yolo-batch",
-            "0",
-        ]
-    )
-    with pytest.raises(ValueError, match="detector_batch_size"):
-        _production_vision_settings_from_args(invalid)
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--vision-profile", "mac_m5pro_64gb"),
+        ("--yolo-batch", "7"),
+        ("--bioclip-batch", "24"),
+        ("--crop-padding-ratio", "0.08"),
+    ],
+)
+def test_run_cli_rejects_unowned_runtime_tuning(option: str, value: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "run",
+                "--taxon",
+                "Papilio demoleus",
+                "--registry-dir",
+                "s3://biominer/registry/current",
+                "--output-prefix",
+                "s3://biominer/runs/papilio_demoleus",
+                option,
+                value,
+            ]
+        )
 
 
-def test_run_cli_parses_classification_mode_with_fixed_cascade_contract() -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "s3://biominer/biominer/registry/current",
-            "--output-prefix",
-            "s3://biominer/biominer/runs/papilio_demoleus",
-            "--classification-mode",
-            "hierarchical",
-        ]
-    )
-
-    assert args.classification_mode == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-    assert not hasattr(args, "family_top_k")
-    assert not hasattr(args, "beam_strategy")
-    assert not hasattr(args, "rank_beam_width")
-    assert not hasattr(args, "species_first_pass_top_k")
-    assert not hasattr(args, "species_rerank_top_k")
-    assert not hasattr(args, "species_report_top_k")
-
-    default_args = parser.parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "s3://biominer/biominer/registry/current",
-            "--output-prefix",
-            "s3://biominer/biominer/runs/papilio_demoleus",
-        ]
-    )
-
-    assert default_args.classification_mode == TARGET_SCOPE_OBJECT_SCREENING
-
-
-def test_run_cli_accepts_explicit_target_aware_few_shot_mode() -> None:
-    args = build_parser().parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "s3://biominer/biominer/registry/current",
-            "--output-prefix",
-            "s3://biominer/biominer/runs/papilio_demoleus",
-            "--classification-mode",
-            "target-aware-few-shot-classification",
-        ]
-    )
-
-    assert args.classification_mode == TARGET_AWARE_FEW_SHOT_CLASSIFICATION
-
-
-def test_run_cli_accepts_explicit_build_week_prototype_config() -> None:
-    args = build_parser().parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            "data/registry/current",
-            "--output-prefix",
-            "runs/papilio_demoleus_build_week",
-            "--storage-backend",
-            "local",
-            "--workstore-backend",
-            "sqlite",
-            "--workflow",
-            "reference-first",
-            "--classification-mode",
-            "build-week-prototype",
-            "--classification-config",
-            "config/pilot/papilio_demoleus_build_week_target_aware_prototype.json",
-        ]
-    )
-
-    assert args.classification_mode == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
-    assert args.classification_config.endswith("papilio_demoleus_build_week_target_aware_prototype.json")
-    assert args.storage_backend == "local"
-    assert args.workstore_backend == "sqlite"
-    assert args.workflow == "reference-first"
+@pytest.mark.parametrize(
+    "removed_option",
+    ["--classification-mode", "--taxonomy-text-embedding-cache"],
+)
+def test_run_cli_rejects_removed_cascade_options(removed_option: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "run",
+                "--taxon",
+                "Papilio demoleus",
+                "--registry-dir",
+                "s3://biominer/registry/current",
+                "--output-prefix",
+                "s3://biominer/runs/papilio_demoleus",
+                removed_option,
+                "removed",
+            ]
+        )
 
 
 def test_registry_build_parses_regional_and_static_source_options() -> None:
@@ -708,27 +388,20 @@ def test_registry_commands_parse_query_curation_json() -> None:
     assert compile_args.query_curation_json == "examples/species/papilio_demoleus/query_curation.json"
 
 
-def test_run_cli_exposes_registry_build_control() -> None:
-    parser = build_parser()
-
-    args = parser.parse_args(
-        [
-            "run",
-            "--taxon",
-            "Danaus plexippus",
-            "--registry-dir",
-            "data/registry/current",
-            "--output-prefix",
-            "runs/danaus",
-            "--storage-backend",
-            "local",
-            "--workstore-backend",
-            "sqlite",
-            "--build-registry-if-missing",
-        ]
-    )
-
-    assert args.build_registry_if_missing is True
+def test_run_cli_rejects_removed_registry_fallback() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "run",
+                "--taxon",
+                "Danaus plexippus",
+                "--registry-dir",
+                "data/registry/current",
+                "--output-prefix",
+                "runs/danaus",
+                "--build-registry-if-missing",
+            ]
+        )
 
 
 def test_removed_comment_commands_and_run_limit_fail_to_parse() -> None:
@@ -1043,66 +716,6 @@ def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) 
     assert calls["evaluate"]["score_threshold"] == 0.45
 
 
-def test_detect_crop_preview_writes_html_artifact_without_image_archive(tmp_path, capsys) -> None:
-    detections = tmp_path / "object_detections.parquet"
-    output = tmp_path / "crop_preview.html"
-    pl.DataFrame(
-        [
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-1",
-                "image_url": "https://live.staticflickr.com/photo-1.jpg",
-                "detection_id": "det-1",
-                "crop_hash": "sha256:crop-1",
-                "bbox_xyxyn": [0.1, 0.2, 0.6, 0.8],
-                "bbox_xyxy": [10.0, 20.0, 60.0, 80.0],
-                "detector_label": "butterfly_like",
-                "detector_score": 0.91,
-                "detection_status": "detected",
-            },
-            {
-                "source": "flickr",
-                "flickr_photo_id": "photo-2",
-                "image_url": "https://live.staticflickr.com/photo-2.jpg",
-                "detection_id": "det-2",
-                "crop_hash": None,
-                "bbox_xyxyn": None,
-                "bbox_xyxy": None,
-                "detector_label": None,
-                "detector_score": None,
-                "detection_status": "no_detection",
-            },
-        ]
-    ).write_parquet(detections)
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "dev",
-            "vision",
-            "crop-preview",
-            "--detections",
-            str(detections),
-            "--output",
-            str(output),
-        ]
-    )
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    html = output.read_text(encoding="utf-8")
-    assert payload["preview_rows"] == 1
-    assert payload["skipped_rows"] == 1
-    assert payload["storage_policy"] == "remote_image_references_only"
-    assert "photo-1" in html
-    assert "det-1" in html
-    assert "sha256:crop-1" in html
-    assert "https://live.staticflickr.com/photo-1.jpg" in html
-    assert "left: 10.0000%" in html
-    assert "width: 50.0000%" in html
-    assert not (tmp_path / "crop_preview_files").exists()
-
-
 def _parquet_column_compressions(source: Path) -> set[str]:
     import pyarrow.parquet as pq
 
@@ -1277,73 +890,6 @@ def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys,
     assert calls[0]["env"]["HUGGINGFACE_HUB_CACHE"] == str((tmp_path / "hf" / "hub").resolve())
 
 
-def test_evidence_join_cli_writes_join_tables(tmp_path, capsys, monkeypatch) -> None:
-    context_path = tmp_path / "species_context.json"
-    context_path.write_text(
-        json.dumps(
-            {
-                "scientific_name": "Danaus plexippus",
-                "accepted_taxon_key": "gbif:1",
-                "canonical_name": "Danaus plexippus",
-                "family": "Nymphalidae",
-                "genus": "Danaus",
-                "family_key": "gbif:f",
-                "genus_key": "gbif:g",
-                "species_key": "gbif:1",
-                "registry_version": "registry-v1",
-            }
-        ),
-        encoding="utf-8",
-    )
-    input_path = tmp_path / "filtered.parquet"
-    detections_path = tmp_path / "object_detections.parquet"
-    scores_path = tmp_path / "object_bioclip_scores.parquet"
-    joined_path = tmp_path / "object_evidence_joined.parquet"
-    summary_path = tmp_path / "photo_evidence_summary.parquet"
-    calls: dict[str, object] = {}
-
-    def fake_write_outputs(**kwargs):  # noqa: ANN003, ANN202 - mirrors write_object_evidence_outputs.
-        calls["kwargs"] = kwargs
-        return SimpleNamespace(
-            object_evidence_joined=Path(kwargs["joined_output_path"]),
-            photo_evidence_summary=Path(kwargs["photo_summary_output_path"]),
-        )
-
-    monkeypatch.setattr("biominer.cli.write_object_evidence_outputs", fake_write_outputs)
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "evidence",
-            "join",
-            "--input",
-            str(input_path),
-            "--detections",
-            str(detections_path),
-            "--scores",
-            str(scores_path),
-            "--joined-output",
-            str(joined_path),
-            "--photo-summary-output",
-            str(summary_path),
-            "--species-context",
-            str(context_path),
-        ]
-    )
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    kwargs = calls["kwargs"]
-    assert payload == {
-        "object_evidence_joined": str(joined_path),
-        "photo_evidence_summary": str(summary_path),
-    }
-    assert kwargs["canonical_records_path"] == str(input_path)
-    assert kwargs["detections_path"] == str(detections_path)
-    assert kwargs["scores_path"] == str(scores_path)
-    assert kwargs["species_context"].scientific_name == "Danaus plexippus"
-
-
 def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     parser = build_parser()
 
@@ -1358,6 +904,25 @@ def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
     assert smoke.image == "manual.jpg"
     with pytest.raises(SystemExit):
         parser.parse_args(["dev", "vision", "yoloe26-prototype-run"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dev", "vision", "benchmark-cascade"])
+    for removed in (
+        "build-text-embedding-cache",
+        "benchmark-plumbing",
+        "benchmark-rolling-matrix",
+        "benchmark-live-m5pro",
+        "prototype-smoke",
+        "prototype-smoke-five",
+        "prototype-build-embeddings",
+        "prototype-staged-flickr",
+        "prototype-benchmark-matrix",
+        "prototype-select-policy",
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["dev", "vision", removed])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["bioclip", "prototype-evidence"])
 
 
 def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
@@ -1370,9 +935,6 @@ def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
         "yoloe26-prefetch",
         "yoloe26-smoke",
         "yoloe26-prototype-run",
-        "benchmark-plumbing",
-        "benchmark-cascade",
-        "benchmark-live-m5pro",
         "crop-preview",
         "eval",
     ):
@@ -1507,79 +1069,15 @@ def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_pa
     assert payload["request"]["taxon"] == "Papilio demoleus"
     assert payload["request"]["storage_backend"] == "local"
     assert payload["request"]["workstore_backend"] == "sqlite"
-    assert payload["request"]["vision_worker"] == "local_dev"
     assert payload["request"]["worker_id"] == "local"
     assert manifest["taxon_scope"]["accepted_taxon_key"] == "gbif:100"
     assert manifest["taxon_scope"]["accepted_rank"] == "species"
-    assert manifest["model_configs"]["vision_worker"] == "local_dev"
+    assert manifest["model_configs"]["visual_input"] == "raw_full_image"
+    assert manifest["model_configs"]["spatial_crop_permitted"] is False
     assert manifest["stages"][0]["stage"] == "resolve_taxon_scope"
     assert manifest["stages"][0]["status"] == "complete"
     assert manifest["stages"][1]["status"] == "skipped"
     assert (output / "run_id=species_papilio_demoleus" / "run_manifest.json").exists()
-
-
-def test_production_run_cli_requires_readiness_only_for_non_dry_vision(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_load_config(_path: str | None) -> object:
-        raise AssertionError("missing readiness must fail before runtime configuration")
-
-    monkeypatch.setattr("biominer.cli.load_biominer_config", fail_load_config)
-    args = build_parser().parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            str(tmp_path / "registry"),
-            "--output-prefix",
-            str(tmp_path / "runs"),
-            "--storage-backend",
-            "local",
-            "--workstore-backend",
-            "sqlite",
-            "--stages",
-            "detect",
-        ]
-    )
-
-    assert run(args) == 2
-    assert "--reference-bank-readiness is required" in json.loads(capsys.readouterr().out)["error"]
-
-
-def test_production_run_cli_requires_trusted_readiness_digest_for_vision(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_load_config(_path: str | None) -> object:
-        raise AssertionError("missing readiness pin must fail before configuration")
-
-    monkeypatch.setattr("biominer.cli.load_biominer_config", fail_load_config)
-    args = build_parser().parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--registry-dir",
-            str(tmp_path / "registry"),
-            "--output-prefix",
-            str(tmp_path / "runs"),
-            "--storage-backend",
-            "local",
-            "--workstore-backend",
-            "sqlite",
-            "--stages",
-            "detect",
-            "--reference-bank-readiness",
-            str(tmp_path / "readiness"),
-        ]
-    )
-
-    assert run(args) == 2
-    assert "--reference-bank-readiness-sha256 is required" in json.loads(capsys.readouterr().out)["error"]
 
 
 def test_production_run_requires_cloud_config_by_default(tmp_path, capsys, monkeypatch) -> None:
@@ -1681,108 +1179,6 @@ def test_production_run_dry_run_reads_cloud_registry(capsys, monkeypatch) -> Non
     assert payload["manifest"]["taxon_scope"]["accepted_taxon_key"] == "gbif:100"
     assert payload["manifest"]["taxon_scope"]["registry_version"] == "registry-v1"
     assert fake_storage.json_payloads[manifest_uri]["status"] == "complete"
-
-
-def test_production_run_enqueue_stage_uses_configured_workstore(tmp_path, capsys, monkeypatch) -> None:
-    from biominer.workstore.sqlite import SQLiteWorkStore
-
-    registry = tmp_path / "registry"
-    registry.mkdir()
-    pl.DataFrame(
-        [
-            {
-                "accepted_taxon_key": "gbif:100",
-                "scientific_name": "Papilio demoleus",
-                "rank": "SPECIES",
-                "family_key": "gbif:10",
-                "family": "Papilionidae",
-                "genus_key": "gbif:90",
-                "genus": "Papilio",
-                "species_key": "gbif:100",
-                "species": "Papilio demoleus",
-                "parent_key": "gbif:90",
-            }
-        ]
-    ).write_parquet(registry / "taxa.parquet")
-    pl.DataFrame(
-        [
-            {
-                "accepted_taxon_key": "gbif:100",
-                "display_name": "Papilio demoleus",
-                "name_class": "accepted_scientific",
-                "language": "la",
-                "source": "GBIF",
-                "trust_tier": "T1",
-                "enabled": True,
-                "disabled_reason": "",
-            }
-        ]
-    ).write_parquet(registry / "names.parquet")
-    pl.DataFrame(
-        [
-            {
-                "query_definition_id": "q-1",
-                "registry_version": "registry-v1",
-                "accepted_taxon_key": "gbif:100",
-                "accepted_scientific_name": "Papilio demoleus",
-                "family_key": "gbif:10",
-                "genus_key": "gbif:90",
-                "species_key": "gbif:100",
-                "source_term": "Papilio demoleus",
-                "language": "la",
-                "search_field": "text",
-                "search_priority": 10,
-                "bbox": "",
-                "region": "",
-                "name_class": "accepted_scientific",
-                "confidence": "high",
-                "enabled": True,
-                "query_eligible": True,
-            }
-        ]
-    ).write_parquet(registry / "flickr_query_definitions.parquet")
-    (registry / "manifest.json").write_text(json.dumps({"registry_version": "registry-v1"}), encoding="utf-8")
-    workstore_path = tmp_path / "workstore.sqlite"
-    config = BioMinerConfig(
-        storage=StorageConfig(backend="local", prefix=str(tmp_path / "artifacts")),
-        workstore=WorkStoreConfig(backend="sqlite", sqlite_path=str(workstore_path), dsn_env=None),
-        runtime=RuntimeConfig(worker_id="worker-1"),
-    )
-    monkeypatch.setattr("biominer.cli.load_biominer_config", lambda path: config)
-
-    args = build_parser().parse_args(
-        [
-            "run",
-            "--taxon",
-            "Papilio demoleus",
-            "--rank",
-            "species",
-            "--registry-dir",
-            str(registry),
-            "--output-prefix",
-            str(tmp_path / "runs"),
-            "--storage-backend",
-            "local",
-            "--workstore-backend",
-            "sqlite",
-            "--stages",
-            "resolve,enqueue",
-            "--limit-records",
-            "1",
-        ]
-    )
-
-    assert run(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["request"]["worker_id"] == "worker-1"
-    assert payload["manifest"]["query_counts"]["enqueued_work_items"] == 1
-    queued = SQLiteWorkStore(workstore_path).list_work_items(
-        job_name="biominer_production_run",
-        stage="poll_flickr",
-        registry_version="registry-v1",
-    )
-    assert len(queued) == 1
-    assert queued[0]["payload"]["query"]["query_definition_id"] == "q-1"
 
 
 def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) -> None:

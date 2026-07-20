@@ -18,7 +18,6 @@ from biominer.candidates.regional_union import (
 from biominer.references.admission import default_reference_admission_policy
 from biominer.references.deduplication import deduplicate_reference_media
 from biominer.references.readiness import (
-    LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION,
     REFERENCE_BANK_READINESS_FILE,
     REFERENCE_BANK_SPLIT_ASSIGNMENTS_SCHEMA_VERSION,
     REFERENCE_BANK_SUMMARY_FILE,
@@ -28,10 +27,8 @@ from biominer.references.readiness import (
     ReferenceBankRequirement,
     ReferenceModelInputIdentity,
     build_reference_bank_readiness,
-    legacy_reference_support_manifest_v2_schema,
     load_reference_bank_readiness,
     make_reference_split_assignment_fingerprint,
-    migrate_strict_reference_support_manifest_v2,
     publish_reference_bank_readiness,
     reference_bank_split_assignments_frame,
     reference_bank_split_assignments_schema,
@@ -1056,53 +1053,6 @@ def test_ready_provisional_has_narrow_fail_closed_capabilities() -> None:
     payload["permits_calibrated_scoring"] = True
     with pytest.raises(ValueError, match="capabilities"):
         readiness_module._validate_readiness_payload(payload, published=False)  # noqa: SLF001 - adversarial persisted-contract validation.
-
-
-def test_legacy_v2_support_requires_explicit_strict_migration() -> None:
-    current = _build(_make_fixture()).support_manifest
-    legacy_rows = []
-    for current_row in current.iter_rows(named=True):
-        row = {
-            field: value
-            for field, value in current_row.items()
-            if field in legacy_reference_support_manifest_v2_schema()
-        }
-        row["schema_version"] = LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION
-        row["support_row_fingerprint"] = (
-            readiness_module._legacy_support_row_fingerprint_v2(row)  # noqa: SLF001 - fixture recreates the exact persisted v2 identity.
-        )
-        legacy_rows.append(row)
-    legacy = pl.DataFrame(
-        legacy_rows,
-        schema=legacy_reference_support_manifest_v2_schema(),
-        orient="row",
-        strict=True,
-    ).sort(readiness_module._SUPPORT_SORT)  # noqa: SLF001 - persisted contract sort.
-
-    with pytest.raises(ValueError, match="physical schema"):
-        validate_reference_support_manifest(legacy)
-
-    migration = migrate_strict_reference_support_manifest_v2(legacy)
-
-    validate_reference_support_manifest(migration.manifest)
-    assert set(migration.manifest["reference_admission_mode"]) == {
-        "human_verified_strict"
-    }
-    assert migration.manifest["human_verified_identity"].all()
-    assert not migration.manifest["provisional_support"].any()
-    assert not migration.manifest["provider_asserted_identity"].any()
-    assert migration.report["source_schema_version"] == (
-        LEGACY_REFERENCE_SUPPORT_MANIFEST_SCHEMA_VERSION
-    )
-    assert migration.report["migration_mode"] == "explicit_human_verified_strict"
-    assert migration.report["provider_assertion_backfilled"] is False
-    assert migration.report["requires_downstream_rebuild"] == [
-        "readiness",
-        "reference_embeddings",
-        "reference_prototypes",
-        "models",
-        "scores",
-    ]
 
 
 def test_admission_mode_change_invalidates_support_and_readiness_identity() -> None:

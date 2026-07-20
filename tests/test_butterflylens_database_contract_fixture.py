@@ -143,6 +143,7 @@ def test_target_documents_validate_against_exact_committed_json_schemas(
 def test_exact_committed_database_fixtures_enforce_fail_closed_ingestion() -> None:
     map_fixture = _git_show("supabase/tests/database/005_map_impact_schema.test.sql")
     review_fixture = _git_show("supabase/tests/database/004_review_schema.test.sql")
+    review_schema = _git_show("supabase/migrations/20260717213515_review_schema.sql")
     repeated = _git_show(
         "supabase/migrations/20260718013600_repeated_independent_assignments.sql"
     )
@@ -164,10 +165,14 @@ def test_exact_committed_database_fixtures_enforce_fail_closed_ingestion() -> No
     for value in (
         "same reviewer cannot receive the same item twice",
         "review events are append-only",
-        "event identity must match its assignment",
-        "model agreement cannot define reviewer truth",
+        "append-only review identity cannot be mutated",
     ):
         assert value in review_fixture
+    for value in (
+        "majority_agreement_as_truth",
+        "model or majority agreement cannot serve as truth",
+    ):
+        assert value in review_schema
     for value in (
         "repeated-independent-v1",
         "assignments_enforce_repeated_independence",
@@ -190,6 +195,7 @@ def test_exact_committed_database_fixtures_enforce_fail_closed_ingestion() -> No
     for value in (
         "Worker credentials and service_role remain server-only",
         "Review events are insert-only",
+        "review event does not match its assignment",
         "candidate_state in ('approved', 'exported') and all_release_gates_passed",
     ):
         assert value in rls

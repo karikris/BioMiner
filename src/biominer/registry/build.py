@@ -23,6 +23,7 @@ from biominer.registry.enrichment import (
 )
 from biominer.registry.gbif_production import ProductionGBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.gbif_occurrence_source import build_gbif_source_snapshot_from_occurrence_archive
 from biominer.registry.language_targets import COUNTRY_LANGUAGE_TARGETS_FILE, generate_language_targets, write_language_targets
 from biominer.registry.range_discovery import GBIFOccurrenceCountryClient, RANGE_COUNTRIES_FILE, discover_range_countries, load_range_seed, write_range_countries
 from biominer.registry.scope import load_scope
@@ -47,6 +48,9 @@ def build_registry(
     scope_path: str | Path = "config/butterfly_scope.json",
     source_json: str | Path | None = None,
     reuse_source_json: bool = False,
+    gbif_occurrence_archive: str | Path | None = None,
+    gbif_source_parquet: str | Path | None = None,
+    delete_gbif_download_after: bool = True,
     report_dir: str | Path = "reports",
     retrieved_at: str | None = None,
     workers: int = 8,
@@ -89,6 +93,9 @@ def build_registry(
         "scope_path": scope_path,
         "source_json": source_json,
         "reuse_source_json": reuse_source_json,
+        "gbif_occurrence_archive": gbif_occurrence_archive,
+        "gbif_source_parquet": gbif_source_parquet,
+        "delete_gbif_download_after": delete_gbif_download_after,
         "report_dir": report_dir,
         "retrieved_at": retrieved_at,
         "workers": workers,
@@ -139,6 +146,9 @@ def build_cloud_registry(
     scope_path: str | Path = "config/butterfly_scope.json",
     source_json: str | Path | None = None,
     reuse_source_json: bool = False,
+    gbif_occurrence_archive: str | Path | None = None,
+    gbif_source_parquet: str | Path | None = None,
+    delete_gbif_download_after: bool = True,
     report_dir: str | Path = "reports",
     retrieved_at: str | None = None,
     workers: int = 8,
@@ -176,6 +186,8 @@ def build_cloud_registry(
 ) -> dict[str, Any]:
     if not skip_enrichment:
         raise NotImplementedError("cloud_registry_enrichment_not_implemented")
+    if gbif_occurrence_archive:
+        raise ValueError("--gbif-occurrence-archive is not supported for cloud builds")
     base_prefix = str(output_dir).rstrip("/")
     registry_prefix = join_uri(base_prefix, "registry", f"version={safe_path_component(registry_version)}")
     source_uri = build_registry_version_uri(base_prefix, registry_version=registry_version, filename="gbif_source_snapshot.json")
@@ -279,6 +291,9 @@ def build_local_registry(
     scope_path: str | Path = "config/butterfly_scope.json",
     source_json: str | Path | None = None,
     reuse_source_json: bool = False,
+    gbif_occurrence_archive: str | Path | None = None,
+    gbif_source_parquet: str | Path | None = None,
+    delete_gbif_download_after: bool = False,
     report_dir: str | Path = "reports",
     retrieved_at: str | None = None,
     workers: int = 8,
@@ -336,18 +351,29 @@ def build_local_registry(
         if not source_path.exists():
             raise FileNotFoundError(f"--reuse-source-json requires an existing source JSON: {source_path}")
     else:
-        with ProductionGBIFClient(max_retries=max_retries, max_connections=workers) as client:
-            snapshot = build_gbif_source_snapshot(
-                client,
+        if gbif_occurrence_archive:
+            if source_json:
+                raise ValueError("--source-json cannot be combined with --gbif-occurrence-archive")
+            snapshot = build_gbif_source_snapshot_from_occurrence_archive(
+                gbif_occurrence_archive,
                 load_scope(scope_path),
                 retrieved_at=retrieved,
-                checkpoint_dir=output / "checkpoints",
-                workers=workers,
-                progress_every=progress_every,
-                checkpoint_every=checkpoint_every,
-                max_retries=max_retries,
-                client_factory=lambda: ProductionGBIFClient(max_retries=max_retries, max_connections=workers),
+                source_parquet=gbif_source_parquet,
+                delete_download_after=delete_gbif_download_after,
             )
+        else:
+            with ProductionGBIFClient(max_retries=max_retries, max_connections=workers) as client:
+                snapshot = build_gbif_source_snapshot(
+                    client,
+                    load_scope(scope_path),
+                    retrieved_at=retrieved,
+                    checkpoint_dir=output / "checkpoints",
+                    workers=workers,
+                    progress_every=progress_every,
+                    checkpoint_every=checkpoint_every,
+                    max_retries=max_retries,
+                    client_factory=lambda: ProductionGBIFClient(max_retries=max_retries, max_connections=workers),
+                )
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
 

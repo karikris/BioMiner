@@ -123,7 +123,7 @@ class ProductionGBIFClient(GBIFClient):
     def __enter__(self) -> ProductionGBIFClient:
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
         self.close()
 
 

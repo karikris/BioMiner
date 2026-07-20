@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -9,12 +8,10 @@ import polars as pl
 import pytest
 
 from biominer.detection import yoloe26_detector
-import biominer.detection.policy as detection_policy
-from biominer.detection.cropper import crop_with_padding
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate, FakeObjectDetector, normalize_detector_label
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
 from biominer.detection.pipeline import run_detection_pipeline
-from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy, VisionRuntimeSettings, validate_vision_runtime_settings
+from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.detection.routing import DetectionRoutingPolicy
 from biominer.detection.schema import build_detection_rows, detection_id_for
 from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
@@ -34,17 +31,7 @@ def _wide_white_image() -> DecodedImage:
     return DecodedImage(width=4, height=2, mode="RGB", data=bytes([255, 255, 255] * 8), source_uri="memory://wide")
 
 
-def _checker_image() -> DecodedImage:
-    pixels = bytes(
-        channel
-        for y in range(4)
-        for x in range(4)
-        for channel in ([255, 255, 255] if (x + y) % 2 else [0, 0, 0])
-    )
-    return DecodedImage(width=4, height=4, mode="RGB", data=pixels, source_uri="memory://checker")
-
-
-def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
+def test_detection_policy_defaults_match_full_frame_pipeline() -> None:
     policy = DetectionPolicy()
     run_policy = DetectionRunPolicy()
 
@@ -52,111 +39,18 @@ def test_detection_policy_defaults_match_object_pipeline_profile() -> None:
     assert policy.box_score_threshold == 0.20
     assert policy.nms_iou_threshold == 0.50
     assert policy.max_boxes_per_image == 8
-    assert policy.crop_target_px == 336
+    assert policy.image_max_side_px == 1280
     assert run_policy.download_workers == 4
-    assert run_policy.detector_workers == 1
     assert run_policy.max_inflight_images == 32
-    assert run_policy.crop_batch_size == 24
+    assert run_policy.detector_batch_size == 4
     assert run_policy.adaptive_batching is False
     assert run_policy.min_detector_batch_size == 1
-    assert run_policy.create_crop_metadata is True
-
-
-def test_vision_runtime_settings_bridge_existing_detection_policies() -> None:
-    settings = VisionRuntimeSettings(
-        profile_name="test_profile",
-        device="mps",
-        yolo_checkpoint="yoloe-26s-seg.pt",
-        yolo_imgsz=768,
-        yolo_conf=0.25,
-        yolo_iou=0.45,
-        yolo_max_det=6,
-        detector_batch_size=16,
-        crop_batch_size=24,
-        crop_padding_ratio=0.08,
-        crop_target_px=336,
-        bioclip_model="hf-hub:imageomics/bioclip-2.5-vith14",
-        bioclip_top_k=10,
-        parquet_compression="zstd",
-        parquet_part_rows=2048,
-        delete_images_after_commit=True,
-        retain_debug_crops=False,
-        debug_crop_limit=12,
-    )
-
-    detection = settings.to_detection_policy(DetectionPolicy(backend="fake", min_box_area_ratio=0.01))
-    runtime = settings.to_detection_run_policy(DetectionRunPolicy(download_workers=2, max_inflight_images=5))
-    target_runtime = settings.to_detection_run_policy(
-        DetectionRunPolicy(create_crop_metadata=False)
-    )
-
-    assert detection.backend == "fake"
-    assert detection.box_score_threshold == 0.25
-    assert detection.nms_iou_threshold == 0.45
-    assert detection.min_box_area_ratio == 0.01
-    assert detection.max_boxes_per_image == 6
-    assert detection.crop_padding_ratio == 0.08
-    assert detection.crop_target_px == 336
-    assert detection.retain_debug_crops is False
-    assert detection.debug_crop_limit == 12
-    assert runtime.download_workers == 2
-    assert runtime.max_inflight_images == 5
-    assert runtime.detector_batch_size == 16
-    assert runtime.crop_batch_size == 24
-    assert runtime.parquet_batch_rows == 2048
-    assert runtime.adaptive_batching is False
-    assert runtime.min_detector_batch_size == 1
-    assert target_runtime.create_crop_metadata is False
-
-
-def test_vision_runtime_settings_validate_overrides_and_adaptive_manifest_fields() -> None:
-    settings = VisionRuntimeSettings().with_overrides(
-        adaptive_batching=True,
-        detector_batch_size=8,
-        crop_batch_size=12,
-        min_detector_batch_size=2,
-        max_detector_batch_size=16,
-        min_crop_batch_size=3,
-        max_crop_batch_size=24,
-        yolo_sidecar_transport="image_path",
-        mps_memory_safety_margin_mb=1024,
-    )
-
-    payload = asdict(settings)
-
-    assert validate_vision_runtime_settings(settings) == settings
-    assert settings.adaptive_batching is True
-    assert payload["adaptive_batching"] is True
-    assert payload["min_detector_batch_size"] == 2
-    assert payload["max_detector_batch_size"] == 16
-    assert payload["min_crop_batch_size"] == 3
-    assert payload["max_crop_batch_size"] == 24
-    assert payload["yolo_sidecar_transport"] == "image_path"
-    assert payload["mps_memory_safety_margin_mb"] == 1024
-
-
-def test_vision_runtime_settings_reject_invalid_overrides() -> None:
-    with pytest.raises(ValueError, match="detector_batch_size"):
-        VisionRuntimeSettings().with_overrides(detector_batch_size=0)
-    with pytest.raises(ValueError, match="crop_batch_size"):
-        VisionRuntimeSettings().with_overrides(crop_batch_size=25)
-    with pytest.raises(ValueError, match="min_detector_batch_size"):
-        VisionRuntimeSettings().with_overrides(min_detector_batch_size=9, max_detector_batch_size=4)
-    with pytest.raises(ValueError, match="crop_padding_ratio"):
-        VisionRuntimeSettings().with_overrides(crop_padding_ratio=0.75)
-    with pytest.raises(ValueError, match="crop_target_px"):
-        VisionRuntimeSettings().with_overrides(crop_target_px=0)
-    with pytest.raises(ValueError, match="yolo_sidecar_transport"):
-        VisionRuntimeSettings().with_overrides(yolo_sidecar_transport="pipe_dream")
-    with pytest.raises(ValueError, match="unknown vision runtime setting"):
-        VisionRuntimeSettings().with_overrides(not_a_setting=True)
 
 
 def test_detection_and_run_sources_do_not_create_reviewed_box_training_artifacts() -> None:
     source_paths = (
         *sorted(Path("src/biominer/detection").glob("*.py")),
         *sorted(Path("src/biominer/run").glob("*.py")),
-        Path("src/biominer/bioclip/object_runner.py"),
         Path("src/biominer/cli.py"),
     )
     forbidden_tokens = (
@@ -206,88 +100,6 @@ def test_detection_candidate_contract_normalizes_legacy_labels_and_rejects_taxa(
     assert DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 1, 1)).label == "butterfly_like"
     with pytest.raises(ValueError, match="taxonomic"):
         DetectionCandidate(label="Papilio demoleus", score=0.9, bbox_xyxy=(0, 0, 1, 1))
-
-
-def test_mac_m5pro_profile_matches_local_apple_silicon_defaults() -> None:
-    assert hasattr(detection_policy, "runtime_profile")
-    profile = detection_policy.runtime_profile("mac_m5pro_64gb")
-    settings = detection_policy.vision_runtime_settings("mac_m5pro_64gb")
-    config = json.loads(Path("config/vision_profiles/mac_m5pro_64gb.json").read_text(encoding="utf-8"))
-
-    assert profile.profile_name == "mac_m5pro_64gb"
-    assert profile.vision_settings == settings
-    assert settings.profile_name == "mac_m5pro_64gb"
-    assert settings.device == "mps"
-    assert settings.yolo_checkpoint == "yoloe-26s-seg.pt"
-    assert settings.yolo_imgsz == 768
-    assert settings.yolo_conf == 0.20
-    assert settings.yolo_iou == 0.50
-    assert settings.yolo_max_det == 8
-    assert settings.possible_adult_route_enabled is True
-    assert settings.possible_adult_route_threshold == 0.20
-    assert settings.ambiguous_insect_review_enabled is False
-    assert settings.ambiguous_insect_review_threshold == 0.20
-    assert settings.detector_batch_size == 16
-    assert settings.crop_batch_size == 24
-    assert settings.adaptive_batching is False
-    assert settings.yolo_sidecar_transport == "json_b64"
-    assert settings.min_detector_batch_size == 1
-    assert settings.max_detector_batch_size == 16
-    assert settings.min_crop_batch_size == 1
-    assert settings.max_crop_batch_size == 24
-    assert settings.mps_memory_safety_margin_mb is None
-    assert settings.crop_padding_ratio == 0.08
-    assert settings.crop_target_px == 336
-    assert settings.bioclip_model == "hf-hub:imageomics/bioclip-2.5-vith14"
-    assert settings.bioclip_top_k == 10
-    assert settings.parquet_compression == "zstd"
-    assert settings.parquet_part_rows == 500
-    assert settings.retain_debug_crops is False
-    assert config["profile_name"] == settings.profile_name
-    assert config["device"] == settings.device
-    assert config["yolo_checkpoint"] == settings.yolo_checkpoint
-    assert config["yolo_imgsz"] == settings.yolo_imgsz
-    assert config["detector_batch_size"] == settings.detector_batch_size
-    assert config["crop_batch_size"] == settings.crop_batch_size
-    assert config["adaptive_batching"] == settings.adaptive_batching
-    assert config["possible_adult_route_enabled"] == settings.possible_adult_route_enabled
-    assert config["possible_adult_route_threshold"] == settings.possible_adult_route_threshold
-    assert config["ambiguous_insect_review_enabled"] == settings.ambiguous_insect_review_enabled
-    assert config["ambiguous_insect_review_threshold"] == settings.ambiguous_insect_review_threshold
-    assert config["yolo_sidecar_transport"] == settings.yolo_sidecar_transport
-    assert config["min_detector_batch_size"] == settings.min_detector_batch_size
-    assert config["max_detector_batch_size"] == settings.max_detector_batch_size
-    assert config["min_crop_batch_size"] == settings.min_crop_batch_size
-    assert config["max_crop_batch_size"] == settings.max_crop_batch_size
-    assert config["mps_memory_safety_margin_mb"] == settings.mps_memory_safety_margin_mb
-    assert config["crop_padding_ratio"] == settings.crop_padding_ratio
-    assert config["crop_target_px"] == settings.crop_target_px
-    assert config["bioclip_model"] == settings.bioclip_model
-    assert config["bioclip_top_k"] == settings.bioclip_top_k
-    assert config["parquet_compression"] == settings.parquet_compression
-    assert config["retain_debug_crops"] is False
-    assert profile.detection_policy.image_max_side_px == 1280
-    assert profile.detection_policy.box_score_threshold == 0.20
-    assert profile.detection_policy.nms_iou_threshold == 0.50
-    assert profile.detection_policy.max_boxes_per_image == 8
-    assert profile.detection_policy.routing_policy.possible_adult_route_enabled is True
-    assert profile.detection_policy.routing_policy.possible_adult_route_threshold == 0.20
-    assert profile.detection_policy.routing_policy.ambiguous_insect_review_enabled is False
-    assert profile.detection_policy.routing_policy.ambiguous_insect_review_threshold == 0.20
-    assert profile.detection_policy.crop_padding_ratio == 0.08
-    assert profile.detection_policy.crop_target_px == 336
-    assert profile.detection_policy.retain_debug_crops is False
-    assert profile.run_policy.download_workers == 4
-    assert profile.run_policy.decode_workers == 4
-    assert profile.run_policy.detector_workers == 1
-    assert profile.bioclip_workers == 1
-    assert profile.run_policy.max_inflight_images == 32
-    assert profile.run_policy.max_inflight_crops == 96
-    assert profile.run_policy.detector_batch_size == 16
-    assert profile.run_policy.crop_batch_size == 24
-    assert profile.text_embedding_batch_size == 256
-    assert profile.worker_shard_target_mb == 64
-    assert profile.compacted_shard_target_mb == 256
 
 
 def test_detection_rows_keep_join_keys_and_stable_detection_id() -> None:
@@ -592,37 +404,6 @@ def test_detection_rows_nms_preserves_review_over_overlapping_exclusion() -> Non
     assert capped_rows[0]["routing_action"] == "review"
 
 
-def test_cropper_clamps_edge_bbox_adds_padding_and_hashes_deterministically() -> None:
-    crop = crop_with_padding(_image(), bbox_xyxy=(-1.0, -1.0, 2.0, 2.0), padding_ratio=0.25, target_px=3)
-    same = crop_with_padding(_image(), bbox_xyxy=(-1.0, -1.0, 2.0, 2.0), padding_ratio=0.25, target_px=3)
-
-    assert crop.crop_width == 3
-    assert crop.crop_height == 3
-    assert crop.clamped_bbox_xyxy == [0.0, 0.0, 2.0, 2.0]
-    assert crop.padded_bbox_xyxy == [0.0, 0.0, 2.75, 2.75]
-    assert crop.crop_hash == same.crop_hash
-    assert crop.storage_policy == "ephemeral"
-    assert len(crop.encoded_bytes) == 3 * 3 * 3
-
-
-def test_cropper_preserves_aspect_ratio_with_letterbox_padding() -> None:
-    crop = crop_with_padding(_wide_white_image(), bbox_xyxy=(0.0, 0.0, 4.0, 2.0), padding_ratio=0.0, target_px=4)
-    rows = [crop.encoded_bytes[index * 4 * 3 : (index + 1) * 4 * 3] for index in range(4)]
-
-    assert rows[0] == bytes([0, 0, 0] * 4)
-    assert rows[1] == bytes([255, 255, 255] * 4)
-    assert rows[2] == bytes([255, 255, 255] * 4)
-    assert rows[3] == bytes([0, 0, 0] * 4)
-
-
-def test_cropper_uses_lanczos_resize_when_pillow_is_available() -> None:
-    pytest.importorskip("PIL.Image")
-
-    crop = crop_with_padding(_checker_image(), bbox_xyxy=(0.0, 0.0, 4.0, 4.0), padding_ratio=0.0, target_px=2)
-
-    assert any(0 < value < 255 for value in crop.encoded_bytes)
-
-
 def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
     detector = FakeObjectDetector(
         detections=[
@@ -834,193 +615,6 @@ def test_yoloe26_sidecar_worker_missing_image_path_fails_clearly(tmp_path) -> No
         )
 
 
-def test_detection_pipeline_writes_ephemeral_crop_metadata_for_each_detection(tmp_path) -> None:
-    output = tmp_path / "object_detections.parquet"
-    records = [
-        {
-            "source": "flickr",
-            "flickr_photo_id": "photo-1",
-            "source_record_hash": "sha256:source-1",
-            "image_url": "memory://photo-1",
-            "photo_page_url": "https://www.flickr.com/photos/u/photo-1",
-        }
-    ]
-    detector = FakeObjectDetector(
-        [
-            [
-                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3), detector_prompt="butterfly"),
-                DetectionCandidate(label="butterfly", score=0.8, bbox_xyxy=(1, 1, 4, 4), detector_prompt="butterfly"),
-            ]
-        ]
-    )
-
-    result = run_detection_pipeline(
-        records=records,
-        detector=detector,
-        output_path=output,
-        image_loader=lambda record: _image(),
-        detection_policy=DetectionPolicy(backend="fake", crop_padding_ratio=0.25, crop_target_px=3),
-    )
-
-    rows = result.frame.sort("detector_score", descending=True).to_dicts()
-    assert output.exists()
-    assert result.records_seen == 1
-    assert result.images_loaded == 1
-    assert result.detections_written == 2
-    assert result.crops_created == 2
-    assert all(row["source"] == "flickr" and row["flickr_photo_id"] == "photo-1" for row in rows)
-    assert all(row["crop_hash"].startswith("sha256:") for row in rows)
-    assert all(row["crop_width"] == 3 and row["crop_height"] == 3 for row in rows)
-    assert all(row["crop_padding_ratio"] == 0.25 for row in rows)
-    assert all(row["crop_storage_policy"] == "ephemeral" for row in rows)
-    assert "encoded_bytes" not in result.frame.columns
-    assert len({row["detection_id"] for row in rows}) == 2
-    assert len({row["crop_hash"] for row in rows}) == 2
-
-
-def test_detection_pipeline_target_mode_skips_all_crop_production(tmp_path, monkeypatch) -> None:
-    def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 - sentinel replacement.
-        raise AssertionError("target-aware detection must not call crop_with_padding")
-
-    monkeypatch.setattr("biominer.detection.pipeline.crop_with_padding", fail_if_called)
-    output = tmp_path / "target_object_detections.parquet"
-    detector = FakeObjectDetector(
-        [[DetectionCandidate(label="adult_butterfly", score=0.9, bbox_xyxy=(0, 0, 3, 3), detector_prompt="butterfly")]]
-    )
-
-    result = run_detection_pipeline(
-        records=[
-            {
-                "source": "flickr",
-                "flickr_photo_id": "target-photo",
-                "image_url": "memory://target-photo",
-            }
-        ],
-        detector=detector,
-        output_path=output,
-        image_loader=lambda _record: _image(),
-        detection_policy=DetectionPolicy(
-            backend="fake",
-            min_box_area_ratio=0.0,
-            retain_debug_crops=True,
-        ),
-        run_policy=DetectionRunPolicy(create_crop_metadata=False),
-    )
-
-    row = result.frame.to_dicts()[0]
-    assert result.crops_created == 0
-    assert row["routing_action"] == "score"
-    assert row["crop_hash"] is None
-    assert row["crop_width"] is None
-    assert row["crop_height"] is None
-    assert row["crop_storage_policy"] == "not_created"
-    assert not (tmp_path / "target_object_detections_debug_crops").exists()
-
-
-def test_detection_pipeline_skips_crop_metadata_for_non_bioclip_eligible_detections(tmp_path) -> None:
-    output = tmp_path / "object_detections.parquet"
-    detector = FakeObjectDetector(
-        [
-            [
-                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2), detector_prompt="butterfly"),
-                DetectionCandidate(label="moth_like", score=0.8, bbox_xyxy=(2, 0, 4, 2), detector_prompt="moth"),
-                DetectionCandidate(label="hard_negative", score=0.7, bbox_xyxy=(0, 2, 2, 4), detector_prompt="drawing"),
-            ]
-        ]
-    )
-
-    result = run_detection_pipeline(
-        records=[{"source": "flickr", "flickr_photo_id": "photo-mixed", "image_url": "memory://photo-mixed"}],
-        detector=detector,
-        output_path=output,
-        image_loader=lambda record: _image(),
-        detection_policy=DetectionPolicy(
-            backend="fake",
-            crop_target_px=3,
-            min_box_area_ratio=0.0,
-        ),
-        run_policy=DetectionRunPolicy(decode_workers=1),
-    )
-
-    by_label = {row["detector_label"]: row for row in result.frame.to_dicts()}
-
-    assert result.detections_written == 3
-    assert result.crops_created == 1
-    assert by_label["butterfly_like"]["crop_hash"].startswith("sha256:")
-    assert by_label["butterfly_like"]["crop_storage_policy"] == "ephemeral"
-    assert by_label["moth_like"]["crop_hash"] is None
-    assert by_label["moth_like"]["crop_storage_policy"] == "not_created"
-    assert by_label["hard_negative"]["crop_hash"] is None
-    assert by_label["hard_negative"]["crop_storage_policy"] == "not_created"
-
-
-def test_detection_pipeline_debug_crop_retention_can_materialize_noneligible_crops(tmp_path) -> None:
-    output = tmp_path / "object_detections.parquet"
-    detector = FakeObjectDetector(
-        [
-            [
-                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2)),
-                DetectionCandidate(label="moth_like", score=0.8, bbox_xyxy=(2, 0, 4, 2)),
-            ]
-        ]
-    )
-
-    result = run_detection_pipeline(
-        records=[{"source": "flickr", "flickr_photo_id": "photo-debug-noneligible", "image_url": "memory://photo-debug"}],
-        detector=detector,
-        output_path=output,
-        image_loader=lambda record: _image(),
-        detection_policy=DetectionPolicy(
-            backend="fake",
-            crop_target_px=3,
-            min_box_area_ratio=0.0,
-            retain_debug_crops=True,
-            debug_crop_limit=10,
-        ),
-        run_policy=DetectionRunPolicy(decode_workers=1),
-    )
-
-    rows = result.frame.sort("detector_score", descending=True).to_dicts()
-
-    assert result.crops_created == 2
-    assert [row["crop_storage_policy"] for row in rows] == ["debug_retained", "debug_retained"]
-    assert len(list((tmp_path / "object_detections_debug_crops").glob("*.ppm"))) == 2
-
-
-def test_detection_pipeline_retains_debug_crops_only_when_enabled_and_limited(tmp_path) -> None:
-    output = tmp_path / "object_detections.parquet"
-    detector = FakeObjectDetector(
-        [
-            [
-                DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2)),
-                DetectionCandidate(label="butterfly", score=0.8, bbox_xyxy=(2, 2, 4, 4)),
-            ]
-        ]
-    )
-
-    result = run_detection_pipeline(
-        records=[{"source": "flickr", "flickr_photo_id": "photo-debug", "image_url": "memory://photo-debug"}],
-        detector=detector,
-        output_path=output,
-        image_loader=lambda record: _image(),
-        detection_policy=DetectionPolicy(
-            backend="fake",
-            crop_target_px=3,
-            min_box_area_ratio=0.0,
-            retain_debug_crops=True,
-            debug_crop_limit=1,
-        ),
-        run_policy=DetectionRunPolicy(decode_workers=1),
-    )
-
-    rows = result.frame.sort("detector_score", descending=True).to_dicts()
-    debug_dir = tmp_path / "object_detections_debug_crops"
-    retained = sorted(debug_dir.glob("*.ppm"))
-    assert len(retained) == 1
-    assert retained[0].read_bytes().startswith(b"P6\n3 3\n255\n")
-    assert [row["crop_storage_policy"] for row in rows] == ["debug_retained", "ephemeral"]
-
-
 def test_detection_pipeline_resizes_loaded_images_before_detection(tmp_path) -> None:
     seen_dimensions: list[tuple[int, int]] = []
 
@@ -1039,7 +633,9 @@ def test_detection_pipeline_resizes_loaded_images_before_detection(tmp_path) -> 
         detector=RecordingDetector(),
         output_path=tmp_path / "object_detections.parquet",
         image_loader=lambda record: _wide_white_image(),
-        detection_policy=DetectionPolicy(backend="fake", image_max_side_px=2, crop_target_px=2, min_box_area_ratio=0.0),
+        detection_policy=DetectionPolicy(
+            backend="fake", image_max_side_px=2, min_box_area_ratio=0.0
+        ),
         run_policy=DetectionRunPolicy(detector_batch_size=1),
     )
 
@@ -1075,57 +671,11 @@ def test_detection_pipeline_uses_bounded_map_buffersize(tmp_path) -> None:
         detector=FakeObjectDetector([[DetectionCandidate(label="butterfly", score=0.9, bbox_xyxy=(0, 0, 2, 2))], []]),
         output_path=tmp_path / "object_detections.parquet",
         image_loader=lambda record: _image(),
-        run_policy=DetectionRunPolicy(download_workers=2, max_inflight_images=7, max_inflight_crops=11),
+        run_policy=DetectionRunPolicy(download_workers=2, max_inflight_images=7),
         executor_factory=RecordingExecutor,
     )
 
-    assert calls == [7, 11]
-
-
-def test_detection_pipeline_batches_crop_enrichment_with_bounded_buffersize(tmp_path) -> None:
-    calls: list[tuple[int, int | None]] = []
-
-    class RecordingExecutor:
-        def __init__(self, max_workers):  # noqa: ANN001 - mirrors executor constructor.
-            self.max_workers = max_workers
-
-        def __enter__(self):  # noqa: ANN204 - mirrors executor context manager.
-            return self
-
-        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001, ANN204 - mirrors executor context manager.
-            return None
-
-        def map(self, fn, iterable, *, buffersize=None):  # noqa: ANN001, ANN202 - mirrors Executor.map.
-            items = list(iterable)
-            calls.append((len(items), buffersize))
-            return [fn(item) for item in items]
-
-    run_detection_pipeline(
-        records=[{"source": "flickr", "flickr_photo_id": "photo-1", "image_url": "memory://photo-1"}],
-        detector=FakeObjectDetector(
-            [
-                [
-                    DetectionCandidate(label="butterfly", score=0.95, bbox_xyxy=(0, 0, 1, 1)),
-                    DetectionCandidate(label="life_stage", score=0.90, bbox_xyxy=(1, 0, 2, 1)),
-                    DetectionCandidate(label="butterfly", score=0.85, bbox_xyxy=(2, 0, 3, 1)),
-                ]
-            ]
-        ),
-        output_path=tmp_path / "object_detections.parquet",
-        image_loader=lambda record: _image(),
-        detection_policy=DetectionPolicy(backend="fake", min_box_area_ratio=0.0),
-        run_policy=DetectionRunPolicy(
-            download_workers=1,
-            max_inflight_images=5,
-            decode_workers=2,
-            max_inflight_crops=11,
-            detector_batch_size=1,
-            crop_batch_size=2,
-        ),
-        executor_factory=RecordingExecutor,
-    )
-
-    assert calls == [(1, 5), (2, 11), (1, 11)]
+    assert calls == [7]
 
 
 def test_detection_pipeline_image_load_failures_use_stable_detection_id(tmp_path) -> None:

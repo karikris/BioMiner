@@ -77,12 +77,12 @@ def build_australia_presence(
             "INSERT OR IGNORE INTO gbif_australia_presence(accepted_taxon_key, scientific_name, status) VALUES (?, ?, 'pending')",
             [(row["accepted_taxon_key"], row["scientific_name"]) for row in species.to_dicts()],
         )
-        # A terminated legacy worker leaves rows claimed. Its completed counts are
+        # A terminated worker leaves rows claimed. Its completed counts are
         # durable; every other result is safe to retry from this single dispatcher.
         conn.execute("UPDATE gbif_australia_presence SET status = 'pending' WHERE status = 'claimed'")
         conn.execute(
             """UPDATE gbif_australia_presence
-               SET status = 'retry_wait', next_attempt_at = ?, last_error_class = COALESCE(last_error_class, 'legacy_retryable')
+               SET status = 'retry_wait', next_attempt_at = ?, last_error_class = COALESCE(last_error_class, 'recovered_retryable')
                WHERE status = 'failed' AND last_error_class IS NULL""",
             (datetime.now(UTC).isoformat(),),
         )

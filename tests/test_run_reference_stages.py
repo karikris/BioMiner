@@ -6,7 +6,6 @@ import pytest
 
 from biominer.run import (
     MANUAL_REVIEW_STAGES,
-    REFERENCE_FIRST_PRODUCTION_STAGES,
     ProductionRunOrchestrator,
     ProductionRunRequest,
     RunManifest,
@@ -19,33 +18,9 @@ from biominer.run.stages import default_stage_records
 from biominer.species.context import SpeciesContext
 
 
-def test_reference_first_production_stages_are_explicit_and_ordered() -> None:
-    assert tuple(stage.value for stage in REFERENCE_FIRST_PRODUCTION_STAGES) == (
-        "resolve_taxon_scope",
-        "build_registry",
-        "geographic_spread",
-        "compile_queries",
-        "enqueue_flickr_work",
-        "poll_flickr",
-        "flickr_geo_clustering",
-        "regional_candidate_generation",
-        "reference_metadata",
-        "reference_media",
-        "reference_review",
-        "reference_embeddings",
-        "reference_prototypes",
-        "classifier_training",
-        "classifier_calibration",
-        "reference_readiness",
-        "flickr_detection",
-        "flickr_embedding",
-        "target_aware_scoring",
-        "evidence",
-        "evaluation",
-    )
+def test_manual_review_stages_are_explicit() -> None:
     assert MANUAL_REVIEW_STAGES == frozenset(
         {
-            RunStage.REFERENCE_REVIEW,
             RunStage.FLICKR_HUMAN_VERIFICATION,
             RunStage.TARGETED_REFERENCE_REVIEW,
         }
@@ -53,20 +28,23 @@ def test_reference_first_production_stages_are_explicit_and_ordered() -> None:
 
 
 def test_manual_review_completion_requires_an_audited_approval() -> None:
-    manifest = _manifest((RunStage.REFERENCE_REVIEW,))
+    manifest = _manifest((RunStage.FLICKR_HUMAN_VERIFICATION,))
 
     with pytest.raises(
         ValueError, match="manual-review stage cannot be completed automatically"
     ):
-        manifest.with_stage_status(RunStage.REFERENCE_REVIEW, StageStatus.COMPLETE)
+        manifest.with_stage_status(
+            RunStage.FLICKR_HUMAN_VERIFICATION,
+            StageStatus.COMPLETE,
+        )
 
     waiting = manifest.with_stage_status(
-        RunStage.REFERENCE_REVIEW,
+        RunStage.FLICKR_HUMAN_VERIFICATION,
         StageStatus.AWAITING_MANUAL_REVIEW,
         message="reference_review_required",
     )
     approved = waiting.with_manual_review_approval(
-        RunStage.REFERENCE_REVIEW,
+        RunStage.FLICKR_HUMAN_VERIFICATION,
         reviewer="curator@example.org",
         approved_at="2026-07-14T01:02:03Z",
         message="reviewed_reference_set_accepted",
@@ -95,65 +73,22 @@ def test_every_manual_stage_rejects_automatic_completion(stage: RunStage) -> Non
 
 
 def test_manual_review_approval_rejects_invalid_transition() -> None:
-    manifest = _manifest((RunStage.REFERENCE_REVIEW,))
+    manifest = _manifest((RunStage.FLICKR_HUMAN_VERIFICATION,))
 
     with pytest.raises(ValueError, match="must be awaiting manual review"):
         manifest.with_manual_review_approval(
-            RunStage.REFERENCE_REVIEW,
+            RunStage.FLICKR_HUMAN_VERIFICATION,
             reviewer="curator@example.org",
         )
     waiting = manifest.with_stage_status(
-        RunStage.REFERENCE_REVIEW,
+        RunStage.FLICKR_HUMAN_VERIFICATION,
         StageStatus.AWAITING_MANUAL_REVIEW,
     )
     with pytest.raises(ValueError, match="reviewer must be non-empty"):
-        waiting.with_manual_review_approval(RunStage.REFERENCE_REVIEW, reviewer="  ")
-
-
-def test_orchestrator_pauses_at_manual_review_without_completing_it(
-    tmp_path: Path,
-) -> None:
-    called: list[RunStage] = []
-
-    def complete(stage: RunStage) -> object:
-        def handler(_plan: object) -> StageExecutionResult:
-            called.append(stage)
-            return StageExecutionResult(outputs={"artifact": f"{stage.value}.parquet"})
-
-        return handler
-
-    stages = (
-        RunStage.REFERENCE_METADATA,
-        RunStage.REFERENCE_REVIEW,
-        RunStage.REFERENCE_EMBEDDINGS,
-    )
-    request = ProductionRunRequest(
-        taxon="Papilio demoleus",
-        rank="species",
-        output_root=tmp_path,
-        run_id="manual-review-pause",
-        stages=stages,
-    )
-    result = ProductionRunOrchestrator(
-        request,
-        taxon_scope=_taxon_scope(),
-        stage_handlers={stage: complete(stage) for stage in stages},
-    ).run()
-
-    records = {record.stage: record for record in result.manifest.stages}
-    assert called == [RunStage.REFERENCE_METADATA, RunStage.REFERENCE_REVIEW]
-    assert result.manifest.status == StageStatus.AWAITING_MANUAL_REVIEW.value
-    assert result.manifest.ended_at is None
-    assert records[RunStage.REFERENCE_METADATA].status is StageStatus.COMPLETE
-    assert (
-        records[RunStage.REFERENCE_REVIEW].status is StageStatus.AWAITING_MANUAL_REVIEW
-    )
-    assert records[RunStage.REFERENCE_REVIEW].message == "manual_review_required"
-    assert records[RunStage.REFERENCE_REVIEW].outputs == {
-        "artifact": "reference_review.parquet"
-    }
-    assert records[RunStage.REFERENCE_REVIEW].ended_at is None
-    assert records[RunStage.REFERENCE_EMBEDDINGS].status is StageStatus.PENDING
+        waiting.with_manual_review_approval(
+            RunStage.FLICKR_HUMAN_VERIFICATION,
+            reviewer="  ",
+        )
 
 
 def test_dynamic_workflow_stops_before_risk_audit_for_human_review(

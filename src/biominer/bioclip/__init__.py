@@ -1,1 +1,1 @@
-"""BioCLIP 2.5 classification, register staging, and bucket assignment."""
+"""BioCLIP embeddings, reference evidence, and adaptive scoring."""

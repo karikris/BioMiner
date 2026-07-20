@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from biominer.cli import _parse_run_stages, build_parser
 from biominer.run import ADAPTIVE_REFERENCE_PRODUCTION_STAGES, ProductionRunRequest
 from biominer.run.adaptive_config import REFERENCE_ADMISSION_MODES
@@ -20,15 +22,28 @@ def _required_run_args() -> list[str]:
 def test_production_cli_defaults_to_adaptive_gbif_references() -> None:
     args = build_parser().parse_args(_required_run_args())
 
-    assert args.workflow == "adaptive"
     assert args.reference_admission_mode == "adaptive_gbif_fast_start"
     assert args.reference_source == "gbif"
     assert args.initial_scoring_mode == "provisional_reference_ranking"
     assert args.flickr_release_requires_human_review is True
     assert args.statistical_reference_audit is True
-    assert _parse_run_stages(None, workflow=args.workflow) == (
-        ADAPTIVE_REFERENCE_PRODUCTION_STAGES
-    )
+    assert _parse_run_stages(None) == ADAPTIVE_REFERENCE_PRODUCTION_STAGES
+
+
+@pytest.mark.parametrize(
+    "removed_args",
+    (
+        ("--workflow", "legacy"),
+        ("--workflow", "reference-first"),
+        ("--classification-mode", "build-week-prototype"),
+        ("--classification-config", "prototype.json"),
+    ),
+)
+def test_production_cli_rejects_removed_alternate_workflows(
+    removed_args: tuple[str, str],
+) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([*_required_run_args(), *removed_args])
 
 
 def test_production_request_records_the_same_safe_defaults() -> None:

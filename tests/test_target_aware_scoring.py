@@ -6,10 +6,8 @@ from dataclasses import replace
 import pytest
 
 from biominer.bioclip.candidate_sets import CandidateSet, CandidateTaxon
-from biominer.bioclip.classification_modes import (
-    BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
-)
 from biominer.bioclip.target_aware_scoring import (
+    TARGET_AWARE_CLASSIFICATION_MODE,
     TARGET_AWARE_CANDIDATE_POLICY_VERSION,
     TargetAwareAuxiliaryClass,
     TargetAwareScoringPlan,
@@ -125,6 +123,8 @@ def test_regression_wrong_family_text_top_one_does_not_remove_target() -> None:
     result = score_target_aware_candidate_union(plan, scorer)
 
     assert scorer.plan is plan
+    assert plan.classification_mode == TARGET_AWARE_CLASSIFICATION_MODE
+    assert result.classification_mode == TARGET_AWARE_CLASSIFICATION_MODE
     assert plan.candidate_policy_version == TARGET_AWARE_CANDIDATE_POLICY_VERSION
     assert len(plan.species_classes) == 25
     assert {item.accepted_taxon_key for item in result.species_scores} == {
@@ -152,23 +152,6 @@ def test_regression_wrong_family_text_top_one_does_not_remove_target() -> None:
     assert result.hierarchy_rankings_diagnostic_only is True
 
 
-def test_build_week_prototype_preserves_complete_set_scoring_identity() -> None:
-    plan = build_target_aware_scoring_plan(
-        _regional_candidate_set(candidate_count=3),
-        known_negative_classes=_known_negatives(),
-        visual_domain_classes=_visual_domains(),
-        classification_mode=BUILD_WEEK_TARGET_AWARE_PROTOTYPE,
-    )
-
-    result = score_target_aware_candidate_union(plan, _RecordingScorer())
-
-    assert plan.classification_mode == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
-    assert result.classification_mode == BUILD_WEEK_TARGET_AWARE_PROTOTYPE
-    assert len(result.species_scores) == 3
-    assert any(item.target_candidate for item in result.species_scores)
-    assert result.hierarchy_pruning_applied is False
-
-
 def test_target_aware_scoring_rejects_any_missing_candidate_score() -> None:
     plan = build_target_aware_scoring_plan(
         _regional_candidate_set(candidate_count=3),
@@ -186,28 +169,6 @@ def test_target_aware_scoring_rejects_any_missing_candidate_score() -> None:
 
     with pytest.raises(ValueError, match=r"missing scores.*species:gbif:1938069"):
         score_target_aware_candidate_union(plan, MissingTargetScorer())
-
-
-def test_target_aware_scoring_never_calls_the_legacy_guardrail(monkeypatch) -> None:
-    from biominer.bioclip import path_cascade_classifier
-
-    def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-        raise AssertionError(f"legacy guardrail called with {args!r}, {kwargs!r}")
-
-    monkeypatch.setattr(
-        path_cascade_classifier,
-        "_guardrail_confidence",
-        fail_if_called,
-    )
-    plan = build_target_aware_scoring_plan(
-        _regional_candidate_set(candidate_count=3),
-        known_negative_classes=_known_negatives(),
-        visual_domain_classes=_visual_domains(),
-    )
-
-    result = score_target_aware_candidate_union(plan, _RecordingScorer())
-
-    assert len(result.species_scores) == 3
 
 
 def test_target_aware_plan_requires_versioned_regional_union_identity() -> None:

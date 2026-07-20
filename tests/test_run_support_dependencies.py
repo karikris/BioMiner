@@ -182,7 +182,7 @@ def test_provisional_nonparametric_mode_does_not_require_trained_artifacts(
     )
 
     result = validate_support_readiness_dependencies(
-        stage=RunStage.TARGET_AWARE_SCORING,
+        stage=RunStage.DYNAMIC_POOL_SCORING,
         regional_candidates=tmp_path / "regional_candidate_species.parquet",
         reference_bank_readiness=tmp_path / "readiness",
         reference_bank_readiness_sha256=permit.readiness_sha256,
@@ -205,7 +205,7 @@ def test_provisional_nonparametric_mode_does_not_require_trained_artifacts(
 def test_support_dependency_validation_reports_all_missing_configuration() -> None:
     with pytest.raises(SupportDependencyError) as captured:
         validate_support_readiness_dependencies(
-            stage=RunStage.TARGET_AWARE_SCORING,
+            stage=RunStage.DYNAMIC_POOL_SCORING,
             regional_candidates=None,
             reference_bank_readiness=None,
             reference_bank_readiness_sha256=None,
@@ -218,12 +218,17 @@ def test_support_dependency_validation_reports_all_missing_configuration() -> No
         )
 
     message = str(captured.value)
-    assert "cannot start target_aware_scoring" in message
+    assert "cannot start dynamic_pool_scoring" in message
     assert "regional candidates are not configured" in message
     assert "reference readiness is not configured" in message
     assert "reference embeddings are not configured" in message
     assert "classifier artifact is not configured" in message
     assert "calibrator artifact is not configured" in message
+    assert "biominer references build-regional-competitor-evidence" in message
+    assert "biominer references readiness" in message
+    assert "biominer references build-support-embeddings" in message
+    assert "biominer references train-classifier" in message
+    assert "biominer references calibrate-classifier" in message
 
 
 def test_support_dependency_validation_requires_readiness_digest_pin(
@@ -370,7 +375,10 @@ def test_orchestrator_refuses_support_dependent_stage_before_handler(
         assert kwargs["stage"] is RunStage.FLICKR_DETECTION
         raise SupportDependencyError(
             RunStage.FLICKR_DETECTION,
-            ("regional candidates are missing; run regional_candidate_generation",),
+            (
+                "regional candidates are missing; run 'biominer references "
+                "build-regional-competitor-evidence'",
+            ),
         )
 
     def handler(_plan: object) -> StageExecutionResult:
@@ -385,7 +393,10 @@ def test_orchestrator_refuses_support_dependent_stage_before_handler(
     )
     request = _request(tmp_path, stages=(RunStage.FLICKR_DETECTION,))
 
-    with pytest.raises(SupportDependencyError, match="run regional_candidate_generation"):
+    with pytest.raises(
+        SupportDependencyError,
+        match="biominer references build-regional-competitor-evidence",
+    ):
         ProductionRunOrchestrator(
             request,
             taxon_scope=_taxon_scope(),
@@ -429,7 +440,7 @@ def test_orchestrator_reuses_one_dependency_preflight_for_scoring_stages(
     stages = (
         RunStage.FLICKR_DETECTION,
         RunStage.FLICKR_EMBEDDING,
-        RunStage.TARGET_AWARE_SCORING,
+        RunStage.DYNAMIC_POOL_SCORING,
     )
     result = ProductionRunOrchestrator(
         _request(tmp_path, stages=stages),

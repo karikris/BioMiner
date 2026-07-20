@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 import re
 from typing import Any, Protocol
@@ -11,7 +11,6 @@ from biominer.detection.detector_base import (
     DecodedImage,
     normalize_mask_polygon_xyn,
 )
-from biominer.detection.policy import DetectionRunPolicy
 from biominer.detection.schema import DETECTION_SCHEMA_VERSION
 from biominer.vision.bioclip_input_contract import (
     TARGET_AWARE_VISUAL_MODE,
@@ -174,14 +173,6 @@ class EmbeddedTargetFullFramePlan:
     embeddings: tuple[RawFullFrameEmbedding, ...]
     scoring_unit_references: tuple[ScoringUnitEmbeddingReference, ...]
     image_batch_metrics: MemoryAwareImageBatchMetrics | None = None
-
-
-def target_full_frame_detection_run_policy(
-    base: DetectionRunPolicy | None = None,
-) -> DetectionRunPolicy:
-    """Bind target full-frame detection to the no-crop-metadata policy."""
-
-    return replace(base or DetectionRunPolicy(), create_crop_metadata=False)
 
 
 def build_target_full_frame_plan(
@@ -1112,5 +1103,4 @@ __all__ = [
     "encode_target_full_frame_plan",
     "full_frame_embedding_id",
     "generate_target_full_frame_attention_variants",
-    "target_full_frame_detection_run_policy",
 ]

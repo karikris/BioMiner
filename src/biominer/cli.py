@@ -5,59 +5,21 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 import hashlib
-from html import escape
-import io
 import json
 import logging
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
-import sys
 from typing import Any
 
 import polars as pl
 
-from biominer.bioclip.classification_modes import (
-    DEFAULT_CLASSIFICATION_MODE,
-    DEFAULT_RANK_BEAM_WIDTH,
-    DEFAULT_SPECIES_FIRST_PASS_TOP_K,
-    DEFAULT_SPECIES_RERANK_TOP_K,
-    HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    SUPPORTED_CLASSIFICATION_MODES,
-    is_build_week_prototype_classification,
-    normalize_classification_mode,
-)
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
-from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
-from biominer.bioclip.object_runner import (
-    write_object_evidence_outputs,
-)
-from biominer.benchmarks.path_cascade import run_path_cascade_benchmark
-from biominer.benchmarks.vision_live import (
-    LiveM5ProBenchmarkRequest,
-    run_live_m5pro_benchmark,
-    validate_live_m5pro_benchmark_request,
-)
-from biominer.benchmarks.vision_plumbing import run_rolling_worker_benchmark_matrix, run_vision_plumbing_benchmark
 from biominer.detection.evaluate import evaluate_xie_style
-from biominer.detection.policy import (
-    VisionRuntimeSettings,
-    vision_runtime_settings,
-)
-from biominer.evaluation.labels import (
-    normalize_reviewed_label_frame,
-    read_reviewed_labels,
-    validate_reviewed_label_frame,
-)
-from biominer.evaluation.review_queue import build_hierarchical_review_queue
-from biominer.evaluation.reports import write_evaluation_report, write_evaluation_report_to_storage
 from biominer.evaluation.sampling import (
     EvaluationSamplingConfig,
     materialize_evaluation_sampling_frame,
 )
-from biominer.evaluation.xie_style import EVALUATION_PROFILE as XIE_STYLE_EVALUATION_PROFILE
-from biominer.evaluation.xie_style import evaluate_xie_style_hierarchical
 from biominer.flickr_fetch.query_planner import load_registry_flickr_queries
 from biominer.flickr_fetch.australia import (
     AUSTRALIA_FLICKR_BBOX,
@@ -73,6 +35,7 @@ from biominer.registry.col_xr import extract_col_xr_snapshot
 from biominer.registry.enrichment import DEFAULT_ENRICHMENT_SOURCES, INATURALIST_DAILY_REQUEST_LIMIT, build_enrichment_sources_from_registry, compile_enriched_registry
 from biominer.registry.gbif import GBIFClient
 from biominer.registry.gbif_source import build_gbif_source_snapshot
+from biominer.registry.gbif_occurrence_source import build_gbif_source_snapshot_from_occurrence_archive
 from biominer.registry.hierarchy_enrichment import (
     harvest_gbif_genus_evidence,
     harvest_open_tree_genus_evidence,
@@ -116,7 +79,6 @@ from biominer.reference_workflow_cli import (
 from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
 from biominer.run import (
     ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
-    REFERENCE_FIRST_PRODUCTION_STAGES,
     ProductionRunOrchestrator,
     ProductionRunRequest,
     RunStage,
@@ -127,21 +89,16 @@ from biominer.run.adaptive_config import (
     DEFAULT_REFERENCE_SOURCE,
     REFERENCE_ADMISSION_MODES,
 )
-from biominer.run.stages import DEFAULT_PRODUCTION_STAGES
 from biominer.secrets_loader import load_runtime_secrets_env
-from biominer.species.context import SpeciesContext
 from biominer.config import ConfigError, create_storage_backend, create_workstore, load_biominer_config, redact_config, redact_text, validate_config
 from biominer.storage.handoff import (
     build_handoff_bundle,
     receive_handoff_bundle,
     upload_handoff_bundle,
 )
-from biominer.storage.parquet import write_parquet
-from biominer.storage.uri import is_cloud_uri, join_uri, normalize_local_uri
+from biominer.storage.uri import is_cloud_uri, join_uri
 
 
-STANDARD_EVALUATION_PROFILE = "standard"
-XIE_STYLE_METRICS_FILE = "xie_style_metrics.json"
 BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
 BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
 BIOCLIP_OPENCLIP_VERSION = "3.3.0"
@@ -189,25 +146,27 @@ RUN_STAGE_ALIASES = {
     "regional_candidate_generation": RunStage.REGIONAL_CANDIDATE_GENERATION,
     "reference_metadata": RunStage.REFERENCE_METADATA,
     "reference_media": RunStage.REFERENCE_MEDIA,
-    "reference_review": RunStage.REFERENCE_REVIEW,
     "reference_embeddings": RunStage.REFERENCE_EMBEDDINGS,
     "reference_prototypes": RunStage.REFERENCE_PROTOTYPES,
-    "classifier_training": RunStage.CLASSIFIER_TRAINING,
-    "classifier_calibration": RunStage.CLASSIFIER_CALIBRATION,
-    "reference_readiness": RunStage.REFERENCE_READINESS,
     "flickr_detection": RunStage.FLICKR_DETECTION,
     "flickr_embedding": RunStage.FLICKR_EMBEDDING,
-    "target_aware_scoring": RunStage.TARGET_AWARE_SCORING,
-    "evidence": RunStage.EVIDENCE,
-    "evaluation": RunStage.EVALUATION,
-    "detect": RunStage.DETECT_OBJECTS,
-    "detect_objects": RunStage.DETECT_OBJECTS,
-    "score": RunStage.SCORE_BIOCLIP,
-    "score_bioclip": RunStage.SCORE_BIOCLIP,
-    "join": RunStage.JOIN_EVIDENCE,
-    "join_evidence": RunStage.JOIN_EVIDENCE,
-    "summarize": RunStage.SUMMARIZE,
-    "summary": RunStage.SUMMARIZE,
+    "reference_deduplication": RunStage.REFERENCE_DEDUPLICATION,
+    "reference_quality_routing": RunStage.REFERENCE_QUALITY_ROUTING,
+    "reference_admission": RunStage.REFERENCE_ADMISSION,
+    "reference_geography_index": RunStage.REFERENCE_GEOGRAPHY_INDEX,
+    "flickr_geo_taxon_partitioning": RunStage.FLICKR_GEO_TAXON_PARTITIONING,
+    "family_routing": RunStage.FAMILY_ROUTING,
+    "dynamic_pool_planning": RunStage.DYNAMIC_POOL_PLANNING,
+    "dynamic_pool_scoring": RunStage.DYNAMIC_POOL_SCORING,
+    "provisional_flickr_scoring": RunStage.PROVISIONAL_FLICKR_SCORING,
+    "review_sample_planning": RunStage.REVIEW_SAMPLE_PLANNING,
+    "flickr_human_verification": RunStage.FLICKR_HUMAN_VERIFICATION,
+    "risk_controlled_audit": RunStage.RISK_CONTROLLED_AUDIT,
+    "statistical_reference_audit": RunStage.STATISTICAL_REFERENCE_AUDIT,
+    "targeted_reference_review": RunStage.TARGETED_REFERENCE_REVIEW,
+    "affected_reference_rebuild": RunStage.AFFECTED_REFERENCE_REBUILD,
+    "affected_record_rescore": RunStage.AFFECTED_RECORD_RESCORE,
+    "final_quality_gate": RunStage.FINAL_QUALITY_GATE,
 }
 
 
@@ -216,32 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    evidence = subparsers.add_parser("evidence")
-    evidence_subparsers = evidence.add_subparsers(dest="evidence_command")
-    evidence_join = evidence_subparsers.add_parser("join")
-    _add_object_evidence_join_args(evidence_join)
-    evidence_join.add_argument("--species-context")
     evaluation = subparsers.add_parser("evaluation")
     evaluation_subparsers = evaluation.add_subparsers(dest="evaluation_command")
-    evaluation_classify = evaluation_subparsers.add_parser("classify")
-    evaluation_input = evaluation_classify.add_mutually_exclusive_group(required=True)
-    evaluation_input.add_argument("--object-scores")
-    evaluation_input.add_argument("--object-evidence")
-    evaluation_classify.add_argument("--reviewed-labels", required=True)
-    evaluation_classify.add_argument("--output-dir", required=True)
-    evaluation_classify.add_argument("--storage-backend", choices=("local", "s3"), default="local")
-    evaluation_classify.add_argument("--config")
-    evaluation_classify.add_argument("--write-charts", action="store_true")
-    evaluation_classify.add_argument(
-        "--evaluation-profile",
-        choices=(STANDARD_EVALUATION_PROFILE, XIE_STYLE_EVALUATION_PROFILE),
-        default=STANDARD_EVALUATION_PROFILE,
-    )
-    evaluation_review_queue = evaluation_subparsers.add_parser("review-queue")
-    evaluation_review_queue.add_argument("--object-evidence", required=True)
-    evaluation_review_queue.add_argument("--photo-summary")
-    evaluation_review_queue.add_argument("--output", required=True)
-    evaluation_review_queue.add_argument("--max-rows", type=int)
     evaluation_sampling = evaluation_subparsers.add_parser("build-sampling-frame")
     evaluation_sampling.add_argument("--candidates", required=True)
     evaluation_sampling.add_argument("--geo-assignments", required=True)
@@ -307,18 +242,6 @@ def build_parser() -> argparse.ArgumentParser:
     references_readiness.add_argument("--reference-bank-version", required=True)
     references_readiness.add_argument("--output-dir", required=True)
     references_readiness.add_argument("--run-id")
-    bioclip = subparsers.add_parser("bioclip")
-    bioclip_subparsers = bioclip.add_subparsers(dest="bioclip_command")
-    bioclip_screen = bioclip_subparsers.add_parser("screen")
-    bioclip_screen.add_argument("--input", required=True)
-    bioclip_screen.add_argument("--output-dir", required=True)
-    bioclip_screen.add_argument("--registry-dir", required=True, help="Unified registry containing species_paths.parquet")
-    bioclip_screen.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    bioclip_screen.add_argument("--taxonomy-text-embedding-cache")
-    bioclip_screen.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    bioclip_screen.add_argument("--dry-run", action="store_true")
-    bioclip_evidence = bioclip_subparsers.add_parser("prototype-evidence")
-    bioclip_evidence.add_argument("--config", required=True)
     registry = subparsers.add_parser("registry")
     registry_subparsers = registry.add_subparsers(dest="registry_command")
     registry_build = registry_subparsers.add_parser("build")
@@ -326,6 +249,20 @@ def build_parser() -> argparse.ArgumentParser:
     registry_build.add_argument("--registry-version", required=True)
     registry_build.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_build.add_argument("--source-json")
+    registry_build.add_argument("--gbif-occurrence-archive", help="GBIF SIMPLE_PARQUET zip archive path")
+    registry_build.add_argument("--gbif-source-parquet", help="Output path for parsed GBIF occurrence parquet")
+    registry_build.add_argument(
+        "--delete-gbif-download",
+        action="store_true",
+        default=True,
+        help="Delete GBIF archive after parquet extraction (default: true)",
+    )
+    registry_build.add_argument(
+        "--keep-gbif-download",
+        action="store_false",
+        dest="delete_gbif_download",
+        help="Keep GBIF archive after parquet extraction",
+    )
     registry_build.add_argument("--col-xr-archive", help="Pinned CoL XR Darwin Core archive for dataset 315557")
     registry_build.add_argument(
         "--col-xr-parquet-source",
@@ -412,6 +349,20 @@ def build_parser() -> argparse.ArgumentParser:
     registry_fetch_taxonomy.add_argument("--output-json", required=True)
     registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_fetch_taxonomy.add_argument("--retrieved-at")
+    registry_fetch_taxonomy.add_argument("--gbif-occurrence-archive", help="GBIF SIMPLE_PARQUET zip archive path")
+    registry_fetch_taxonomy.add_argument("--gbif-source-parquet", help="Output path for parsed GBIF occurrence parquet")
+    registry_fetch_taxonomy.add_argument(
+        "--delete-gbif-download",
+        action="store_true",
+        default=True,
+        help="Delete GBIF archive after parquet extraction (default: true)",
+    )
+    registry_fetch_taxonomy.add_argument(
+        "--keep-gbif-download",
+        action="store_false",
+        dest="delete_gbif_download",
+        help="Keep GBIF archive after parquet extraction",
+    )
     registry_enrich_sources = dev_registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
     registry_enrich_sources.add_argument("--sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
@@ -477,41 +428,6 @@ def build_parser() -> argparse.ArgumentParser:
     production_run.add_argument("--output-prefix", required=True)
     production_run.add_argument("--storage-backend", default="s3", choices=("s3", "local"))
     production_run.add_argument("--workstore-backend", default="postgres", choices=("postgres", "sqlite"))
-    production_run.add_argument("--vision-profile", choices=("mac_m5pro_64gb",))
-    production_run.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"))
-    production_run.add_argument("--yolo-checkpoint")
-    production_run.add_argument("--yolo-sidecar-transport", choices=("json_b64", "image_path"))
-    production_run.add_argument("--yolo-imgsz", type=int)
-    production_run.add_argument("--yolo-batch", type=int)
-    production_run.add_argument(
-        "--possible-adult-route",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-    )
-    production_run.add_argument("--possible-adult-route-threshold", type=float)
-    production_run.add_argument(
-        "--ambiguous-insect-review",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-    )
-    production_run.add_argument("--ambiguous-insect-review-threshold", type=float)
-    production_run.add_argument("--bioclip-batch", type=int)
-    production_run.add_argument("--adaptive-batching", action="store_true")
-    production_run.add_argument("--bioclip-top-k", type=int)
-    production_run.add_argument(
-        "--classification-mode",
-        type=_classification_mode_arg,
-        choices=SUPPORTED_CLASSIFICATION_MODES,
-        default=DEFAULT_CLASSIFICATION_MODE,
-    )
-    production_run.add_argument(
-        "--classification-config",
-        help=(
-            "explicit local configuration for an opt-in classification mode; "
-            "required by build_week_target_aware_prototype"
-        ),
-    )
-    production_run.add_argument("--taxonomy-text-embedding-cache")
     production_run.add_argument("--regional-candidates")
     production_run.add_argument("--reference-embeddings")
     production_run.add_argument("--classifier-artifact")
@@ -574,18 +490,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="declare each downstream split that may consume admitted references",
     )
-    production_run.add_argument("--crop-padding-ratio", type=float)
-    production_run.add_argument("--parquet-compression")
-    production_run.add_argument("--delete-images-after-commit", action=argparse.BooleanOptionalAction, default=None)
     production_run.add_argument("--stages")
-    production_run.add_argument(
-        "--workflow",
-        choices=("adaptive", "legacy", "reference-first"),
-        default="adaptive",
-        help="production stage contract (default: adaptive GBIF fast-start)",
-    )
     production_run.add_argument("--dry-run", action="store_true")
-    production_run.add_argument("--build-registry-if-missing", action="store_true")
     production_run.add_argument("--limit-species", type=int, default=0)
     production_run.add_argument("--limit-records", type=int, default=0)
     return parser
@@ -608,14 +514,6 @@ def _add_poll_once_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config")
 
 
-def _add_object_evidence_join_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--detections", required=True)
-    parser.add_argument("--scores", required=True)
-    parser.add_argument("--joined-output", required=True)
-    parser.add_argument("--photo-summary-output", required=True)
-
-
 def _add_dev_vision_commands(subparsers: Any) -> None:
     bioclip_runtime = subparsers.add_parser("bioclip-runtime-check")
     bioclip_runtime.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
@@ -629,13 +527,6 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     bioclip_prefetch.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
     bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
     bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
-    text_embedding_cache = subparsers.add_parser("build-text-embedding-cache")
-    text_embedding_cache.add_argument("--registry-dir", required=True)
-    text_embedding_cache.add_argument("--output", required=True)
-    text_embedding_cache.add_argument("--runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    text_embedding_cache.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    text_embedding_cache.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    text_embedding_cache.add_argument("--batch-size", type=int, default=256)
     yoloe26_runtime = subparsers.add_parser("yoloe26-runtime-check")
     yoloe26_runtime.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
     yoloe26_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
@@ -650,69 +541,6 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
     yoloe26_smoke.add_argument("--image")
     yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
-    prototype_smoke = subparsers.add_parser(
-        "prototype-smoke",
-        aliases=("prototype-smoke-five",),
-        help="run local YOLOE and BioCLIP smoke evidence over any non-empty image set",
-    )
-    prototype_smoke.add_argument("--config", required=True)
-    prototype_embeddings = subparsers.add_parser("prototype-build-embeddings")
-    prototype_embeddings.add_argument("--config", required=True)
-    prototype_staged = subparsers.add_parser("prototype-staged-flickr")
-    prototype_staged.add_argument("--config", required=True)
-    prototype_benchmark = subparsers.add_parser("prototype-benchmark-matrix")
-    prototype_benchmark.add_argument("--config", required=True)
-    prototype_policy = subparsers.add_parser("prototype-select-policy")
-    prototype_policy.add_argument("--config", required=True)
-    benchmark = subparsers.add_parser("benchmark-plumbing")
-    benchmark.add_argument("--records", type=int, default=1000)
-    benchmark.add_argument("--butterfly-rate", type=float, default=0.25)
-    benchmark.add_argument("--detections-per-butterfly", type=int, default=1)
-    benchmark.add_argument(
-        "--classification-mode",
-        type=_classification_mode_arg,
-        choices=SUPPORTED_CLASSIFICATION_MODES,
-        default=HIERARCHICAL_BUTTERFLY_CLASSIFICATION,
-    )
-    benchmark.add_argument("--registry-dir")
-    benchmark.add_argument("--rank-beam-width", type=int, default=DEFAULT_RANK_BEAM_WIDTH)
-    benchmark.add_argument("--species-first-pass-top-k", type=int, default=DEFAULT_SPECIES_FIRST_PASS_TOP_K)
-    benchmark.add_argument("--species-rerank-top-k", type=int, default=DEFAULT_SPECIES_RERANK_TOP_K)
-    benchmark.add_argument("--output-dir", required=True)
-    rolling_benchmark = subparsers.add_parser("benchmark-rolling-matrix")
-    rolling_benchmark.add_argument("--records", type=int, default=1000)
-    rolling_benchmark.add_argument("--output-dir", required=True)
-    cascade_benchmark = subparsers.add_parser("benchmark-cascade")
-    cascade_benchmark.add_argument("--output-dir", required=True)
-    live_benchmark = subparsers.add_parser("benchmark-live-m5pro")
-    live_benchmark.add_argument("--input", required=True)
-    live_benchmark.add_argument("--registry-dir", required=True)
-    live_benchmark.add_argument("--taxonomy-text-embedding-cache", required=True)
-    live_benchmark.add_argument("--vision-runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    live_benchmark.add_argument("--bioclip-runtime-python", default=BIOCLIP_RUNTIME_PYTHON)
-    live_benchmark.add_argument("--hf-cache-dir", default=BIOCLIP_HF_CACHE_DIR)
-    live_benchmark.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    live_benchmark.add_argument("--yolo-sidecar-transport", default="json_b64", choices=("json_b64", "image_path"))
-    live_benchmark.add_argument("--device", default="mps", choices=("auto", "cuda", "mps", "cpu"))
-    live_benchmark.add_argument("--limit", type=int, default=100)
-    live_benchmark.add_argument("--output-dir", required=True)
-    live_benchmark.add_argument("--cache-root", default="data/cache/images")
-    live_benchmark.add_argument("--crop-temp-dir", default="data/cache/object_crops")
-    live_benchmark.add_argument("--imgsz", type=int, default=768)
-    live_benchmark.add_argument("--conf", type=float, default=0.20)
-    live_benchmark.add_argument("--iou", type=float, default=0.50)
-    live_benchmark.add_argument("--max-det", type=int, default=8)
-    live_benchmark.add_argument("--yolo-batch", type=int, default=16)
-    live_benchmark.add_argument("--bioclip-batch", type=int, default=24)
-    live_benchmark.add_argument("--crop-padding-ratio", type=float, default=0.08)
-    live_benchmark.add_argument("--crop-target-px", type=int, default=336)
-    live_benchmark.add_argument("--parquet-batch-rows", type=int, default=10000)
-    live_benchmark.add_argument("--prompt-class", action="append", default=[])
-    live_benchmark.add_argument("--include-hard-negative-prompts", action=argparse.BooleanOptionalAction, default=True)
-    detect_crop_preview = subparsers.add_parser("crop-preview")
-    detect_crop_preview.add_argument("--detections", required=True)
-    detect_crop_preview.add_argument("--output", required=True)
-    detect_crop_preview.add_argument("--limit", type=int, default=200)
     detect_eval = subparsers.add_parser("eval")
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
@@ -730,90 +558,14 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_runtime_check(args)
         if args.vision_command == "bioclip-prefetch-model":
             return _run_bioclip_prefetch_model(args)
-        if args.vision_command == "build-text-embedding-cache":
-            return _run_build_text_embedding_cache(args)
         if args.vision_command == "yoloe26-runtime-check":
             return _run_yoloe26_runtime_check(args)
         if args.vision_command == "yoloe26-prefetch":
             return _run_yoloe26_prefetch(args)
         if args.vision_command == "yoloe26-smoke":
             return _run_yoloe26_smoke(args)
-        if args.vision_command in {"prototype-smoke", "prototype-smoke-five"}:
-            return _run_prototype_vision_smoke(args)
-        if args.vision_command == "prototype-build-embeddings":
-            return _run_prototype_support_embeddings(args)
-        if args.vision_command == "prototype-staged-flickr":
-            return _run_prototype_staged_flickr(args)
-        if args.vision_command == "prototype-benchmark-matrix":
-            return _run_prototype_benchmark_matrix(args)
-        if args.vision_command == "prototype-select-policy":
-            return _run_prototype_policy_selection(args)
-        if args.vision_command == "benchmark-plumbing":
-            return _run_vision_benchmark_plumbing(args)
-        if args.vision_command == "benchmark-rolling-matrix":
-            return _run_vision_benchmark_rolling_matrix(args)
-        if args.vision_command == "benchmark-cascade":
-            return _run_path_cascade_benchmark(args)
-        if args.vision_command == "benchmark-live-m5pro":
-            return _run_vision_benchmark_live_m5pro(args)
-        if args.vision_command == "crop-preview":
-            return _run_detect_crop_preview(args)
         if args.vision_command == "eval":
             return _run_detect_eval(args)
-        return 2
-    if args.command == "bioclip":
-        if args.bioclip_command == "prototype-evidence":
-            from biominer.reports.prototype_evidence import (
-                PrototypeEvidenceConfig,
-                build_prototype_evidence_outputs,
-            )
-
-            try:
-                result = build_prototype_evidence_outputs(
-                    PrototypeEvidenceConfig.read_json(args.config)
-                )
-            except (FileNotFoundError, TypeError, ValueError) as exc:
-                print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-                return 2
-            print(
-                json.dumps(
-                    {
-                        "dashboard": str(result.dashboard_path),
-                        "regional_competitors": str(result.competitors_path),
-                        "nearest_references": str(result.references_path),
-                        "report": str(result.report_path),
-                        "summary": str(result.summary_path),
-                        "status": result.report["status"],
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if args.bioclip_command != "screen":
-            return 2
-        registry = Path(args.registry_dir)
-        try:
-            store = PathTaxonomyStore.read(registry)
-        except (FileNotFoundError, ValueError) as exc:
-            print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-            return 2
-        payload = {
-            "status": "validated" if args.dry_run else "ready",
-            "input": args.input,
-            "output_dir": args.output_dir,
-            "registry_dir": str(registry),
-            "rank_order": list(getattr(store, "rank_order", ("FAMILY", "SUBFAMILY", "TRIBE", "SUBTRIBE", "GENUS", "SPECIES"))),
-            "classification_fingerprint": store.classification_fingerprint,
-            "dry_run": bool(args.dry_run),
-        }
-        if not args.dry_run:
-            payload["next_command"] = "biominer run (screen execution remains orchestrated through the production run command)"
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    if args.command == "evidence":
-        if args.evidence_command == "join":
-            return _run_bioclip_join_object_evidence(args)
         return 2
     if args.command == "evaluation":
         return _run_evaluation_command(args)
@@ -878,11 +630,20 @@ def run(args: argparse.Namespace) -> int:
             return 0
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
-            snapshot = build_gbif_source_snapshot(
-                GBIFClient(),
-                load_scope(args.scope_json),
-                retrieved_at=retrieved_at,
-            )
+            if args.gbif_occurrence_archive:
+                snapshot = build_gbif_source_snapshot_from_occurrence_archive(
+                    args.gbif_occurrence_archive,
+                    load_scope(args.scope_json),
+                    retrieved_at=retrieved_at,
+                    source_parquet=args.gbif_source_parquet,
+                    delete_download_after=args.delete_gbif_download,
+                )
+            else:
+                snapshot = build_gbif_source_snapshot(
+                    GBIFClient(),
+                    load_scope(args.scope_json),
+                    retrieved_at=retrieved_at,
+                )
             output = Path(args.output_json)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
@@ -978,6 +739,9 @@ def run(args: argparse.Namespace) -> int:
                     registry_version=args.registry_version,
                     scope_path=args.scope_json,
                     source_json=source_json,
+                    gbif_occurrence_archive=args.gbif_occurrence_archive,
+                    gbif_source_parquet=args.gbif_source_parquet,
+                    delete_gbif_download_after=args.delete_gbif_download,
                     reuse_source_json=reuse_source_json,
                     report_dir=args.report_dir,
                     retrieved_at=args.retrieved_at,
@@ -1150,10 +914,6 @@ def _run_australia_live(args: argparse.Namespace) -> int:
 
 
 def _run_evaluation_command(args: argparse.Namespace) -> int:
-    if args.evaluation_command == "classify":
-        return _run_evaluation_classify(args)
-    if args.evaluation_command == "review-queue":
-        return _run_evaluation_review_queue(args)
     if args.evaluation_command == "build-sampling-frame":
         return _run_evaluation_sampling_frame(args)
     return 2
@@ -1378,139 +1138,6 @@ def _read_reference_json(path: str | Path, *, artifact: str) -> dict[str, object
     return payload
 
 
-def _run_evaluation_classify(args: argparse.Namespace) -> int:
-    input_uri = str(args.object_scores or args.object_evidence)
-    input_kind = "object_scores" if args.object_scores else "object_evidence"
-    labels_uri = str(args.reviewed_labels)
-    storage_backend = str(getattr(args, "storage_backend", "local") or "local")
-    try:
-        storage = None
-        if storage_backend == "local":
-            object_scores = _read_local_evaluation_parquet(input_uri, input_kind)
-            reviewed_labels = _read_local_reviewed_labels(labels_uri)
-        elif storage_backend == "s3":
-            if bool(getattr(args, "write_charts", False)):
-                raise ValueError("--write-charts is currently supported only for local evaluation outputs")
-            storage = _evaluation_storage_from_config(args)
-            object_scores = _read_storage_evaluation_parquet(storage, input_uri, input_kind)
-            reviewed_labels = _read_storage_reviewed_labels(storage, labels_uri)
-            _require_s3_uri("output-dir", args.output_dir)
-        else:
-            raise ValueError(f"unsupported evaluation storage backend: {storage_backend}")
-    except (ConfigError, FileNotFoundError, RuntimeError, ValueError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": _redact_cloud_error(str(exc), args)}, indent=2, sort_keys=True))
-        return 2
-
-    label_findings = validate_reviewed_label_frame(reviewed_labels)
-    fatal_findings = [finding for finding in label_findings if finding.get("severity") == "fatal"]
-    if fatal_findings:
-        print(
-            json.dumps(
-                {
-                    "error": "reviewed labels failed validation",
-                    "fatal_findings": fatal_findings,
-                    "finding_count": len(label_findings),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-
-    if storage is None:
-        output_dir = _local_evaluation_output_dir(args.output_dir)
-        paths = write_evaluation_report(
-            object_scores=object_scores,
-            reviewed_labels=reviewed_labels,
-            output_dir=output_dir,
-            write_charts=bool(getattr(args, "write_charts", False)),
-        )
-        metrics = json.loads(Path(paths["metrics"]).read_text(encoding="utf-8"))
-    else:
-        paths = write_evaluation_report_to_storage(
-            object_scores=object_scores,
-            reviewed_labels=reviewed_labels,
-            output_dir=args.output_dir,
-            storage=storage,
-            write_charts=bool(getattr(args, "write_charts", False)),
-        )
-        metrics = storage.read_json(paths["metrics"])
-    evaluation_profile = str(getattr(args, "evaluation_profile", STANDARD_EVALUATION_PROFILE))
-    if evaluation_profile == XIE_STYLE_EVALUATION_PROFILE:
-        xie_metrics = evaluate_xie_style_hierarchical(
-            object_scores=object_scores,
-            reviewed_labels=reviewed_labels,
-        )
-        if storage is None:
-            xie_path = str(output_dir / XIE_STYLE_METRICS_FILE)
-            xie_output = Path(xie_path)
-            xie_output.parent.mkdir(parents=True, exist_ok=True)
-            xie_output.write_text(json.dumps(xie_metrics, indent=2, sort_keys=True), encoding="utf-8")
-        else:
-            xie_path = join_uri(args.output_dir, XIE_STYLE_METRICS_FILE)
-            storage.write_json(xie_path, xie_metrics)
-        paths["xie_style_metrics"] = xie_path
-    payload = {
-        "status": "complete",
-        "storage_backend": storage_backend,
-        "input_kind": input_kind,
-        "input_path": input_uri,
-        "reviewed_labels": labels_uri,
-        "output_dir": str(args.output_dir),
-        "evaluation_profile": evaluation_profile,
-        "write_charts": bool(getattr(args, "write_charts", False)),
-        "paths": paths,
-        "metrics": {
-            "evaluated_objects": metrics["metrics"].get("evaluated_objects"),
-            "family_top1_accuracy": metrics["metrics"].get("family_top1_accuracy"),
-            "family_top3_recall": metrics["metrics"].get("family_top3_recall"),
-            "species_top1_accuracy": metrics["metrics"].get("species_top1_accuracy"),
-            "species_top5_recall": metrics["metrics"].get("species_top5_recall"),
-            "species_top20_recall": metrics["metrics"].get("species_top20_recall"),
-            "species_mrr": metrics["metrics"].get("species_mrr"),
-        },
-        "label_validation": {
-            "finding_count": len(label_findings),
-            "warning_count": sum(1 for finding in label_findings if finding.get("severity") == "warning"),
-        },
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0
-
-
-def _run_evaluation_review_queue(args: argparse.Namespace) -> int:
-    try:
-        if args.max_rows is not None and args.max_rows < 0:
-            raise ValueError("--max-rows must be non-negative")
-        object_evidence = _read_local_evaluation_parquet(str(args.object_evidence), "object-evidence")
-        photo_summary = None
-        if args.photo_summary:
-            photo_summary = _read_local_evaluation_parquet(str(args.photo_summary), "photo-summary")
-        _raise_if_cloud_uri_for_local_backend("output", str(args.output))
-        output = normalize_local_uri(args.output)
-        queue = build_hierarchical_review_queue(
-            object_evidence=object_evidence,
-            photo_summary=photo_summary,
-            max_rows=args.max_rows,
-        )
-        write_parquet(queue, output)
-    except (FileNotFoundError, RuntimeError, ValueError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-
-    payload = {
-        "status": "complete",
-        "input_path": str(args.object_evidence),
-        "photo_summary": str(args.photo_summary) if args.photo_summary else None,
-        "output": str(output),
-        "review_queue_rows": queue.height,
-        "review_priority_counts": _value_counts(queue, "review_priority"),
-        "review_reason_counts": _value_counts(queue, "review_reason"),
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0
-
-
 def _run_evaluation_sampling_frame(args: argparse.Namespace) -> int:
     try:
         if args.object_scores and not args.competitor_taxa:
@@ -1558,70 +1185,6 @@ def _run_evaluation_sampling_frame(args: argparse.Namespace) -> int:
         )
     )
     return 0
-
-
-def _read_local_evaluation_parquet(uri: str, input_kind: str) -> pl.DataFrame:
-    _raise_if_cloud_uri_for_local_backend(input_kind, uri)
-    path = normalize_local_uri(uri)
-    if not path.exists():
-        raise FileNotFoundError(f"{input_kind} path does not exist: {path}")
-    return pl.read_parquet(path)
-
-
-def _read_local_reviewed_labels(uri: str) -> pl.DataFrame:
-    _raise_if_cloud_uri_for_local_backend("reviewed-labels", uri)
-    path = normalize_local_uri(uri)
-    if not path.exists():
-        raise FileNotFoundError(f"reviewed-labels path does not exist: {path}")
-    return read_reviewed_labels(path)
-
-
-def _local_evaluation_output_dir(uri: str) -> Path:
-    _raise_if_cloud_uri_for_local_backend("output-dir", uri)
-    return normalize_local_uri(uri)
-
-
-def _read_storage_evaluation_parquet(storage: object, uri: str, input_kind: str) -> pl.DataFrame:
-    _require_s3_uri(input_kind, uri)
-    if not storage.exists(uri):
-        raise FileNotFoundError(f"{input_kind} path does not exist: {uri}")
-    return storage.read_parquet(uri)
-
-
-def _read_storage_reviewed_labels(storage: object, uri: str) -> pl.DataFrame:
-    _require_s3_uri("reviewed-labels", uri)
-    if not storage.exists(uri):
-        raise FileNotFoundError(f"reviewed-labels path does not exist: {uri}")
-    suffix = Path(uri).suffix.casefold()
-    if suffix == ".parquet":
-        frame = storage.read_parquet(uri)
-    elif suffix in {".jsonl", ".ndjson"}:
-        frame = pl.read_ndjson(
-            io.BytesIO(storage.read_text(uri).encode("utf-8"))
-        )
-    elif suffix == ".json":
-        frame = pl.read_json(io.BytesIO(storage.read_text(uri).encode("utf-8")))
-    else:
-        raise ValueError(
-            f"unsupported reviewed-label format: {suffix or '<none>'}"
-        )
-    return normalize_reviewed_label_frame(frame)
-
-
-def _evaluation_storage_from_config(args: argparse.Namespace) -> object:
-    config = load_biominer_config(args.config)
-    config = replace(config, storage=replace(config.storage, backend="s3"))
-    return create_storage_backend(config.storage)
-
-
-def _raise_if_cloud_uri_for_local_backend(name: str, uri: str) -> None:
-    if is_cloud_uri(uri):
-        raise ValueError(f"{name} is a cloud URI; use --storage-backend s3: {uri}")
-
-
-def _require_s3_uri(name: str, uri: str) -> None:
-    if not is_cloud_uri(uri):
-        raise ValueError(f"{name} must be an s3:// URI when --storage-backend s3 is used: {uri}")
 
 
 def _run_storage_command(args: argparse.Namespace) -> int:
@@ -1846,103 +1409,10 @@ def _storage_base_uri(*, storage: object, config: object) -> str:
     return str(getattr(storage_config, "prefix", "."))
 
 
-def _production_vision_settings_from_args(args: argparse.Namespace) -> VisionRuntimeSettings:
-    settings = (
-        vision_runtime_settings(args.vision_profile)
-        if getattr(args, "vision_profile", None)
-        else VisionRuntimeSettings(bioclip_model=BIOCLIP_25_HUGE_REPO_ID)
-    )
-    overrides: dict[str, object] = {}
-    if getattr(args, "device", None) is not None:
-        overrides["device"] = args.device
-    if getattr(args, "yolo_checkpoint", None) is not None:
-        overrides["yolo_checkpoint"] = args.yolo_checkpoint
-    if getattr(args, "yolo_sidecar_transport", None) is not None:
-        overrides["yolo_sidecar_transport"] = args.yolo_sidecar_transport
-    if getattr(args, "yolo_imgsz", None) is not None:
-        overrides["yolo_imgsz"] = args.yolo_imgsz
-    if getattr(args, "yolo_batch", None) is not None:
-        overrides["detector_batch_size"] = args.yolo_batch
-    if getattr(args, "possible_adult_route", None) is not None:
-        overrides["possible_adult_route_enabled"] = args.possible_adult_route
-    if getattr(args, "possible_adult_route_threshold", None) is not None:
-        overrides["possible_adult_route_threshold"] = (
-            args.possible_adult_route_threshold
-        )
-    if getattr(args, "ambiguous_insect_review", None) is not None:
-        overrides["ambiguous_insect_review_enabled"] = (
-            args.ambiguous_insect_review
-        )
-    if getattr(args, "ambiguous_insect_review_threshold", None) is not None:
-        overrides["ambiguous_insect_review_threshold"] = (
-            args.ambiguous_insect_review_threshold
-        )
-    if getattr(args, "bioclip_batch", None) is not None:
-        overrides["crop_batch_size"] = args.bioclip_batch
-    if getattr(args, "bioclip_top_k", None) is not None:
-        overrides["bioclip_top_k"] = args.bioclip_top_k
-    if getattr(args, "crop_padding_ratio", None) is not None:
-        overrides["crop_padding_ratio"] = args.crop_padding_ratio
-    if getattr(args, "parquet_compression", None) is not None:
-        overrides["parquet_compression"] = args.parquet_compression
-    if getattr(args, "delete_images_after_commit", None) is not None:
-        overrides["delete_images_after_commit"] = args.delete_images_after_commit
-    if getattr(args, "adaptive_batching", False):
-        overrides["adaptive_batching"] = True
-    return settings.with_overrides(**overrides) if overrides else settings.with_overrides()
-
-
-def _classification_mode_arg(value: str) -> str:
-    try:
-        return normalize_classification_mode(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-
-
 def _run_production_command(args: argparse.Namespace) -> int:
     config = None
     try:
-        stages = _parse_run_stages(args.stages, workflow=args.workflow)
-        prototype_config = None
-        if args.classification_config:
-            from biominer.bioclip.prototype_mode import BuildWeekPrototypeConfig
-
-            prototype_config = BuildWeekPrototypeConfig.read_json(
-                args.classification_config
-            )
-        if is_build_week_prototype_classification(args.classification_mode):
-            if args.workflow != "reference-first":
-                raise ValueError(
-                    "build_week_target_aware_prototype requires "
-                    "--workflow reference-first"
-                )
-            if prototype_config is None:
-                raise ValueError(
-                    "build_week_target_aware_prototype requires "
-                    "--classification-config"
-                )
-        elif prototype_config is not None:
-            raise ValueError(
-                "--classification-config is only valid with "
-                "build_week_target_aware_prototype"
-            )
-        if (
-            not args.dry_run
-            and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
-            and not args.reference_bank_readiness
-        ):
-            raise ValueError(
-                "--reference-bank-readiness is required for non-dry detect_objects or score_bioclip stages"
-            )
-        if (
-            not args.dry_run
-            and any(stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP} for stage in stages)
-            and not args.reference_bank_readiness_sha256
-        ):
-            raise ValueError(
-                "--reference-bank-readiness-sha256 is required for non-dry "
-                "detect_objects or score_bioclip stages"
-            )
+        stages = _parse_run_stages(args.stages)
         config = load_biominer_config(args.config)
         config = replace(
             config,
@@ -1957,10 +1427,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
         registry_dir_is_cloud = is_cloud_uri(args.registry_dir)
         if args.storage_backend != "local" and (not args.dry_run or registry_dir_is_cloud):
             storage = create_storage_backend(config.storage)
-        workstore = None
-        if not args.dry_run:
-            workstore = create_workstore(config.workstore)
-            _init_workstore_schema_if_supported(workstore)
         limits = {
             key: value
             for key, value in {
@@ -1969,7 +1435,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             }.items()
             if value and value > 0
         }
-        vision_settings = _production_vision_settings_from_args(args)
         request = ProductionRunRequest(
             taxon=args.taxon,
             rank=args.rank,
@@ -1977,13 +1442,6 @@ def _run_production_command(args: argparse.Namespace) -> int:
             output_root=args.output_prefix,
             storage_backend=args.storage_backend,
             workstore_backend=args.workstore_backend,
-            bioclip_model=vision_settings.bioclip_model,
-            vision_profile=args.vision_profile,
-            vision_settings=vision_settings,
-            classification_mode=args.classification_mode,
-            classification_config_path=args.classification_config,
-            build_week_prototype_config=prototype_config,
-            taxonomy_text_embedding_cache=args.taxonomy_text_embedding_cache,
             reference_bank_readiness=args.reference_bank_readiness,
             reference_bank_readiness_sha256=(
                 args.reference_bank_readiness_sha256
@@ -2006,30 +1464,11 @@ def _run_production_command(args: argparse.Namespace) -> int:
             worker_id="local" if allow_local and args.dry_run else config.runtime.worker_id or ("local" if allow_local else ""),
             stages=stages,
             dry_run=args.dry_run,
-            build_registry_if_missing=args.build_registry_if_missing,
             limits=limits,
-        )
-        def create_vision_runtime() -> tuple[Any, Any, Any, list[Any]]:
-            return _create_production_vision_runtime(
-                vision_settings,
-                classification_mode=args.classification_mode,
-            )
-
-        vision_runtime_factory = (
-            create_vision_runtime
-            if not args.dry_run
-            and any(
-                stage in {RunStage.DETECT_OBJECTS, RunStage.SCORE_BIOCLIP}
-                for stage in stages
-            )
-            else None
         )
         plan = ProductionRunOrchestrator(
             request,
             storage=storage,
-            workstore=workstore,
-            vision_runtime_factory=vision_runtime_factory,
-            flickr_api_key=os.environ.get("FLICKR_API_KEY"),
         ).run()
     except (ConfigError, FileNotFoundError, ValueError) as exc:
         payload: dict[str, object] = {"error": redact_text(str(exc), config) if config else str(exc)}
@@ -2041,84 +1480,18 @@ def _run_production_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _create_production_vision_runtime(
-    vision_settings: VisionRuntimeSettings,
-    *,
-    classification_mode: str = DEFAULT_CLASSIFICATION_MODE,
-) -> tuple[Any, Any, Any, list[Any]]:
-    from biominer.bioclip.bioclip import PersistentBioClipScorer
-    from biominer.bioclip.object_runner import EphemeralCropBioClipScorer
-    from biominer.detection.image_io import load_decoded_image_from_record
-    from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
-    from biominer.vision.full_frame_attention import (
-        TARGET_FULL_FRAME_IMAGE_RESIZE_MODE,
-    )
-
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=YOLOE26_RUNTIME_PYTHON,
-        checkpoint=vision_settings.yolo_checkpoint,
-        device=vision_settings.device,
-        imgsz=vision_settings.yolo_imgsz,
-        conf=vision_settings.yolo_conf,
-        iou=vision_settings.yolo_iou,
-        max_det=vision_settings.yolo_max_det,
-        transport=vision_settings.yolo_sidecar_transport,
-        temp_dir=Path("/tmp") / "biominer_yoloe26",
-    )
-    runtime = _bioclip_runtime(
-        runtime_python=Path(BIOCLIP_RUNTIME_PYTHON),
-        model_name=vision_settings.bioclip_model,
-    )
-    image_resize_mode = (
-        None
-        if normalize_classification_mode(classification_mode)
-        == HIERARCHICAL_BUTTERFLY_CLASSIFICATION
-        else TARGET_FULL_FRAME_IMAGE_RESIZE_MODE
-    )
-    persistent = PersistentBioClipScorer(
-        runtime=runtime,
-        hf_cache_dir=BIOCLIP_HF_CACHE_DIR,
-        device=vision_settings.device,
-        image_resize_mode=image_resize_mode,
-        preprocess_workers=vision_settings.bioclip_preprocess_workers,
-    )
-    def image_loader(record: dict[str, Any]) -> Any:
-        return load_decoded_image_from_record(record, cache_root="data/cache/images")
-    scorer = EphemeralCropBioClipScorer(
-        scorer=persistent,
-        image_loader=image_loader,
-        temp_dir=Path("/tmp") / "biominer_bioclip_crops",
-        crop_padding_ratio=vision_settings.crop_padding_ratio,
-        crop_target_px=vision_settings.crop_target_px,
-        model_id=runtime.model.model_name.removeprefix("hf-hub:"),
-        model_version=runtime.package_version,
-        model_checkpoint=runtime.model.checkpoint,
-    )
-    return detector, image_loader, scorer, [persistent, detector]
-
-
 def _parse_run_stages(
     value: str | None,
-    *,
-    workflow: str = "adaptive",
 ) -> tuple[RunStage, ...]:
-    workflows = {
-        "adaptive": ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
-        "legacy": DEFAULT_PRODUCTION_STAGES,
-        "reference-first": REFERENCE_FIRST_PRODUCTION_STAGES,
-    }
-    if workflow not in workflows:
-        raise ValueError("workflow must be adaptive, legacy, or reference-first")
-    workflow_stages = workflows[workflow]
     if not value:
-        return workflow_stages
+        return ADAPTIVE_REFERENCE_PRODUCTION_STAGES
     stages: list[RunStage] = []
     for raw_part in value.split(","):
         part = raw_part.strip().casefold()
         if not part:
             continue
         if part == "all":
-            return workflow_stages
+            return ADAPTIVE_REFERENCE_PRODUCTION_STAGES
         stage = RUN_STAGE_ALIASES.get(part)
         if stage is None:
             try:
@@ -2128,7 +1501,7 @@ def _parse_run_stages(
                 raise ValueError(f"unknown run stage {raw_part!r}; expected one of: {allowed}") from exc
         if stage not in stages:
             stages.append(stage)
-    return tuple(stages) or workflow_stages
+    return tuple(stages) or ADAPTIVE_REFERENCE_PRODUCTION_STAGES
 
 
 def _run_bioclip_runtime_check(args: argparse.Namespace) -> int:
@@ -2184,53 +1557,6 @@ def _run_bioclip_prefetch_model(args: argparse.Namespace) -> int:
         print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
         return 2
     print(result.stdout.strip())
-    return 0
-
-
-def _run_build_text_embedding_cache(args: argparse.Namespace) -> int:
-    from biominer.bioclip.bioclip import PersistentBioClipScorer
-    from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
-    from biominer.bioclip.taxonomy_embedding_cache import (
-        build_taxonomy_text_embedding_cache,
-    )
-
-    runtime_python = Path(args.runtime_python).expanduser()
-    if not runtime_python.exists():
-        print(json.dumps({"error": f"BioCLIP runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-        return 2
-    scorer = PersistentBioClipScorer(
-        runtime=_bioclip_runtime(runtime_python=runtime_python),
-        hf_cache_dir=args.hf_cache_dir,
-        device=args.device,
-    )
-    try:
-        store = PathTaxonomyStore.read(args.registry_dir)
-        frame = build_taxonomy_text_embedding_cache(
-            store,
-            model_id=scorer.runtime.model.model_name,
-            model_checkpoint=scorer.runtime.model.checkpoint,
-            embed_labels=scorer.embed_text_labels,
-            batch_size=args.batch_size,
-        )
-        output = write_parquet(frame, args.output)
-    finally:
-        scorer.close()
-    print(
-        json.dumps(
-            {
-                "status": "complete",
-                "output": str(output),
-                "rows": frame.height,
-                "classification_fingerprint": store.classification_fingerprint,
-                "hierarchy_fingerprint": store.hierarchy_fingerprint,
-                "embedding_cache_fingerprint": frame["embedding_cache_fingerprint"][0] if frame.height else None,
-                "model_id": scorer.runtime.model.model_name,
-                "model_checkpoint": scorer.runtime.model.checkpoint,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
     return 0
 
 
@@ -2319,334 +1645,6 @@ def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_prototype_vision_smoke(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_vision_smoke import (
-        PrototypeVisionSmokeConfig,
-        run_prototype_vision_smoke,
-    )
-
-    try:
-        result = run_prototype_vision_smoke(
-            PrototypeVisionSmokeConfig.read_json(args.config)
-        )
-    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "image_count": result.report["image_count"],
-                "report": str(result.report_path),
-                "summary": str(result.summary_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_support_embeddings(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_support_embeddings import (
-        PrototypeSupportEmbeddingConfig,
-        run_prototype_support_embedding_job,
-    )
-
-    try:
-        result = run_prototype_support_embedding_job(
-            PrototypeSupportEmbeddingConfig.read_json(args.config)
-        )
-    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "embeddings": str(result.embeddings_path),
-                "prototypes": str(result.prototypes_path),
-                "visual_neighbours": (
-                    str(result.visual_neighbours_path)
-                    if result.visual_neighbours_path is not None
-                    else None
-                ),
-                "failures": (
-                    str(result.failures_path)
-                    if result.failures_path is not None
-                    else None
-                ),
-                "report": str(result.report_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_benchmark_matrix(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_benchmark_matrix import (
-        PrototypeBenchmarkConfig,
-        run_prototype_benchmark_matrix,
-    )
-
-    try:
-        result = run_prototype_benchmark_matrix(
-            PrototypeBenchmarkConfig.read_json(args.config)
-        )
-    except (OSError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "records_scored": result.report["counts"]["records_scored"],
-                "records_skipped": result.report["counts"]["records_skipped"],
-                "predictions": str(result.predictions_path),
-                "experiment_summary": str(result.experiment_summary_path),
-                "report": str(result.report_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_policy_selection(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_policy_selection import (
-        PrototypePolicySelectionConfig,
-        select_prototype_policy,
-    )
-
-    try:
-        result = select_prototype_policy(
-            PrototypePolicySelectionConfig.read_json(args.config)
-        )
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        RuntimeError,
-        pl.exceptions.PolarsError,
-    ) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "policy_status": result.policy["policy_status"],
-                "selected_experiment_id": result.policy["selected_policy"][
-                    "experiment_id"
-                ],
-                "policy": str(result.policy_path),
-                "report": str(result.report_path),
-                "policy_fingerprint": result.policy["policy_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_prototype_staged_flickr(args: argparse.Namespace) -> int:
-    from biominer.benchmarks.prototype_staged_flickr import (
-        PrototypeStagedFlickrConfig,
-        run_prototype_staged_flickr,
-    )
-
-    try:
-        result = run_prototype_staged_flickr(
-            PrototypeStagedFlickrConfig.read_json(args.config)
-        )
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        RuntimeError,
-        sqlite3.Error,
-        pl.exceptions.PolarsError,
-    ) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "counts": result.report["counts"],
-                "stages": result.report["stages"],
-                "results": str(result.results_path),
-                "candidates": str(result.candidates_path),
-                "failures": (
-                    str(result.failures_path)
-                    if result.failures_path is not None
-                    else None
-                ),
-                "report": str(result.report_path),
-                "report_fingerprint": result.report["report_fingerprint"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_vision_benchmark_plumbing(args: argparse.Namespace) -> int:
-    try:
-        result = run_vision_plumbing_benchmark(
-            records=args.records,
-            butterfly_rate=args.butterfly_rate,
-            detections_per_butterfly=args.detections_per_butterfly,
-            classification_mode=args.classification_mode,
-            registry_dir=args.registry_dir,
-            output_dir=args.output_dir,
-            rank_beam_width=args.rank_beam_width,
-            species_first_pass_top_k=args.species_first_pass_top_k,
-            species_rerank_top_k=args.species_rerank_top_k,
-        )
-    except Exception as exc:  # noqa: BLE001 - dev command reports compact failures.
-        print(f"benchmark-plumbing failed: {exc}", file=sys.stderr)
-        return 2
-    print(
-        json.dumps(
-            {
-                "benchmark_metrics": str(result.metrics_path),
-                "benchmark_summary": str(result.summary_path),
-                "output_dir": str(result.output_dir),
-                "records": result.metrics["records"],
-                "crops_scored": result.metrics["crops_scored"],
-                "elapsed_seconds": result.metrics["elapsed_seconds"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_vision_benchmark_rolling_matrix(args: argparse.Namespace) -> int:
-    try:
-        result = run_rolling_worker_benchmark_matrix(
-            records=args.records,
-            output_dir=args.output_dir,
-        )
-    except Exception as exc:  # noqa: BLE001 - dev command reports compact failures.
-        print(f"benchmark-rolling-matrix failed: {exc}", file=sys.stderr)
-        return 2
-    print(
-        json.dumps(
-            {
-                "benchmark_metrics": str(result.metrics_path),
-                "benchmark_summary": str(result.summary_path),
-                "output_dir": str(result.output_dir),
-                "records": result.metrics["records"],
-                "variant_count": result.metrics["variant_count"],
-                "elapsed_seconds": result.metrics["elapsed_seconds"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_path_cascade_benchmark(args: argparse.Namespace) -> int:
-    try:
-        result = run_path_cascade_benchmark(output_dir=args.output_dir)
-    except Exception as exc:  # noqa: BLE001 - dev command reports compact failures.
-        print(f"benchmark-cascade failed: {exc}", file=sys.stderr)
-        return 2
-    print(
-        json.dumps(
-            {
-                "benchmark_metrics": str(result.metrics_path),
-                "benchmark_summary": str(result.summary_path),
-                "output_dir": str(result.output_dir),
-                "family_candidate_count": result.metrics["family_candidate_count"],
-                "species_candidates_beneath_genus_top3": result.metrics[
-                    "species_candidates_beneath_genus_top3"
-                ],
-                "elapsed_seconds": result.metrics["elapsed_seconds"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_vision_benchmark_live_m5pro(args: argparse.Namespace) -> int:
-    request = LiveM5ProBenchmarkRequest(
-        input_path=Path(args.input).expanduser(),
-        registry_dir=Path(args.registry_dir).expanduser(),
-        taxonomy_text_embedding_cache=Path(args.taxonomy_text_embedding_cache).expanduser(),
-        vision_runtime_python=Path(args.vision_runtime_python).expanduser(),
-        bioclip_runtime_python=Path(args.bioclip_runtime_python).expanduser(),
-        hf_cache_dir=Path(args.hf_cache_dir).expanduser(),
-        checkpoint=args.checkpoint,
-        yolo_sidecar_transport=args.yolo_sidecar_transport,
-        device=args.device,
-        limit=args.limit,
-        output_dir=Path(args.output_dir).expanduser(),
-        cache_root=Path(args.cache_root).expanduser(),
-        crop_temp_dir=Path(args.crop_temp_dir).expanduser(),
-        imgsz=args.imgsz,
-        conf=args.conf,
-        iou=args.iou,
-        max_det=args.max_det,
-        yolo_batch=args.yolo_batch,
-        bioclip_batch=args.bioclip_batch,
-        crop_padding_ratio=args.crop_padding_ratio,
-        crop_target_px=args.crop_target_px,
-        parquet_batch_rows=args.parquet_batch_rows,
-        prompt_classes=_yoloe26_prompt_classes(args),
-    )
-    validation = validate_live_m5pro_benchmark_request(request)
-    if validation is not None:
-        print(json.dumps(validation, indent=2, sort_keys=True))
-        return 2
-    try:
-        result = run_live_m5pro_benchmark(
-            request=request,
-            bioclip_runtime=_bioclip_runtime(runtime_python=request.bioclip_runtime_python),
-        )
-    except Exception as exc:  # noqa: BLE001 - live command should fail compactly.
-        print(
-            json.dumps(
-                {
-                    "benchmark_kind": "vision_live_m5pro",
-                    "error": "benchmark_live_m5pro_failed",
-                    "message": str(exc),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-    print(
-        json.dumps(
-            {
-                "benchmark_metrics": str(result.metrics_path),
-                "benchmark_summary": str(result.summary_path),
-                "output_dir": str(result.output_dir),
-                "records_loaded": result.metrics["records_loaded"],
-                "elapsed_seconds": result.metrics["elapsed_seconds"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
 def _yoloe26_prompt_classes(args: argparse.Namespace) -> tuple[str, ...]:
     prompts = tuple(str(value) for value in getattr(args, "prompt_class", []) if str(value).strip())
     if prompts:
@@ -2707,129 +1705,6 @@ def _value_counts(frame: pl.DataFrame, column: str) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-def _run_detect_crop_preview(args: argparse.Namespace) -> int:
-    detections = pl.read_parquet(args.detections)
-    rows = _crop_preview_rows(detections, limit=max(1, args.limit))
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.suffix.lower() in {".html", ".htm"}:
-        output.write_text(_crop_preview_html(rows), encoding="utf-8")
-        output_format = "html"
-    else:
-        output.write_text(json.dumps({"preview_rows": rows}, indent=2, sort_keys=True), encoding="utf-8")
-        output_format = "json"
-    preview = {
-        "detections": args.detections,
-        "output": args.output,
-        "format": output_format,
-        "rows_seen": detections.height,
-        "preview_rows": len(rows),
-        "skipped_rows": detections.height - len(rows),
-        "storage_policy": "remote_image_references_only",
-    }
-    print(json.dumps(preview, indent=2, sort_keys=True))
-    return 0
-
-
-def _crop_preview_rows(detections: pl.DataFrame, *, limit: int) -> list[dict[str, object]]:
-    if detections.is_empty():
-        return []
-    rows: list[dict[str, object]] = []
-    for row in detections.to_dicts():
-        if len(rows) >= limit:
-            break
-        if str(row.get("detection_status") or "") != "detected":
-            continue
-        image_url = str(row.get("image_url") or "")
-        bbox = _normalised_bbox(row.get("bbox_xyxyn"))
-        if not image_url or bbox is None:
-            continue
-        x1, y1, x2, y2 = bbox
-        rows.append(
-            {
-                "source": str(row.get("source") or ""),
-                "flickr_photo_id": str(row.get("flickr_photo_id") or ""),
-                "image_url": image_url,
-                "detection_id": str(row.get("detection_id") or ""),
-                "crop_hash": str(row.get("crop_hash") or ""),
-                "detector_label": str(row.get("detector_label") or ""),
-                "detector_score": row.get("detector_score"),
-                "bbox_xyxyn": [x1, y1, x2, y2],
-                "left_pct": _percent(x1),
-                "top_pct": _percent(y1),
-                "width_pct": _percent(max(0.0, x2 - x1)),
-                "height_pct": _percent(max(0.0, y2 - y1)),
-            }
-        )
-    return rows
-
-
-def _normalised_bbox(value: object) -> tuple[float, float, float, float] | None:
-    if not isinstance(value, list | tuple) or len(value) != 4:
-        return None
-    try:
-        x1, y1, x2, y2 = (max(0.0, min(1.0, float(item))) for item in value)
-    except (TypeError, ValueError):
-        return None
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return x1, y1, x2, y2
-
-
-def _percent(value: float) -> str:
-    return f"{value * 100:.4f}%"
-
-
-def _crop_preview_html(rows: list[dict[str, object]]) -> str:
-    cards = "\n".join(_crop_preview_card(row) for row in rows)
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>BioMiner Crop Preview</title>
-<style>
-body {{ font-family: system-ui, sans-serif; margin: 24px; color: #1f2933; background: #f7f8fa; }}
-.grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }}
-.card {{ background: #fff; border: 1px solid #d7dce2; border-radius: 6px; padding: 12px; }}
-.image-wrap {{ position: relative; background: #111; overflow: hidden; }}
-.image-wrap img {{ display: block; width: 100%; height: auto; }}
-.bbox {{ position: absolute; border: 2px solid #f97316; box-sizing: border-box; }}
-.meta {{ font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }}
-</style>
-</head>
-<body>
-<h1>BioMiner Crop Preview</h1>
-<p>{len(rows)} detected crop previews. Images are referenced remotely; no local image archive is created.</p>
-<div class="grid">
-{cards}
-</div>
-</body>
-</html>
-"""
-
-
-def _crop_preview_card(row: dict[str, object]) -> str:
-    image_url = escape(str(row["image_url"]), quote=True)
-    title = escape(f"{row['source']}:{row['flickr_photo_id']}", quote=False)
-    detection_id = escape(str(row["detection_id"]), quote=False)
-    crop_hash = escape(str(row["crop_hash"]), quote=False)
-    label = escape(str(row["detector_label"]), quote=False)
-    score = row.get("detector_score")
-    score_text = "" if score is None else f"{float(score):.4f}"
-    return f"""<article class="card">
-<div class="image-wrap">
-<img src="{image_url}" alt="{title}">
-<div class="bbox" style="left: {row['left_pct']}; top: {row['top_pct']}; width: {row['width_pct']}; height: {row['height_pct']};"></div>
-</div>
-<div class="meta">
-<strong>{title}</strong><br>
-detection_id: {detection_id}<br>
-crop_hash: {crop_hash}<br>
-label: {label} score: {score_text}
-</div>
-</article>"""
-
-
 def _run_detect_eval(args: argparse.Namespace) -> int:
     predictions = pl.read_parquet(args.predictions).to_dicts()
     truth = pl.read_parquet(args.ground_truth).to_dicts() if args.ground_truth else None
@@ -2849,31 +1724,6 @@ def _run_detect_eval(args: argparse.Namespace) -> int:
     output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
-
-
-def _run_bioclip_join_object_evidence(args: argparse.Namespace) -> int:
-    context = SpeciesContext.read_json(args.species_context) if getattr(args, "species_context", None) else None
-    outputs = write_object_evidence_outputs(
-        canonical_records_path=args.input,
-        detections_path=args.detections,
-        scores_path=args.scores,
-        joined_output_path=args.joined_output,
-        photo_summary_output_path=args.photo_summary_output,
-        species_context=context,
-    )
-    print(
-        json.dumps(
-            {
-                "object_evidence_joined": str(outputs.object_evidence_joined),
-                "photo_evidence_summary": str(outputs.photo_evidence_summary),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
 
 
 def _bioclip_runtime(

@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from biominer.cli import _parse_run_stages, build_parser, run
+from biominer.cli import build_parser, run
 from biominer.evaluation.target_metrics import (
     EVALUATION_BOOTSTRAP_COMPONENT_FILE,
     TARGET_CALIBRATION_RELIABILITY_FILE,
@@ -20,7 +20,6 @@ from biominer.evaluation.target_metrics import (
     target_verification_evaluation_frame,
 )
 from biominer.flickr_fetch.geography import build_flickr_geography_frame
-from biominer.run import REFERENCE_FIRST_PRODUCTION_STAGES
 from biominer.reference_workflow_cli import (
     _prototype_duplicate_config,
     _reference_download_config,
@@ -455,16 +454,7 @@ def test_settings_fingerprint_excludes_overwrite_execution_control(
     assert default.settings_fingerprint == overwrite.settings_fingerprint
 
 
-def test_reference_first_workflow_selects_authoritative_stage_order() -> None:
-    assert _parse_run_stages(None, workflow="reference-first") == (
-        REFERENCE_FIRST_PRODUCTION_STAGES
-    )
-    assert _parse_run_stages("all", workflow="reference-first") == (
-        REFERENCE_FIRST_PRODUCTION_STAGES
-    )
-
-
-def test_reference_first_run_parser_exposes_versioned_support_dependencies() -> None:
+def test_adaptive_run_parser_exposes_versioned_support_dependencies() -> None:
     args = build_parser().parse_args(
         [
             "run",
@@ -474,8 +464,6 @@ def test_reference_first_run_parser_exposes_versioned_support_dependencies() -> 
             "registry",
             "--output-prefix",
             "runs",
-            "--workflow",
-            "reference-first",
             "--regional-candidates",
             "regional.parquet",
             "--reference-embeddings",
@@ -488,7 +476,6 @@ def test_reference_first_run_parser_exposes_versioned_support_dependencies() -> 
         ]
     )
 
-    assert args.workflow == "reference-first"
     assert args.regional_candidates == "regional.parquet"
     assert args.reference_embeddings == "embeddings.parquet"
     assert args.classifier_artifact == "classifier"
@@ -780,7 +767,7 @@ def test_target_aware_dry_run_does_not_read_heavy_inputs(
     assert run(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["command"] == "references score-target-aware"
-    assert payload["stage"] == "target_aware_scoring"
+    assert "stage" not in payload
     assert payload["status"] == "planned"
     assert payload["dry_run"] is True
 

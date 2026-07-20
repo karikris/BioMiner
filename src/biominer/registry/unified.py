@@ -363,9 +363,9 @@ def _observed_lineage(species: dict[str, Any], by_id: dict[str, dict[str, Any]])
                 "rank": rank,
             }
     if not any(rank in observed for rank in ("KINGDOM", "PHYLUM", "CLASS", "ORDER")):
-        # Legacy butterfly snapshots begin at Papilionoidea. The four stable
-        # enclosing ranks are made explicit in species_paths until the pinned
-        # CoL XR archive supplies their source nodes directly.
+        # Butterfly-scope snapshots can begin at Papilionoidea. The four stable
+        # enclosing ranks are explicit in species_paths when the pinned CoL XR
+        # archive does not supply their source nodes directly.
         observed.update(
             {
                 "KINGDOM": {"node_id": "col-xr:animalia", "name": "Animalia", "rank": "KINGDOM"},

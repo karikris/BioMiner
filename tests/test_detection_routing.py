@@ -6,7 +6,6 @@ import json
 
 import pytest
 
-from biominer.detection.policy import DetectionPolicy, VisionRuntimeSettings, detection_is_bioclip_eligible, validate_vision_runtime_settings
 from biominer.detection.routing import (
     BIOCLIP_ROUTES,
     DETECTION_ROUTES,
@@ -359,84 +358,3 @@ def test_route_decision_rejects_unknown_or_cross_domain_combinations(kwargs: dic
 
     with pytest.raises(ValueError):
         DetectionRouteDecision(**values)  # type: ignore[arg-type]
-
-
-def test_detection_policy_and_runtime_settings_carry_routing_policy() -> None:
-    routing = DetectionRoutingPolicy(
-        version="custom-routing-v2",
-        possible_adult_route_enabled=False,
-        possible_adult_route_threshold=0.5,
-        ambiguous_insect_review_enabled=False,
-        ambiguous_insect_review_threshold=0.6,
-    )
-    detection = DetectionPolicy(routing_policy=routing)
-    settings = VisionRuntimeSettings(
-        possible_adult_route_enabled=True,
-        possible_adult_route_threshold=0.45,
-        ambiguous_insect_review_enabled=True,
-        ambiguous_insect_review_threshold=0.55,
-    )
-
-    bridged = settings.to_detection_policy(detection)
-
-    assert bridged.routing_policy == DetectionRoutingPolicy(
-        version="custom-routing-v2",
-        possible_adult_route_enabled=True,
-        possible_adult_route_threshold=0.45,
-        ambiguous_insect_review_enabled=True,
-        ambiguous_insect_review_threshold=0.55,
-    )
-
-
-def test_runtime_settings_require_detector_floor_at_or_below_each_enabled_route_threshold() -> None:
-    assert validate_vision_runtime_settings(
-        VisionRuntimeSettings(
-            yolo_conf=0.35,
-            possible_adult_route_threshold=0.35,
-            ambiguous_insect_review_threshold=0.35,
-        )
-    ).yolo_conf == 0.35
-
-    with pytest.raises(ValueError, match="possible_adult_route_threshold"):
-        validate_vision_runtime_settings(
-            VisionRuntimeSettings(yolo_conf=0.36, possible_adult_route_threshold=0.35)
-        )
-    with pytest.raises(ValueError, match="ambiguous_insect_review_threshold"):
-        validate_vision_runtime_settings(
-            VisionRuntimeSettings(
-                yolo_conf=0.36,
-                possible_adult_route_enabled=False,
-                ambiguous_insect_review_threshold=0.35,
-            )
-        )
-
-    assert validate_vision_runtime_settings(
-        VisionRuntimeSettings(
-            yolo_conf=0.8,
-            possible_adult_route_enabled=False,
-            possible_adult_route_threshold=0.1,
-            ambiguous_insect_review_enabled=False,
-            ambiguous_insect_review_threshold=0.1,
-        )
-    ).yolo_conf == 0.8
-
-
-def test_detection_eligibility_uses_route_action_and_never_crosses_route_domains() -> None:
-    policy = DetectionPolicy()
-
-    assert detection_is_bioclip_eligible(_row("butterfly"), policy) is True
-    assert detection_is_bioclip_eligible(_row("caterpillar", label="caterpillar"), policy) is True
-    assert detection_is_bioclip_eligible(_row("pinned butterfly specimen"), policy) is True
-    assert detection_is_bioclip_eligible(_row("insect", label="insect_like"), policy) is True
-    assert detection_is_bioclip_eligible(_row("pupa", label="pupa"), policy) is False
-    assert detection_is_bioclip_eligible(_row("moth", label="moth_like"), policy) is False
-    assert detection_is_bioclip_eligible(_row("drawing", label="hard_negative"), policy) is False
-    assert detection_is_bioclip_eligible(_row(None, status="no_detection"), policy) is False
-
-
-def test_detection_eligibility_honours_persisted_route_action() -> None:
-    assert detection_is_bioclip_eligible({"detection_status": "detected", "routing_action": "score"}) is True
-    assert detection_is_bioclip_eligible({"detection_status": "detected", "routing_action": "review"}) is True
-    assert detection_is_bioclip_eligible({"detection_status": "detected", "routing_action": "exclude"}) is False
-    assert detection_is_bioclip_eligible({"detection_status": "detected", "routing_action": "unknown"}) is False
-    assert detection_is_bioclip_eligible({"detection_status": "no_detection", "routing_action": "score"}) is False

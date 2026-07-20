@@ -20,19 +20,14 @@ class RunStage(StrEnum):
     REFERENCE_QUALITY_ROUTING = "reference_quality_routing"
     REFERENCE_ADMISSION = "reference_admission"
     REFERENCE_GEOGRAPHY_INDEX = "reference_geography_index"
-    REFERENCE_REVIEW = "reference_review"
     REFERENCE_EMBEDDINGS = "reference_embeddings"
     REFERENCE_PROTOTYPES = "reference_prototypes"
-    CLASSIFIER_TRAINING = "classifier_training"
-    CLASSIFIER_CALIBRATION = "classifier_calibration"
-    REFERENCE_READINESS = "reference_readiness"
     FLICKR_DETECTION = "flickr_detection"
     FLICKR_EMBEDDING = "flickr_embedding"
     FLICKR_GEO_TAXON_PARTITIONING = "flickr_geo_taxon_partitioning"
     FAMILY_ROUTING = "family_routing"
     DYNAMIC_POOL_PLANNING = "dynamic_pool_planning"
     DYNAMIC_POOL_SCORING = "dynamic_pool_scoring"
-    TARGET_AWARE_SCORING = "target_aware_scoring"
     PROVISIONAL_FLICKR_SCORING = "provisional_flickr_scoring"
     REVIEW_SAMPLE_PLANNING = "review_sample_planning"
     FLICKR_HUMAN_VERIFICATION = "flickr_human_verification"
@@ -42,12 +37,6 @@ class RunStage(StrEnum):
     AFFECTED_REFERENCE_REBUILD = "affected_reference_rebuild"
     AFFECTED_RECORD_RESCORE = "affected_record_rescore"
     FINAL_QUALITY_GATE = "final_quality_gate"
-    EVIDENCE = "evidence"
-    EVALUATION = "evaluation"
-    DETECT_OBJECTS = "detect_objects"
-    SCORE_BIOCLIP = "score_bioclip"
-    JOIN_EVIDENCE = "join_evidence"
-    SUMMARIZE = "summarize"
 
 
 class StageStatus(StrEnum):
@@ -57,44 +46,6 @@ class StageStatus(StrEnum):
     COMPLETE = "complete"
     FAILED = "failed"
     SKIPPED = "skipped"
-
-
-DEFAULT_PRODUCTION_STAGES: tuple[RunStage, ...] = (
-    RunStage.RESOLVE_TAXON_SCOPE,
-    RunStage.BUILD_REGISTRY,
-    RunStage.COMPILE_QUERIES,
-    RunStage.ENQUEUE_FLICKR_WORK,
-    RunStage.POLL_FLICKR,
-    RunStage.DETECT_OBJECTS,
-    RunStage.SCORE_BIOCLIP,
-    RunStage.JOIN_EVIDENCE,
-    RunStage.SUMMARIZE,
-)
-
-
-REFERENCE_FIRST_PRODUCTION_STAGES: tuple[RunStage, ...] = (
-    RunStage.RESOLVE_TAXON_SCOPE,
-    RunStage.BUILD_REGISTRY,
-    RunStage.GEOGRAPHIC_SPREAD,
-    RunStage.COMPILE_QUERIES,
-    RunStage.ENQUEUE_FLICKR_WORK,
-    RunStage.POLL_FLICKR,
-    RunStage.FLICKR_GEO_CLUSTERING,
-    RunStage.REGIONAL_CANDIDATE_GENERATION,
-    RunStage.REFERENCE_METADATA,
-    RunStage.REFERENCE_MEDIA,
-    RunStage.REFERENCE_REVIEW,
-    RunStage.REFERENCE_EMBEDDINGS,
-    RunStage.REFERENCE_PROTOTYPES,
-    RunStage.CLASSIFIER_TRAINING,
-    RunStage.CLASSIFIER_CALIBRATION,
-    RunStage.REFERENCE_READINESS,
-    RunStage.FLICKR_DETECTION,
-    RunStage.FLICKR_EMBEDDING,
-    RunStage.TARGET_AWARE_SCORING,
-    RunStage.EVIDENCE,
-    RunStage.EVALUATION,
-)
 
 
 ADAPTIVE_REFERENCE_PRODUCTION_STAGES: tuple[RunStage, ...] = (
@@ -134,7 +85,6 @@ ADAPTIVE_REFERENCE_PRODUCTION_STAGES: tuple[RunStage, ...] = (
 
 MANUAL_REVIEW_STAGES: frozenset[RunStage] = frozenset(
     {
-        RunStage.REFERENCE_REVIEW,
         RunStage.FLICKR_HUMAN_VERIFICATION,
         RunStage.TARGETED_REFERENCE_REVIEW,
     }
@@ -179,6 +129,6 @@ class StageRecord:
 
 
 def default_stage_records(
-    stages: tuple[RunStage, ...] = DEFAULT_PRODUCTION_STAGES,
+    stages: tuple[RunStage, ...] = ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
 ) -> tuple[StageRecord, ...]:
     return tuple(StageRecord(stage=stage) for stage in stages)

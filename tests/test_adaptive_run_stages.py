@@ -44,6 +44,7 @@ def test_adaptive_reference_stage_sequence_is_complete_and_pending() -> None:
     }
 
     assert required <= set(ADAPTIVE_REFERENCE_PRODUCTION_STAGES)
+    assert set(RunStage) == set(ADAPTIVE_REFERENCE_PRODUCTION_STAGES)
     assert len(set(ADAPTIVE_REFERENCE_PRODUCTION_STAGES)) == len(
         ADAPTIVE_REFERENCE_PRODUCTION_STAGES
     )
@@ -81,11 +82,10 @@ def test_dynamic_pooling_stage_vocabulary_is_explicit() -> None:
 
 
 def test_adaptive_human_stages_are_never_automatic() -> None:
-    assert {
-        RunStage.REFERENCE_REVIEW,
+    assert MANUAL_REVIEW_STAGES == {
         RunStage.FLICKR_HUMAN_VERIFICATION,
         RunStage.TARGETED_REFERENCE_REVIEW,
-    } <= MANUAL_REVIEW_STAGES
+    }
 
 
 def test_dynamic_dependencies_join_reference_flickr_and_geography_evidence() -> None:
@@ -93,10 +93,6 @@ def test_dynamic_dependencies_join_reference_flickr_and_geography_evidence() -> 
 
     assert graph[RunStage.PROVISIONAL_FLICKR_SCORING].dependencies == (
         RunStage.DYNAMIC_POOL_SCORING,
-    )
-    assert (
-        RunStage.REFERENCE_REVIEW
-        not in graph[RunStage.PROVISIONAL_FLICKR_SCORING].dependencies
     )
     assert graph[RunStage.REFERENCE_GEOGRAPHY_INDEX].dependencies == (
         RunStage.REFERENCE_EMBEDDINGS,

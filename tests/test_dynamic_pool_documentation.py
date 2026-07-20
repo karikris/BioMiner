@@ -87,7 +87,7 @@ def test_pooling_contracts_pin_exact_downstream_consumers() -> None:
     catalog = SCHEMA_CATALOG.read_text(encoding="utf-8")
     pins = (
         "e845dd98493979f37b04dbb6538e0d7b8758ca11",
-        "1cea643623f2f20a2bea72afc754c7b194db3278",
+        "1ca6d9e15b03147df26a15deb309d32aed7ea9f7",
     )
 
     assert all(pin in architecture for pin in pins)

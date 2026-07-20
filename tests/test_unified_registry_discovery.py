@@ -6,9 +6,6 @@ import zipfile
 import polars as pl
 import pytest
 
-from biominer.bioclip.path_taxonomy_store import PathTaxonomyStore
-from biominer.bioclip.path_cascade_classifier import classify_path_cascade
-from biominer.bioclip.path_cascade_output import path_cascade_result_to_output_row
 from biominer.flickr_fetch.metadata_poller import MetadataPollState, _work_item_id
 from biominer.flickr_fetch.query_planner import FlickrQuery, load_registry_flickr_queries_from_frame
 from biominer.registry.compiler import compile_registry_fixture
@@ -257,70 +254,6 @@ def test_active_tier_barrier_and_non_overlapping_physical_intervals(tmp_path) ->
                 }
             )
         )
-
-
-def test_species_paths_use_semantic_parent_proxies_and_store_reads_registry_dir(tmp_path) -> None:
-    registry = _registry(tmp_path, [_name("col:rapae", "Pieris rapae", "T1", "CoL XR", "n1")])
-    paths = pl.read_parquet(registry / "species_paths.parquet")
-    row = paths.filter(pl.col("accepted_taxon_key") == "col:rapae").row(0, named=True)
-
-    assert row["phylum_candidate_kind"] == "carry_forward_proxy"
-    assert row["phylum_semantic_rank"] == "KINGDOM"
-    assert row["phylum_proxy_source_node_id"] == "col:Animalia"
-    store = PathTaxonomyStore.read(registry)
-    prompts = store.prompt_rows_for_nodes([row["phylum_node_id"]], "rank_screen")
-    assert prompts.height == 1
-    assert "kingdom Animalia" in prompts["label"][0]
-    assert "phylum Animalia" not in prompts["label"][0]
-
-
-def test_unified_store_drives_bioclip_supported_rank_order(tmp_path) -> None:
-    registry = _registry(
-        tmp_path,
-        [
-            _name("col:rapae", "Pieris rapae", "T1", "CoL XR", "n1"),
-            _name("col:brassicae", "Pieris brassicae", "T1", "CoL XR", "n2"),
-        ],
-    )
-    store = PathTaxonomyStore.read(registry)
-
-    class Scorer:
-        model_id = "fake"
-        model_checkpoint = "fake"
-
-        def raw_similarities(self, item, labels):  # noqa: ANN001, ANN201
-            del item
-            return {label: 1.0 - index / 100 for index, label in enumerate(labels)}
-
-    result = classify_path_cascade(item={}, scorer=Scorer(), taxonomy_store=store)
-
-    assert tuple(step.rank for step in result.rank_steps) == ("FAMILY", "GENUS", "SPECIES")
-    assert result.rank_steps[0].retained_count == 1
-    assert result.rank_steps[1].shortlist_limit == 1
-    assert result.rank_steps[1].retained_count == 1
-    assert result.rank_steps[2].shortlist_limit == 20
-    assert result.species_rerank_step.shortlist_limit == 5
-    assert result.species_top1 == result.species_top5[0]
-    output = path_cascade_result_to_output_row(result)
-    assert output["workflow"] == "family_top1_genus_top20_top3_species_top20_top5_top1"
-    assert output["genus_top20"]
-    assert output["genus_top3"] == output["genus_top20"][:3]
-    assert set(output["species_top5"]).issubset(output["species_top20"])
-    assert output["species_top1"] == output["species_top5"][0]
-    assert output["genus_routing_mode"] == "top1_above_90pct"
-
-    class LowConfidenceGenusScorer(Scorer):
-        def raw_similarities(self, item, labels):  # noqa: ANN001, ANN201
-            del item
-            return {
-                label: (0.90 if "genus" in label else 0.95 - index / 100)
-                for index, label in enumerate(labels)
-            }
-
-    broad = classify_path_cascade(item={}, scorer=LowConfidenceGenusScorer(), taxonomy_store=store)
-    broad_output = path_cascade_result_to_output_row(broad)
-    assert broad.rank_steps[1].shortlist_limit == 20
-    assert broad_output["genus_routing_mode"] == "top20_then_top3"
 
 
 def test_checklistbank_grouped_synonyms_are_flattened_without_group_duplicates() -> None:
