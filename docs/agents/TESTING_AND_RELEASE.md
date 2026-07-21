@@ -44,21 +44,36 @@ Do not rerun a large suite repeatedly when focused evidence is sufficient.
 
 ## Current observed baseline
 
-At dynamic-pooling implementation commit
-`30319fa7b7e9f24256556b293cf2e2db6e6ce2e7`:
+The dynamic-pooling implementation baseline at
+`30319fa7b7e9f24256556b293cf2e2db6e6ce2e7` was:
 
 ```text
 complete pilot evaluation gate    56 passed
 full regression                  3225 passed
 ```
 
-These counts are historical evidence. The next task must use the current local
-count and record any change.
+These counts are historical evidence, not a target. Ground Zero deliberately
+removed report-, documentation-, generated-data-, and sibling-repository
+verification from the default suite. Use the current local count and record any
+change. The reset rationale is in
+`docs/research/ground_zero_test_suite_review_2026-07-21.md`.
+
+At the 2026-07-21 Ground Zero reset on merged `origin/main` commit `e695807`:
+
+```text
+full regression                  2459 passed
+```
 
 ## Default suite constraints
 
 Default tests must:
 
+- follow Arrange, Act, Assert with one observable behavior per test;
+- exercise public package or CLI interfaces rather than private helpers or
+  source-code layout;
+- create inputs and outputs under `tmp_path` rather than depending on generated
+  repository state;
+- remain independent of execution order and shared mutable state;
 - make no live Flickr, GBIF, CoL, iNaturalist, ALA, EOL, Wikidata, or OpenAI
   calls;
 - require no real model weights;
@@ -67,6 +82,17 @@ Default tests must:
 - use deterministic fake clients, fixtures, clocks, seeds, and storage;
 - verify retries, ordering, checkpoints, and idempotence;
 - fail closed on stale fingerprints and incompatible schemas.
+
+The default suite must not inspect deleted reports or documentation as a proxy
+for runtime behavior, call `git show` for historical commits, open a sibling
+checkout, use a hard-coded virtual-environment interpreter, or assert elapsed
+time or process-memory ceilings. Put host performance measurement in an
+explicit benchmark workflow. Invoke subprocess CLI tests with the active
+interpreter and an isolated working directory.
+
+Several malformed examples may be parameterized when they demonstrate the same
+single rejection contract. Do not combine unrelated success, error, and
+publication behaviors in one test.
 
 ## Required test classes
 

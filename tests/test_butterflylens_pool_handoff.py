@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
-from pathlib import Path
 
 import pytest
 
@@ -26,10 +25,6 @@ PRODUCER_COMMIT = "1" * 40
 SOURCE_FINGERPRINT = "sha256:" + "2" * 64
 MODEL_FINGERPRINT = "sha256:" + "3" * 64
 PREPROCESSING_FINGERPRINT = "sha256:" + "4" * 64
-COMPATIBILITY_REVIEW = (
-    Path(__file__).parents[1]
-    / "docs/architecture/butterflylens_1ca6d9_compatibility_review.md"
-)
 
 
 def _artifacts() -> list[dict[str, object]]:
@@ -202,25 +197,3 @@ def test_writer_uses_contract_filename_and_round_trips(tmp_path: Path) -> None:
 
     assert output == tmp_path / BUTTERFLYLENS_POOL_HANDOFF_FILE
     assert json.loads(output.read_text(encoding="utf-8")) == manifest
-
-
-def test_compatibility_review_documents_supabase_and_pin_boundaries() -> None:
-    review = COMPATIBILITY_REVIEW.read_text(encoding="utf-8")
-
-    for term in (
-        BUTTERFLYLENS_PREVIOUS_AUDITED_COMMIT,
-        BUTTERFLYLENS_PINNED_COMMIT,
-        "repeated-independent-v1",
-        "append-only",
-        "service-role",
-        "row-level security",
-        "compatible_contract_scope_unchanged_after_runtime_removal",
-        "byte-for-byte unchanged",
-        "retired v1.0",
-        "sensitive-location",
-        "occurrence-release",
-        "Darwin Core",
-        "ALA",
-        "https://supabase.com/docs/guides/database/postgres/row-level-security",
-    ):
-        assert term in review

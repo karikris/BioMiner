@@ -280,18 +280,6 @@ def test_prototype_policy_keeps_public_domain_distinct_from_cc0() -> None:
     assert decision.canonical_licence == "public-domain"
 
 
-def test_prototype_selections_are_direct_downloader_inputs() -> None:
-    from biominer.references.downloader import _selected_media
-
-    result = _result()
-    selected = _selected_media(result.selections, result.download_candidates)
-
-    assert len(selected) == result.selections.height
-    assert {
-        item.candidate["reference_media_id"] for item in selected
-    } == set(result.selections["reference_media_id"])
-
-
 def test_prototype_duplicate_resolution_builds_auditable_identity_groups() -> None:
     observations, _media = _frames()
     acquisition = _result()

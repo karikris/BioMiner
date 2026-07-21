@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import polars as pl
 import pytest
@@ -13,6 +14,9 @@ from PIL import Image
 from pptx import Presentation
 
 from biominer.reports.ground_zero_eda import build_ground_zero_eda_run
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/run_ground_zero_eda.py"
 
 
 def _fixture_source(path: Path) -> Path:
@@ -48,21 +52,20 @@ def _fixture_source(path: Path) -> Path:
     return path
 
 
-def test_ground_zero_eda_creates_safe_aggregate_report(tmp_path: Path) -> None:
+def test_ground_zero_eda_aggregates_without_retaining_rows_or_mutating_source(
+    tmp_path: Path,
+) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
-    source_manifest = tmp_path / "source_manifest.json"
-    source_manifest.write_text(json.dumps({"source": "fixture", "version": 1}), encoding="utf-8")
     output = tmp_path / "eda"
     source_sha256_before = hashlib.sha256(source.read_bytes()).hexdigest()
 
-    result = build_ground_zero_eda_run(source, output, source_manifest, top_n=20)
+    # Act
+    build_ground_zero_eda_run(source, output)
 
+    # Assert
     assert hashlib.sha256(source.read_bytes()).hexdigest() == source_sha256_before
-
-    assert result["output_dir"] == str(output)
-    work_path = output / "eda_work.parquet"
-    assert work_path.exists()
-    work = pl.read_parquet(work_path)
+    work = pl.read_parquet(output / "eda_work.parquet")
     assert {"section", "metric", "dimension", "value", "record_count"} <= set(work.columns)
     assert "occurrenceID" not in work.columns
     assert "(NULL)" in work.filter(pl.col("metric") == "occurrences_by_month")["dimension"].to_list()
@@ -72,19 +75,30 @@ def test_ground_zero_eda_creates_safe_aggregate_report(tmp_path: Path) -> None:
     assert issue_counts == {"(NULL)": 2, "TAXON_MATCH_NONE": 2, "COORDINATE_INVALID": 1}
     assert "COORDINATE_INVALID; TAXON_MATCH_NONE" not in issue_counts
 
+
+def test_ground_zero_eda_manifest_inventories_readable_artifacts(tmp_path: Path) -> None:
+    # Arrange
+    source = _fixture_source(tmp_path / "occurrences.parquet")
+    source_manifest = tmp_path / "source_manifest.json"
+    source_manifest.write_text(
+        json.dumps({"source": "fixture", "version": 1}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "eda"
+
+    # Act
+    result = build_ground_zero_eda_run(source, output, source_manifest)
+
+    # Assert
+    assert result["output_dir"] == str(output)
     csv_paths = sorted(output.glob("*.csv"))
     assert csv_paths
     for csv_path in csv_paths:
         raw = csv_path.read_bytes()
         assert raw.startswith(b"\xef\xbb\xbf")
         assert raw.decode("utf-8-sig")
-    combined_csv = "\n".join(path.read_text(encoding="utf-8-sig") for path in csv_paths)
-    assert "'=Formula" in combined_csv
-    assert "'+Museum" in combined_csv
-    assert "'-SPECIMEN" in combined_csv
-    assert "'@collector" in combined_csv
-
     charts = sorted(output.glob("*.png"))
+    work = pl.read_parquet(output / "eda_work.parquet")
     metric_pairs = set(work.select("section", "metric").unique().iter_rows())
     expected_chart_names = {f"{section}__{metric}.png" for section, metric in metric_pairs}
     assert {chart.name for chart in charts} == expected_chart_names
@@ -98,7 +112,7 @@ def test_ground_zero_eda_creates_safe_aggregate_report(tmp_path: Path) -> None:
     assert len(Presentation(deck_path).slides) == 1 + len(metric_pairs)
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["source"]["sha256"] == source_sha256_before
+    assert manifest["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert manifest["source"]["schema"]["occurrenceID"] == "string"
     assert "publishingOrgKey" not in manifest["source"]["schema"]
     assert manifest["source_manifest"] == json.loads(source_manifest.read_text(encoding="utf-8"))
@@ -109,25 +123,40 @@ def test_ground_zero_eda_creates_safe_aggregate_report(tmp_path: Path) -> None:
         assert entry["sha256"] == hashlib.sha256((output / entry["path"]).read_bytes()).hexdigest()
     assert set(manifest["artifacts"]["charts"]) == expected_chart_names
     assert not (output / "duckdb_spill").exists()
-    assert manifest["query_strategy"] == {
-        "engine": "duckdb",
-        "input": "read-only parquet_scan",
-        "completeness": "single wide aggregate scan",
-        "spill": {"temporary_directory": "duckdb_spill", "max_size": "2GiB", "cleaned": True},
-    }
+
+
+def test_ground_zero_eda_csv_exports_neutralize_spreadsheet_formulas(
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    source = _fixture_source(tmp_path / "occurrences.parquet")
+    output = tmp_path / "eda"
+
+    # Act
+    build_ground_zero_eda_run(source, output)
+
+    # Assert
+    combined_csv = "\n".join(
+        path.read_text(encoding="utf-8-sig") for path in output.glob("*.csv")
+    )
+    assert "'=Formula" in combined_csv
+    assert "'+Museum" in combined_csv
+    assert "'-SPECIMEN" in combined_csv
+    assert "'@collector" in combined_csv
 
 
 def test_ground_zero_eda_cli_prints_manifest_json(tmp_path: Path) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
     source_manifest = tmp_path / "source_manifest.json"
     source_manifest.write_text(json.dumps({"source": "fixture", "version": 1}), encoding="utf-8")
     output = tmp_path / "eda"
-    repository_root = Path(__file__).resolve().parents[1]
 
+    # Act
     completed = subprocess.run(
         [
-            repository_root / ".venv" / "bin" / "python",
-            "scripts/run_ground_zero_eda.py",
+            sys.executable,
+            SCRIPT,
             "--source",
             str(source),
             "--source-manifest",
@@ -137,12 +166,13 @@ def test_ground_zero_eda_cli_prints_manifest_json(tmp_path: Path) -> None:
             "--top-n",
             "2",
         ],
-        cwd=repository_root,
+        cwd=tmp_path,
         capture_output=True,
         check=False,
         text=True,
     )
 
+    # Assert
     assert completed.returncode == 0, completed.stderr
     reported = json.loads(completed.stdout)
     assert reported["manifest_path"] == str(output / "manifest.json")
@@ -152,26 +182,28 @@ def test_ground_zero_eda_cli_prints_manifest_json(tmp_path: Path) -> None:
 
 
 def test_ground_zero_eda_cli_reports_existing_output_as_json_error(tmp_path: Path) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
     output = tmp_path / "already-exists"
     output.mkdir()
-    repository_root = Path(__file__).resolve().parents[1]
 
+    # Act
     completed = subprocess.run(
         [
-            repository_root / ".venv" / "bin" / "python",
-            "scripts/run_ground_zero_eda.py",
+            sys.executable,
+            SCRIPT,
             "--source",
             str(source),
             "--output",
             str(output),
         ],
-        cwd=repository_root,
+        cwd=tmp_path,
         capture_output=True,
         check=False,
         text=True,
     )
 
+    # Assert
     assert completed.returncode == 2
     assert completed.stdout == ""
     assert json.loads(completed.stderr) == {
@@ -181,25 +213,27 @@ def test_ground_zero_eda_cli_reports_existing_output_as_json_error(tmp_path: Pat
 
 
 def test_ground_zero_eda_cli_reports_corrupt_parquet_as_json_error(tmp_path: Path) -> None:
+    # Arrange
     source = tmp_path / "corrupt.parquet"
     source.write_text("this is not a Parquet file", encoding="utf-8")
-    repository_root = Path(__file__).resolve().parents[1]
 
+    # Act
     completed = subprocess.run(
         [
-            repository_root / ".venv" / "bin" / "python",
-            "scripts/run_ground_zero_eda.py",
+            sys.executable,
+            SCRIPT,
             "--source",
             str(source),
             "--output",
             str(tmp_path / "eda"),
         ],
-        cwd=repository_root,
+        cwd=tmp_path,
         capture_output=True,
         check=False,
         text=True,
     )
 
+    # Assert
     assert completed.returncode == 2
     assert completed.stdout == ""
     assert json.loads(completed.stderr)["error"]
@@ -207,15 +241,18 @@ def test_ground_zero_eda_cli_reports_corrupt_parquet_as_json_error(tmp_path: Pat
 
 
 def test_ground_zero_eda_refuses_existing_output_directory(tmp_path: Path) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
     output = tmp_path / "already-exists"
     output.mkdir()
 
+    # Act / Assert
     with pytest.raises(FileExistsError, match="refus"):
         build_ground_zero_eda_run(source, output)
 
 
 def test_ground_zero_eda_retains_null_month_beyond_top_n(tmp_path: Path) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
     base = pl.read_parquet(source)
     month_one = base.filter(pl.col("month") == "1")
@@ -224,8 +261,10 @@ def test_ground_zero_eda_retains_null_month_beyond_top_n(tmp_path: Path) -> None
     # The NULL month has one occurrence, strictly behind the two populated leaders.
     pl.concat([base, *([month_one] * 4), *([month_two] * 2), month_twelve]).write_parquet(source)
 
+    # Act
     build_ground_zero_eda_run(source, tmp_path / "eda", top_n=2)
 
+    # Assert
     months = pl.read_parquet(tmp_path / "eda" / "eda_work.parquet").filter(
         pl.col("metric") == "occurrences_by_month"
     )
@@ -233,7 +272,8 @@ def test_ground_zero_eda_retains_null_month_beyond_top_n(tmp_path: Path) -> None
     assert months.filter(pl.col("dimension") == "(NULL)")["value"].item() == 1
 
 
-def test_ground_zero_eda_requires_only_fields_used_by_summary_sql(tmp_path: Path) -> None:
+def test_ground_zero_eda_accepts_source_without_unused_fields(tmp_path: Path) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
     unused = [
         "occurrenceID", "kingdom", "phylum", "class", "order", "taxonRank",
@@ -241,26 +281,46 @@ def test_ground_zero_eda_requires_only_fields_used_by_summary_sql(tmp_path: Path
     ]
     pl.read_parquet(source).drop(unused).write_parquet(source)
 
+    # Act / Assert
     build_ground_zero_eda_run(source, tmp_path / "accepted")
 
+
+def test_ground_zero_eda_rejects_source_missing_required_field(tmp_path: Path) -> None:
+    # Arrange
+    source = _fixture_source(tmp_path / "occurrences.parquet")
     missing_required = tmp_path / "missing-issue.parquet"
     pl.read_parquet(source).drop("issue").write_parquet(missing_required)
+
+    # Act / Assert
     with pytest.raises(ValueError, match="issue"):
         build_ground_zero_eda_run(missing_required, tmp_path / "rejected")
 
 
-def test_ground_zero_eda_deck_is_byte_identical_for_identical_source(tmp_path: Path) -> None:
+def test_ground_zero_eda_rejects_non_positive_top_n(tmp_path: Path) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
 
+    # Act / Assert
+    with pytest.raises(ValueError, match="top_n"):
+        build_ground_zero_eda_run(source, tmp_path / "eda", top_n=0)
+
+
+def test_ground_zero_eda_deck_is_byte_identical_for_identical_source(tmp_path: Path) -> None:
+    # Arrange
+    source = _fixture_source(tmp_path / "occurrences.parquet")
+
+    # Act
     build_ground_zero_eda_run(source, tmp_path / "first")
     build_ground_zero_eda_run(source, tmp_path / "second")
 
+    # Assert
     assert (tmp_path / "first" / "ground_zero_eda.pptx").read_bytes() == (
         tmp_path / "second" / "ground_zero_eda.pptx"
     ).read_bytes()
 
 
 def test_ground_zero_eda_limits_only_rendered_chart_bars(tmp_path: Path) -> None:
+    # Arrange
     source = _fixture_source(tmp_path / "occurrences.parquet")
     base_row = pl.read_parquet(source).head(1)
     rows = [
@@ -272,8 +332,10 @@ def test_ground_zero_eda_limits_only_rendered_chart_bars(tmp_path: Path) -> None
     ]
     pl.concat(rows).write_parquet(source)
 
+    # Act
     build_ground_zero_eda_run(source, tmp_path / "eda", top_n=20)
 
+    # Assert
     work = pl.read_parquet(tmp_path / "eda" / "eda_work.parquet")
     assert work.filter(pl.col("metric") == "occurrences_by_dataset").height == 20
     assert work.filter(pl.col("metric") == "occurrences_by_publisher").height == 20
