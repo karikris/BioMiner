@@ -36,10 +36,37 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
             "poll-once",
             "--max-api-calls",
             "3500",
+            "--workers",
+            "8",
+            "--max-retries",
+            "3",
+            "--retry-backoff-seconds",
+            "1.5",
+            "--min-call-interval-seconds",
+            "1.0286",
             "--run-id",
             "run-1",
             "--worker-id",
             "worker-001",
+        ]
+    )
+    enrich = parser.parse_args(
+        [
+            "dev",
+            "flickr",
+            "enrich",
+            "--state-db",
+            "data/state/new.sqlite",
+            "--max-api-calls",
+            "3500",
+            "--workers",
+            "8",
+            "--max-retries",
+            "2",
+            "--retry-backoff-seconds",
+            "2",
+            "--min-call-interval-seconds",
+            "1.0286",
         ]
     )
 
@@ -75,8 +102,19 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     assert poll_once.dev_command == "flickr"
     assert poll_once.flickr_command == "poll-once"
     assert poll_once.max_api_calls == 3500
+    assert poll_once.workers == 8
+    assert poll_once.max_retries == 3
+    assert poll_once.retry_backoff_seconds == 1.5
+    assert poll_once.min_call_interval_seconds == 1.0286
     assert poll_once.run_id == "run-1"
     assert poll_once.worker_id == "worker-001"
+    assert enrich.flickr_command == "enrich"
+    assert enrich.state_db == "data/state/new.sqlite"
+    assert enrich.max_api_calls == 3500
+    assert enrich.workers == 8
+    assert enrich.max_retries == 2
+    assert enrich.retry_backoff_seconds == 2.0
+    assert enrich.min_call_interval_seconds == 1.0286
 
 
 def test_registry_public_cli_exposes_only_build_and_audit() -> None:
@@ -647,6 +685,9 @@ def test_poll_once_cloud_no_compact_passes_workstore(monkeypatch, capsys) -> Non
     assert output["evidence_rows_written"] == 0
     assert fake_store.schema_initialized
     assert captured["work_store"] is fake_store
+    assert captured["max_retries"] == 2
+    assert captured["retry_backoff_seconds"] == 2.0
+    assert captured["min_call_interval_seconds"] == 0.0
 
 
 def test_detect_eval_cli_forwards_xie_thresholds(tmp_path, capsys, monkeypatch) -> None:

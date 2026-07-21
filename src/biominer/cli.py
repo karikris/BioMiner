@@ -27,6 +27,7 @@ from biominer.flickr_fetch.australia import (
     build_australia_presence,
     compile_australia_query_plan,
 )
+from biominer.flickr_fetch.enrichment import enrich_once, result_payload
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
@@ -429,6 +430,18 @@ def build_parser() -> argparse.ArgumentParser:
     dev_flickr_subparsers = dev_flickr.add_subparsers(dest="flickr_command")
     dev_poll_once = dev_flickr_subparsers.add_parser("poll-once")
     _add_poll_once_args(dev_poll_once)
+    dev_enrich = dev_flickr_subparsers.add_parser(
+        "enrich",
+        help="enrich canonical Flickr records with durable getInfo responses",
+    )
+    dev_enrich.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
+    dev_enrich.add_argument("--workers", type=int, default=1)
+    dev_enrich.add_argument("--max-retries", type=int, default=2)
+    dev_enrich.add_argument("--retry-backoff-seconds", type=float, default=2.0)
+    dev_enrich.add_argument("--min-call-interval-seconds", type=float, default=0.0)
+    dev_enrich.add_argument("--stale-claim-seconds", type=int, default=3600)
+    dev_enrich.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
+    dev_enrich.add_argument("--api-key-env", default="FLICKR_API_KEY")
     australia_live = dev_flickr_subparsers.add_parser("australia-live")
     australia_live.add_argument("--registry-dir", default="data/registry/current")
     australia_live.add_argument("--output-dir", default="data/registry/current")
@@ -549,6 +562,9 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_poll_once_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-api-calls", type=int, default=SOFT_API_CALLS_PER_HOUR)
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument("--retry-backoff-seconds", type=float, default=2.0)
+    parser.add_argument("--min-call-interval-seconds", type=float, default=0.0)
     parser.add_argument("--stale-claim-seconds", type=int, default=3600)
     parser.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
     parser.add_argument("--raw-root", default="data/raw")
@@ -925,6 +941,19 @@ def run(args: argparse.Namespace) -> int:
 def _run_dev_flickr_command(args: argparse.Namespace) -> int:
     if args.flickr_command == "australia-live":
         return _run_australia_live(args)
+    if args.flickr_command == "enrich":
+        result = enrich_once(
+            state_db=args.state_db,
+            api_key=os.environ.get(args.api_key_env),
+            max_api_calls=args.max_api_calls,
+            workers=args.workers,
+            max_retries=args.max_retries,
+            retry_backoff_seconds=args.retry_backoff_seconds,
+            min_call_interval_seconds=args.min_call_interval_seconds,
+            stale_claim_seconds=args.stale_claim_seconds,
+        )
+        print(json.dumps(result_payload(result), indent=2, sort_keys=True))
+        return 0
     if args.flickr_command != "poll-once":
         return 2
     work_store = None
@@ -939,6 +968,9 @@ def _run_dev_flickr_command(args: argparse.Namespace) -> int:
         max_api_calls=args.max_api_calls,
         api_key=os.environ.get(args.api_key_env),
         workers=args.workers,
+        max_retries=args.max_retries,
+        retry_backoff_seconds=args.retry_backoff_seconds,
+        min_call_interval_seconds=args.min_call_interval_seconds,
         stale_claim_seconds=args.stale_claim_seconds,
         run_id=args.run_id,
         worker_id=args.worker_id,
