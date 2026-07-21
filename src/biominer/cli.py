@@ -364,6 +364,54 @@ def build_parser() -> argparse.ArgumentParser:
         dest="delete_gbif_download",
         help="Keep GBIF archive after parquet extraction",
     )
+    registry_reference_media = dev_registry_subparsers.add_parser(
+        "build-gbif-reference-media",
+        help="build an immutable Parquet manifest by joining GBIF DWCA occurrence and multimedia members",
+    )
+    registry_reference_media.add_argument(
+        "--archive",
+        default="staging/gbif/global/0004937-260715120105164.zip",
+    )
+    registry_reference_media.add_argument(
+        "--output",
+        default="data/reference/gbif_global_papilionoidea/reference_media_manifest.parquet",
+    )
+    registry_reference_media.add_argument(
+        "--receipt",
+        default="data/reference/gbif_global_papilionoidea/reference_media_manifest.json",
+    )
+    registry_reference_media.add_argument(
+        "--download-key",
+        default="0004937-260715120105164",
+    )
+    registry_reference_media.add_argument(
+        "--download-doi",
+        default="https://doi.org/10.15468/dl.gp8gjc",
+    )
+    registry_reference_media.add_argument(
+        "--download-url",
+        default="https://api.gbif.org/v1/occurrence/download/request/0004937-260715120105164.zip",
+    )
+    registry_reference_media.add_argument(
+        "--citation",
+        default="GBIF.org (19 July 2026) GBIF Occurrence Download https://doi.org/10.15468/dl.gp8gjc",
+    )
+    registry_reference_media.add_argument(
+        "--source-snapshot-version",
+        default="gbif-papilionoidea-global-0004937-260715120105164",
+    )
+    registry_reference_media.add_argument("--report-dir", default="reports")
+    registry_reference_media.add_argument("--expected-occurrence-rows", type=int)
+    registry_reference_media.add_argument("--expected-multimedia-rows", type=int)
+    registry_reference_media.add_argument(
+        "--csv-block-size", type=int, default=32 * 1024 * 1024
+    )
+    registry_reference_media.add_argument(
+        "--progress-interval", type=int, default=1_000_000
+    )
+    registry_reference_media.add_argument("--duckdb-threads", type=int, default=4)
+    registry_reference_media.add_argument("--duckdb-memory-limit", default="8GB")
+    registry_reference_media.add_argument("--temp-dir")
     registry_enrich_sources = dev_registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
     registry_enrich_sources.add_argument("--sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
@@ -652,6 +700,34 @@ def run(args: argparse.Namespace) -> int:
                     )
                 )
             print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "build-gbif-reference-media":
+            from biominer.registry.gbif_reference_media import (
+                GBIFReferenceMediaManifestConfig,
+                build_gbif_reference_media_manifest,
+            )
+
+            receipt = build_gbif_reference_media_manifest(
+                GBIFReferenceMediaManifestConfig(
+                    archive=Path(args.archive),
+                    output=Path(args.output),
+                    receipt=Path(args.receipt),
+                    download_key=args.download_key,
+                    download_doi=args.download_doi,
+                    download_url=args.download_url,
+                    citation=args.citation,
+                    source_snapshot_version=args.source_snapshot_version,
+                    report_dir=Path(args.report_dir),
+                    expected_occurrence_rows=args.expected_occurrence_rows,
+                    expected_multimedia_rows=args.expected_multimedia_rows,
+                    csv_block_size=args.csv_block_size,
+                    progress_interval=args.progress_interval,
+                    duckdb_threads=args.duckdb_threads,
+                    duckdb_memory_limit=args.duckdb_memory_limit,
+                    temp_dir=Path(args.temp_dir) if args.temp_dir else None,
+                )
+            )
+            print(json.dumps(receipt, indent=2, sort_keys=True))
             return 0
         if args.registry_command == "fetch-taxonomy":
             retrieved_at = args.retrieved_at or datetime.now(UTC).isoformat()
