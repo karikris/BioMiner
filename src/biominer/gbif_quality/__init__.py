@@ -23,18 +23,26 @@ from biominer.gbif_quality.profile import (
     CompletenessProfile,
     profile_completeness,
 )
+from biominer.gbif_quality.schema_audit import (
+    SCHEMA_AUDIT_VERSION,
+    SchemaAudit,
+    audit_parquet_schema,
+)
 
 __all__ = [
     "COMPLETENESS_SCHEMA_VERSION",
     "FIELD_POLICY_SCHEMA_VERSION",
     "FUNNEL_SCHEMA_VERSION",
     "INVENTORY_SCHEMA_VERSION",
+    "SCHEMA_AUDIT_VERSION",
     "FunnelConfig",
     "FieldPolicy",
     "CompletenessProfile",
     "SourceInventory",
     "SourceInventoryConfig",
     "SourceFunnel",
+    "SchemaAudit",
+    "audit_parquet_schema",
     "build_field_policy",
     "build_source_funnel",
     "build_source_inventory",
