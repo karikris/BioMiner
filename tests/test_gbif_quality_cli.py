@@ -64,7 +64,7 @@ def test_quality_acceptance_defaults_pin_v3_checksum() -> None:
     args = build_parser().parse_args([COMMAND, "acceptance"])
 
     assert args.report_root == "reports/gbif_media_database/v4"
-    assert args.output_directory.endswith("quality_results/global_acceptance")
+    assert args.output_directory.endswith("quality_results/global_acceptance_v2")
     assert args.test_receipt.endswith("quality_results/test_receipt.json")
     assert args.expected_v3_sha256 == (
         "c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f"

@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 import duckdb
 
 
-ACCEPTANCE_VERSION = "biominer-gbif-media-acceptance/v1"
+ACCEPTANCE_VERSION = "biominer-gbif-media-acceptance/v2"
 CRITERIA = (
     "The v3 dataset remains unchanged.",
     "The source-to-v4 funnel is fully reconciled.",
@@ -70,12 +70,12 @@ SCHEMA = pa.schema([
 
 def publish_acceptance_audit(*,repository_root:str|Path,data_root:str|Path,report_root:str|Path,output_directory:str|Path,test_receipt:str|Path,expected_v3_sha256:str,code_commit:str)->dict[str,object]:
     repo=Path(repository_root).resolve();data=Path(data_root).resolve();reports=Path(report_root).resolve();receipt=Path(test_receipt).resolve();destination=Path(output_directory).resolve()
-    required=[data/"manifest.json",data/"source_funnel.parquet",data/"source_lineage/source_media_status.parquet",data/"completeness_by_applicability.parquet",data/"media_assertion_quality/manifest.json",data/"occurrence_quality/manifest.json",data/"derived_assertions/temporal/manifest.json",data/"derived_assertions/geography/manifest.json",data/"derived_assertions/taxonomy/manifest.json",data/"derived_assertions/biology/manifest.json",data/"rights_and_attribution/manifest.json",data/"duplicates/manifest.json",data/"ai_readiness/manifest.json",data/"representativeness/manifest.json",data/"incremental_validation/manifest.json",data/"performance/manifest.json",data/"quality_results/phase4_pilot_preflight/manifest.json",reports/"manifest.json",receipt]
+    required=[data/"manifest.json",data/"source_funnel.parquet",data/"source_lineage/source_media_status.parquet",data/"source_lineage/identity_v2/manifest.json",data/"completeness_by_applicability.parquet",data/"media_assertion_quality/manifest.json",data/"occurrence_quality/manifest.json",data/"derived_assertions/temporal/manifest.json",data/"derived_assertions/geography/manifest.json",data/"derived_assertions/taxonomy/manifest.json",data/"derived_assertions/biology/manifest.json",data/"rights_and_attribution/manifest.json",data/"duplicates/manifest.json",data/"media_resources/manifest.json",data/"ai_readiness/manifest.json",data/"representativeness/manifest.json",data/"representativeness_concentration/manifest.json",data/"completeness_gates/manifest.json",data/"quality_results/review_capsules/manifest.json",data/"incremental_validation/manifest.json",data/"quality_results/restart_validation/manifest.json",data/"freshness/manifest.json",data/"provider_enrichment/manifest.json",data/"performance/manifest.json",data/"quality_results/phase4_pilot_preflight/manifest.json",reports/"manifest.json",receipt]
     for path in required:
         if not path.is_file():raise FileNotFoundError(path)
     if destination.exists():raise FileExistsError(destination)
     load=lambda p:json.loads(Path(p).read_text())
-    base=load(data/"manifest.json");media=load(data/"media_assertion_quality/manifest.json");occ=load(data/"occurrence_quality/manifest.json");rights=load(data/"rights_and_attribution/manifest.json");dup=load(data/"duplicates/manifest.json");ai=load(data/"ai_readiness/manifest.json");inc=load(data/"incremental_validation/manifest.json");perf=load(data/"performance/manifest.json");pilot=load(data/"quality_results/phase4_pilot_preflight/manifest.json");report_manifest=load(reports/"manifest.json");tests=load(receipt)
+    base=load(data/"manifest.json");media=load(data/"media_assertion_quality/manifest.json");occ=load(data/"occurrence_quality/manifest.json");rights=load(data/"rights_and_attribution/manifest.json");dup=load(data/"duplicates/manifest.json");resources=load(data/"media_resources/manifest.json");ai=load(data/"ai_readiness/manifest.json");representation=load(data/"representativeness/manifest.json");concentration=load(data/"representativeness_concentration/manifest.json");gates=load(data/"completeness_gates/manifest.json");reviews=load(data/"quality_results/review_capsules/manifest.json");inc=load(data/"incremental_validation/manifest.json");recovery=load(data/"quality_results/restart_validation/manifest.json");freshness=load(data/"freshness/manifest.json");providers=load(data/"provider_enrichment/manifest.json");lineage=load(data/"source_lineage/identity_v2/manifest.json");perf=load(data/"performance/manifest.json");pilot=load(data/"quality_results/phase4_pilot_preflight/manifest.json");report_manifest=load(reports/"manifest.json");tests=load(receipt)
     inventory=pq.read_table(data/"source_inventory.parquet").to_pylist()
     v3_entry=next(row for row in inventory if row["artifact_role"]=="rights_filtered_v3")
     v3=(repo/str(v3_entry["path"])).resolve();v3_ok=_sha256(v3)==expected_v3_sha256
@@ -89,7 +89,7 @@ def publish_acceptance_audit(*,repository_root:str|Path,data_root:str|Path,repor
     facts={
         1:(v3_ok,f"v3 SHA-256 {_sha256(v3)}",[str(v3)]),
         2:(True,"Eight-stage funnel has no unexplained residual.",[str(data/"source_funnel.parquet")]),
-        3:(pq.ParquetFile(data/"source_lineage/source_media_status.parquet").metadata.num_rows==18_680_565,"18,680,565 raw media assertions have lineage status.",[str(data/"source_lineage/source_media_status.parquet")]),
+        3:(lineage["counts"]["rows"]==18_680_565 and lineage["validation"]["all_rows_have_source_value_hash"],"18,680,565 raw media assertions have stable source locations and value hashes.",[str(data/"source_lineage/identity_v2/manifest.json")]),
         4:(occ["counts"]["rows"]==11_569_412,"Occurrence denominator is 11,569,412.",[str(data/"occurrence_quality/manifest.json")]),
         5:(media["counts"]["rows"]==16_612_063,"Media denominator is 16,612,063.",[str(data/"media_assertion_quality/manifest.json")]),
         6:(True,"Applicability profile separates structural and repairable nulls.",[str(data/"completeness_by_applicability.parquet")]),
@@ -108,18 +108,18 @@ def publish_acceptance_audit(*,repository_root:str|Path,data_root:str|Path,repor
         19:(missing_format_status==(131_804,131_804),"All 131,804 direct format gaps are explicitly UNKNOWN/NOT_TESTED.",[str(data/"media_assertion_quality/media_assertion_quality.parquet")]),
         20:(missing_type_status==(17,17),"All 17 direct rows missing media_type have CONFLICT status.",[str(data/"media_assertion_quality/media_assertion_quality.parquet")]),
         22:(pilot["overall_acceptance_status"]!="PASS","Full queue is blocked while five pilot gates remain NOT_TESTED.",[str(data/"quality_results/phase4_pilot_preflight/manifest.json")]),
-        23:(inc["validation"]["unchanged_rows_not_queued"],"Unchanged full rerun queues zero rows.",[str(data/"incremental_validation/manifest.json")]),
+        23:(recovery["validation"]["all_committed_stages_skippable"] and recovery["validation"]["unchanged_rows_not_reprocessed"],f"{recovery['counts']['skipped_committed_stages']} committed stages are checksum-verified and skippable; unchanged queue is zero.",[str(data/"quality_results/restart_validation/manifest.json")]),
         24:(inc["validation"]["unchanged_rerun_semantically_identical"],"Full rerun semantic fingerprints match.",[str(data/"incremental_validation/manifest.json")]),
-        25:(True,"Published manifests record every output-part SHA-256.",[str(data/"ai_readiness/manifest.json"),str(data/"incremental_validation/manifest.json")]),
+        25:(resources["validation"]["parts_nonempty"] and lineage["validation"]["manifest_written_last"],"Partitioned lineage, resource, readiness, and incremental outputs record every part SHA-256.",[str(data/"source_lineage/identity_v2/manifest.json"),str(data/"media_resources/manifest.json"),str(data/"ai_readiness/manifest.json"),str(data/"incremental_validation/manifest.json")]),
         26:(True,"All output schemas and rules have explicit versions.",[str(data)]),
         27:(True,"Publication validations require manifest_written_last.",[str(data)]),
         28:(dup["validation"]["content_claims_withheld"],"Exact-content and perceptual groups are separate NOT_TESTED rows.",[str(data/"duplicates/duplicate_group_summary.parquet")]),
         29:(True,"AI readiness is a separate one-row-per-media layer.",[str(data/"ai_readiness/manifest.json")]),
         30:(True,"No model output is present in or written over source taxonomy.",[str(data/"ai_readiness/manifest.json")]),
-        31:(True,"Representativeness includes raw and canonical-URL-adjusted counts.",[str(data/"representativeness/coverage_by_dimension.parquet")]),
+        31:(concentration["counts"]["dimensions"]==4 and gates["counts"]["gate_summaries"]==7,"Representativeness includes raw, URL-adjusted, gate, and four explicit concentration dimensions.",[str(data/"representativeness/coverage_by_dimension.parquet"),str(data/"representativeness_concentration/concentration_metrics.parquet"),str(data/"completeness_gates/gate_summary.parquet")]),
         32:(True,"Before/after report distinguishes immutable source from derived assertions.",[str(reports/"before_after_summary.md")]),
         33:(True,"Completeness report contains invalid_present counts.",[str(reports/"completeness_by_applicability.md")]),
-        34:(True,"Provider and dataset scorecards are materialized and reported.",[str(data/"representativeness/provider_scorecard.parquet"),str(data/"representativeness/dataset_scorecard.parquet")]),
+        34:(representation["counts"]["provider"]>0 and representation["counts"]["dataset"]>0,"Provider and dataset scorecards are materialized and reported.",[str(data/"representativeness/provider_scorecard.parquet"),str(data/"representativeness/dataset_scorecard.parquet")]),
         35:(True,"AI report aggregates explicit reason_codes.",[str(reports/"ai_readiness.md")]),
         36:(True,"Geographic, biological, duplicate, and readiness conflicts are reported.",[str(reports/"duplicates_and_conflicts.md")]),
         37:(True,"Applicability report separates repairable and non-repairable nulls.",[str(reports/"completeness_by_applicability.md")]),
@@ -127,7 +127,7 @@ def publish_acceptance_audit(*,repository_root:str|Path,data_root:str|Path,repor
         39:(perf["validation"]["peak_rss_below_16_gib"],f"Measured peak RSS {perf['counts']['peak_rss_bytes']:,} bytes.",[str(data/"performance/manifest.json")]),
         40:(tests.get("exit_code")==0 and tests.get("tests_passed",0)>0,f"{tests.get('tests_passed')} required tests passed.",[str(receipt)]),
         41:(diff.returncode==0,f"git diff --check exit {diff.returncode}: {diff_evidence}",[str(repo)]),
-        42:(report_manifest["validation"]["no_unsubstantiated_network_claim"],"Final reports retain NOT_TESTED claims and stored evidence paths.",[str(reports/"manifest.json")]),
+        42:(report_manifest["validation"]["no_unsubstantiated_network_claim"] and reviews["counts"]["capsule_rows"]>0 and providers["counts"]["executed_adapters"]==0 and freshness["counts"]["provider_dataset_rows"]>0,"Final reports retain NOT_TESTED network/provider claims and bind review and freshness evidence.",[str(reports/"manifest.json"),str(data/"quality_results/review_capsules/manifest.json"),str(data/"freshness/manifest.json"),str(data/"provider_enrichment/manifest.json")]),
     }
     rows=[]
     for number,requirement in enumerate(CRITERIA,1):
@@ -135,7 +135,7 @@ def publish_acceptance_audit(*,repository_root:str|Path,data_root:str|Path,repor
             status="NOT_TESTED";summary="Pilot selection/review template is reproducible, but live execution and manual adjudication have not occurred.";paths=[str(data/"quality_results/phase4_pilot_preflight/manifest.json")];network=True
         else:
             passed,summary,paths=facts[number];status="PASS" if passed else "FAIL";network=False
-        rows.append({"acceptance_version":ACCEPTANCE_VERSION,"criterion_number":number,"requirement":requirement,"status":status,"blocking":status!="PASS","network_required":network,"evidence_summary":summary,"evidence_paths":paths,"rule_version":"global-acceptance/v1.0.0"})
+        rows.append({"acceptance_version":ACCEPTANCE_VERSION,"criterion_number":number,"requirement":requirement,"status":status,"blocking":status!="PASS","network_required":network,"evidence_summary":summary,"evidence_paths":paths,"rule_version":"global-acceptance/v2.0.0"})
     destination.parent.mkdir(parents=True,exist_ok=True);staging=destination.parent/f".{destination.name}.{uuid4().hex}.staging";staging.mkdir();table_path=staging/"acceptance_criteria.parquet";report_path=staging/"acceptance_audit.md"
     pq.write_table(pa.Table.from_pylist(rows,schema=SCHEMA),table_path,compression="zstd");_write_text(report_path,_markdown(rows))
     counts={status:sum(row["status"]==status for row in rows) for status in ("PASS","FAIL","NOT_TESTED","UNKNOWN")}
