@@ -970,6 +970,36 @@ class _PinnedAddressHTTPTransport(httpx.BaseTransport):
         self._pool.close()
 
 
+def create_pinned_address_http_transport(
+    *,
+    max_connections: int,
+    resolve_host: Callable[[str], Sequence[str]] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> httpx.BaseTransport:
+    """Build the shared SSRF-safe transport for dynamic public HTTP hosts.
+
+    The transport resolves each connection through the supplied resolver,
+    rejects every non-public answer, and pins the socket to the validated IP
+    so a second DNS lookup cannot redirect the request after validation.
+    """
+
+    if isinstance(max_connections, bool) or max_connections <= 0:
+        raise ValueError("max_connections must be positive")
+    validator = _HostValidator(resolve_host or _resolve_host)
+    return _PinnedAddressHTTPTransport(
+        validator,
+        max_connections=max_connections,
+        pinned_hosts=None,
+        monotonic=monotonic,
+    )
+
+
+def resolve_host_addresses(host: str) -> Sequence[str]:
+    """Resolve a hostname for callers using the shared safe transport."""
+
+    return _resolve_host(host)
+
+
 def download_reference_media(
     selections: pl.DataFrame,
     media_candidates: pl.DataFrame,

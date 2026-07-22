@@ -28,6 +28,11 @@ from biominer.flickr_fetch.australia import (
     compile_australia_query_plan,
 )
 from biominer.flickr_fetch.metadata_poller import SOFT_API_CALLS_PER_HOUR, MetadataPollState, poll_once
+from biominer.gbif_media_resolution.cli import (
+    COMMAND as GBIF_MEDIA_URL_COMMAND,
+    add_gbif_media_resolution_parser,
+    run_gbif_media_resolution_command,
+)
 from biominer.registry.audit import audit_registry
 from biominer.registry.build import build_registry
 from biominer.registry.compiler import compile_registry_fixture, compile_registry_parquet_source
@@ -176,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
+    add_gbif_media_resolution_parser(subparsers)
     evaluation = subparsers.add_parser("evaluation")
     evaluation_subparsers = evaluation.add_subparsers(dest="evaluation_command")
     evaluation_sampling = evaluation_subparsers.add_parser("build-sampling-frame")
@@ -576,6 +582,8 @@ def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
         return 0
+    if args.command == GBIF_MEDIA_URL_COMMAND:
+        return run_gbif_media_resolution_command(args)
     if args.command == "dev" and args.dev_command == "vision":
         if args.vision_command == "bioclip-runtime-check":
             return _run_bioclip_runtime_check(args)
