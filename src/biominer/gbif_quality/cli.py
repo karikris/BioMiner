@@ -12,6 +12,7 @@ from biominer.gbif_quality.ai_readiness import publish_ai_readiness
 from biominer.gbif_quality.concentration import publish_concentration_metrics
 from biominer.gbif_quality.duplicates import publish_duplicate_groups
 from biominer.gbif_quality.final_reports import publish_final_reports
+from biominer.gbif_quality.freshness import publish_freshness_audit
 from biominer.gbif_quality.gates import publish_gate_breakdowns
 from biominer.gbif_quality.incremental import publish_incremental_state
 from biominer.gbif_quality.media_resources import publish_media_resources
@@ -84,6 +85,7 @@ def add_gbif_quality_parser(
         ("gates", "publish the seven completeness-gate breakdowns"),
         ("review-capsules", "publish deterministic manual-review capsules"),
         ("incremental", "publish source-domain hashes and a changed-row queue"),
+        ("freshness", "classify provider datasets and derived snapshot freshness"),
     ):
         stage = stages.add_parser(name, help=help_text)
         _add_publication_arguments(stage)
@@ -96,6 +98,9 @@ def add_gbif_quality_parser(
             stage.add_argument("--max-per-stratum", type=int, default=10)
         if name == "incremental":
             stage.add_argument("--previous-state-glob")
+        if name == "freshness":
+            stage.add_argument("--provider-stale-days", type=int, default=365)
+            stage.add_argument("--derived-stale-days", type=int, default=30)
 
     lineage = stages.add_parser(
         "source-lineage", help="publish source-row locations and cryptographic value hashes"
@@ -149,6 +154,7 @@ def run_gbif_quality_command(args: argparse.Namespace) -> int:
         "gates",
         "review-capsules",
         "incremental",
+        "freshness",
         "source-lineage",
         "reports",
         "acceptance",
@@ -282,6 +288,18 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
             else None
         ),
     }
+    if stage == "freshness":
+        return publish_freshness_audit(
+            v3_parquet=v3,
+            source_inventory_json=data / "source_inventory.json",
+            data_root=data,
+            output_directory=output,
+            expected_rows=args.expected_rows,
+            code_commit=commit,
+            provider_stale_days=args.provider_stale_days,
+            derived_stale_days=args.derived_stale_days,
+            **bounded,
+        )
     if stage == "rights":
         return publish_media_rights(
             **common,
@@ -410,6 +428,7 @@ def _default_output_name(stage: str) -> str:
         "gates": "completeness_gates",
         "review-capsules": "quality_results/review_capsules",
         "incremental": "incremental_state",
+        "freshness": "freshness",
     }[stage]
 
 

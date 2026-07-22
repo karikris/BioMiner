@@ -47,6 +47,7 @@ def test_quality_offline_publication_commands_have_bounded_defaults() -> None:
         "gates",
         "review-capsules",
         "incremental",
+        "freshness",
     ):
         args = build_parser().parse_args([COMMAND, command])
 
@@ -86,3 +87,10 @@ def test_quality_source_lineage_defaults_cover_raw_multimedia_rows() -> None:
     assert args.partition_rows == 1_000_000
     assert args.output_directory.endswith("source_lineage/identity_v2")
     assert args.multimedia_parquet is None
+
+
+def test_quality_freshness_has_explicit_ttls() -> None:
+    args = build_parser().parse_args([COMMAND, "freshness"])
+
+    assert args.provider_stale_days == 365
+    assert args.derived_stale_days == 30
