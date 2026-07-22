@@ -66,7 +66,7 @@ def test_temporal_publication_retains_flags_and_is_idempotent(tmp_path: Path) ->
     rows = [
         _row("1", "2020-02-29", None, None, None),
         _row("1", "2020-02-29", None, None, None),
-        _row("2", "1959-12-31", None, "12", "31"),
+        _row("2", "1959-12-31/1960-01-02", None, "12", "31"),
         _row("3", "2024-05", "2024", None, None),
         _row("4", "2030-01-01", None, None, None),
         _row("5", "2021-02-29", None, None, None),
@@ -133,5 +133,7 @@ def _publish(source: Path, output: Path):
         expected_derived_month_media_rows=4,
         expected_derived_day_media_rows=4,
         code_commit="deadbeef",
+        expected_ancient_media_rows=1,
+        expected_ancient_occurrences=1,
         batch_rows=2,
     )

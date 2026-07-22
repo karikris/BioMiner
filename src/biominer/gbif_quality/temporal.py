@@ -132,6 +132,8 @@ def publish_temporal_quality_v2(
     expected_derived_month_media_rows: int,
     expected_derived_day_media_rows: int,
     code_commit: str,
+    expected_ancient_media_rows: int | None = None,
+    expected_ancient_occurrences: int | None = None,
     batch_rows: int = 50_000,
 ) -> TemporalQualityResult:
     """Publish occurrence-grain temporal quality while retaining ancient rows."""
@@ -170,6 +172,10 @@ def publish_temporal_quality_v2(
             == expected_derived_month_media_rows,
             "derived_day_media_rows_match": counts["derived_day_media_rows"]
             == expected_derived_day_media_rows,
+            "ancient_media_rows_match": expected_ancient_media_rows is None
+            or counts["ancient_media_rows"] == expected_ancient_media_rows,
+            "ancient_occurrences_match": expected_ancient_occurrences is None
+            or counts["ancient_occurrences"] == expected_ancient_occurrences,
             "ancient_rows_retained": counts["ancient_media_rows"] >= 0
             and counts["occurrence_rows"] == expected_occurrences,
             "original_fields_not_overwritten": True,
@@ -369,7 +375,7 @@ def _temporal_row(
                 reviewer_status="NOT_REQUIRED" if not conflict else "PENDING",
             )
         )
-    ancient = parsed.status == "PASS" and parsed.end is not None and parsed.end.year < 1960
+    ancient = parsed.status == "PASS" and parsed.start is not None and parsed.start.year < 1960
     future = parsed.status == "PASS" and parsed.start is not None and parsed.start > snapshot_date
     return (
         {
