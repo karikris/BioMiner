@@ -479,7 +479,8 @@ def _occurrence_row(
         else "UNKNOWN"
         if accepted_key is None
         else "PASS"
-        if taxon_key.isdigit() and accepted_key.isdigit()
+        if re.fullmatch(r"[A-Za-z0-9]+", taxon_key)
+        and re.fullmatch(r"[A-Za-z0-9]+", accepted_key)
         else "FAIL"
     )
     species = field("species")

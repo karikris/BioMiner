@@ -37,3 +37,9 @@ def test_policy_keeps_identification_evidence_independent() -> None:
     assert "Must not be inferred" in by_name["identifiedBy"].policy_note
     assert "Must not be inferred" in by_name["identificationVerificationStatus"].policy_note
     assert not by_name["identifiedBy"].allowed_derivation_sources
+
+
+def test_gbif_taxon_keys_remain_strings() -> None:
+    policy = build_field_policy(pa.schema([("acceptedTaxonKey", pa.string())]))[0]
+
+    assert policy.valid_type == "gbif_taxon_key_string"

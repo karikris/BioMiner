@@ -51,6 +51,7 @@ def test_occurrence_checks_are_one_row_per_gbif_and_keep_context(tmp_path: Path)
     output = {row["gbifID"]: row for row in pq.read_table(result.quality_path).to_pylist()}
     assert output["1"]["media_assertion_count"] == 2
     assert output["1"]["coordinate_pair_status"] == "PASS"
+    assert output["1"]["accepted_taxon_key_status"] == "PASS"
     assert output["2"]["coordinate_pair_status"] == "WITHHELD"
     assert output["2"]["rank_name_consistency_status"] == "PASS"
     assert output["4"]["dataset_key_status"] == "FAIL"

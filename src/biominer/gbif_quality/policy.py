@@ -47,19 +47,6 @@ INTEGER_FIELDS = frozenset(
         "year",
         "month",
         "day",
-        "taxonKey",
-        "acceptedTaxonKey",
-        "kingdomKey",
-        "phylumKey",
-        "classKey",
-        "orderKey",
-        "superfamilyKey",
-        "familyKey",
-        "subfamilyKey",
-        "tribeKey",
-        "genusKey",
-        "subgenusKey",
-        "speciesKey",
     }
 )
 FLOAT_FIELDS = frozenset(
@@ -263,6 +250,8 @@ def _applicability(name: str, scope: str) -> tuple[str, str, str]:
 
 
 def _valid_type(name: str) -> str:
+    if name.endswith("Key") and name != "datasetKey":
+        return "gbif_taxon_key_string"
     if name in INTEGER_FIELDS:
         return "nullable_integer"
     if name in FLOAT_FIELDS:
