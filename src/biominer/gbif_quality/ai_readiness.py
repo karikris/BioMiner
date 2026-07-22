@@ -294,16 +294,17 @@ def _identity_validation_sql(paths: dict[str, Path]) -> str:
         SELECT
           count(*) FILTER (
             WHERE q.source_row_id IS DISTINCT FROM r.source_row_id
-               OR q.source_row_id IS DISTINCT FROM d.source_row_id
                OR q.media_assertion_id IS DISTINCT FROM r.media_assertion_id
-               OR q.media_assertion_id IS DISTINCT FROM d.media_assertion_id
+               OR d.media_assertion_id IS NULL
+               OR q.source_row_id IS DISTINCT FROM d.source_row_id
                OR trim(cast(v.gbifID AS VARCHAR)) IS DISTINCT FROM q.gbifID
           ) AS identity_mismatches,
           count(*) FILTER (WHERE o.gbifID IS NULL) AS unresolved_occurrences
         FROM read_parquet({_lit(str(paths['v3']))}) v
         POSITIONAL JOIN read_parquet({_lit(str(paths['media_quality']))}) q
         POSITIONAL JOIN read_parquet({_lit(str(paths['rights']))}) r
-        POSITIONAL JOIN read_parquet({_lit(str(paths['duplicates']))}) d
+        LEFT JOIN read_parquet({_lit(str(paths['duplicates']))}) d
+          ON q.media_assertion_id = d.media_assertion_id
         LEFT JOIN read_parquet({_lit(str(paths['occurrence_quality']))}) o
           ON trim(cast(v.gbifID AS VARCHAR)) = o.gbifID
     """
@@ -342,7 +343,8 @@ def _publication_sql(
         FROM read_parquet({_lit(str(paths['v3']))}) v
         POSITIONAL JOIN read_parquet({_lit(str(paths['media_quality']))}) q
         POSITIONAL JOIN read_parquet({_lit(str(paths['rights']))}) r
-        POSITIONAL JOIN read_parquet({_lit(str(paths['duplicates']))}) d
+        JOIN read_parquet({_lit(str(paths['duplicates']))}) d
+          ON q.media_assertion_id = d.media_assertion_id
         JOIN read_parquet({_lit(str(paths['occurrence_quality']))}) o
           ON trim(cast(v.gbifID AS VARCHAR)) = o.gbifID
         LEFT JOIN read_parquet({_lit(str(paths['taxonomy_repairs']))}) tr
