@@ -69,6 +69,11 @@ class ResolutionInput:
     media_format: str | None
     media_license: str | None
     occurrence_license: str | None
+    provider: str | None = None
+    publisher: str | None = None
+    dataset_name: str | None = None
+    taxon_rank: str | None = None
+    country_code: str | None = None
 
     @property
     def host(self) -> str:
@@ -92,6 +97,11 @@ class ResolutionInput:
             "media_format": self.media_format,
             "media_license": self.media_license,
             "occurrence_license": self.occurrence_license,
+            "provider": self.provider,
+            "publisher": self.publisher,
+            "dataset_name": self.dataset_name,
+            "taxon_rank": self.taxon_rank,
+            "country_code": self.country_code,
         }
 
     @classmethod
@@ -105,6 +115,11 @@ class ResolutionInput:
             media_format=_optional_string(value.get("media_format")),
             media_license=_optional_string(value.get("media_license")),
             occurrence_license=_optional_string(value.get("occurrence_license")),
+            provider=_optional_string(value.get("provider")),
+            publisher=_optional_string(value.get("publisher")),
+            dataset_name=_optional_string(value.get("dataset_name")),
+            taxon_rank=_optional_string(value.get("taxon_rank")),
+            country_code=_optional_string(value.get("country_code")),
         )
 
 

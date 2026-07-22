@@ -23,6 +23,7 @@ from biominer.gbif_media_resolution.pipeline import (
     finalize_resolution,
     prepare_resolution,
     publish_v4,
+    pilot_selection_table,
     run_worker,
     select_pilot_inputs,
 )
@@ -117,6 +118,39 @@ def test_pilot_selection_uses_host_size_bands_deterministically() -> None:
     assert [item.source_row_id for item in selected] == sorted(
         item.source_row_id for item in selected
     )
+
+
+def test_pilot_selection_round_robins_context_strata() -> None:
+    rows = []
+    for index in range(1_000):
+        reference = f"https://large.test/{index}"
+        rows.append(_input(
+            source_row_id=source_row_id("sha256:source", str(index), reference),
+            gbif_id=str(index), media_references=reference,
+            provider="provider-a" if index < 500 else "provider-b",
+            publisher="publisher-a" if index < 500 else "publisher-b",
+            taxon_rank="SPECIES", country_code="AU",
+        ))
+
+    selected = select_pilot_inputs(rows)
+    providers = [item.provider for item in selected]
+    table = pilot_selection_table(selected, population=rows)
+
+    assert len(selected) == 100
+    assert providers.count("provider-a") == 50
+    assert providers.count("provider-b") == 50
+    assert table.num_rows == 100
+    assert set(table.column("host_size_band").to_pylist()) == {"large"}
+    assert all(table.column("selection_stratum").to_pylist())
+
+
+def test_resolution_input_payload_preserves_pilot_context() -> None:
+    item = _input(
+        provider="provider", publisher="publisher", dataset_name="dataset",
+        taxon_rank="SPECIES", country_code="AU",
+    )
+
+    assert ResolutionInput.from_payload(item.to_payload()) == item
 
 
 def test_public_url_validation_rejects_credentials_and_private_dns() -> None:

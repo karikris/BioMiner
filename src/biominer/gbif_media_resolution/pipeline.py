@@ -32,6 +32,7 @@ from biominer.gbif_media_resolution.models import (
     source_row_id,
 )
 from biominer.gbif_media_resolution.adapters import (
+    DEFAULT_PROVIDER_ADAPTERS,
     DEFAULT_PROVIDER_ADAPTER_VERSIONS,
 )
 from biominer.gbif_media_resolution.resolver import (
@@ -58,6 +59,35 @@ V4_FIELDS = (
     pa.field("media_identifier_resolution_status", pa.string()),
     pa.field("media_identifier_resolution_id", pa.string()),
     pa.field("media_identifier_license_basis", pa.string()),
+)
+PILOT_CONTEXT_COLUMNS = (
+    "publisher",
+    "datasetName",
+    "media_publisher",
+    "taxonRank",
+    "countryCode",
+)
+PILOT_SELECTION_SCHEMA = pa.schema(
+    [
+        ("source_row_id", pa.string()),
+        ("gbifID", pa.string()),
+        ("media_references", pa.string()),
+        ("media_host", pa.string()),
+        ("host_population_rows", pa.int64()),
+        ("host_size_band", pa.string()),
+        ("provider", pa.string()),
+        ("publisher", pa.string()),
+        ("dataset_name", pa.string()),
+        ("url_pattern", pa.string()),
+        ("license_state", pa.string()),
+        ("reference_type", pa.string()),
+        ("taxon_rank", pa.string()),
+        ("country_code", pa.string()),
+        ("expected_adapter", pa.string()),
+        ("rights_blocked", pa.bool_()),
+        ("selection_stratum", pa.string()),
+        ("selection_hash", pa.string()),
+    ]
 )
 
 
@@ -108,15 +138,20 @@ def prepare_resolution(
     rights_blocked = 0
     identities: set[str] = set()
     all_inputs: list[ResolutionInput] = []
+    scan_columns = list(REQUIRED_SOURCE_COLUMNS) + [
+        name for name in PILOT_CONTEXT_COLUMNS if name in source_file.schema_arrow.names
+    ]
     for batch in source_file.iter_batches(
         batch_size=max(enqueue_batch_rows, 10_000),
-        columns=list(REQUIRED_SOURCE_COLUMNS),
+        columns=scan_columns,
         use_threads=True,
     ):
         values = {
             name: batch.column(index).to_pylist()
-            for index, name in enumerate(REQUIRED_SOURCE_COLUMNS)
+            for index, name in enumerate(scan_columns)
         }
+        for name in PILOT_CONTEXT_COLUMNS:
+            values.setdefault(name, [None] * batch.num_rows)
         for offset in range(batch.num_rows):
             identifier = _trimmed(values["media_identifier"][offset])
             reference = _trimmed(values["media_references"][offset])
@@ -139,6 +174,12 @@ def prepare_resolution(
                 media_format=_optional(values["media_format"][offset]),
                 media_license=media_license,
                 occurrence_license=_optional(values["license"][offset]),
+                provider=_optional(values["media_publisher"][offset])
+                or _optional(values["publisher"][offset]),
+                publisher=_optional(values["publisher"][offset]),
+                dataset_name=_optional(values["datasetName"][offset]),
+                taxon_rank=_optional(values["taxonRank"][offset]),
+                country_code=_optional(values["countryCode"][offset]),
             )
             all_inputs.append(item)
             selected += 1
@@ -203,6 +244,14 @@ def prepare_resolution(
         )
 
     root.mkdir(parents=True, exist_ok=True)
+    pilot_artifact = None
+    if mode == "pilot":
+        pilot_path = root / f"pilot-selection-{run_id}.parquet"
+        _write_parquet_create_only(
+            pilot_path,
+            pilot_selection_table(work_inputs, population=all_inputs),
+        )
+        pilot_artifact = _parquet_inventory(pilot_path)
     receipt = {
         **config,
         "run_id": run_id,
@@ -215,6 +264,7 @@ def prepare_resolution(
         "newly_enqueued_rows": inserted,
         "prepared_at": _timestamp(),
         "git_commit": _git_revision(),
+        "pilot_selection_artifact": pilot_artifact,
     }
     _write_json_idempotent(root / f"prepare-{run_id}.json", receipt)
     return receipt
@@ -777,21 +827,122 @@ def _worker_exception_result(item: ResolutionInput, exc: Exception) -> Resolutio
 
 
 def select_pilot_inputs(inputs: list[ResolutionInput]) -> list[ResolutionInput]:
-    """Return the deterministic host-stratified live-pilot workload."""
+    """Return a deterministic, host-capped, multidimensional pilot workload."""
     by_host: dict[str, list[ResolutionInput]] = {}
     for item in inputs:
         by_host.setdefault(item.host, []).append(item)
     selected: list[ResolutionInput] = []
     for host in sorted(by_host):
-        rows = sorted(by_host[host], key=lambda item: item.source_row_id)
+        rows = by_host[host]
         if len(rows) >= 1_000:
             limit = 100
         elif len(rows) >= 25:
             limit = 25
         else:
             limit = len(rows)
-        selected.extend(rows[:limit])
+        strata: dict[tuple[str, ...], list[ResolutionInput]] = {}
+        for item in rows:
+            strata.setdefault(_pilot_stratum(item), []).append(item)
+        for values in strata.values():
+            values.sort(key=lambda item: _selection_hash(item.source_row_id))
+        ordered_strata = sorted(strata)
+        chosen: list[ResolutionInput] = []
+        while len(chosen) < limit:
+            progressed = False
+            for stratum in ordered_strata:
+                values = strata[stratum]
+                if values and len(chosen) < limit:
+                    chosen.append(values.pop(0))
+                    progressed = True
+            if not progressed:
+                break
+        selected.extend(chosen)
     return sorted(selected, key=lambda item: item.source_row_id)
+
+
+def pilot_selection_table(
+    selected: list[ResolutionInput], *, population: list[ResolutionInput]
+) -> pa.Table:
+    host_counts = Counter(item.host for item in population)
+    rows = []
+    for item in selected:
+        host_count = host_counts[item.host]
+        stratum = _pilot_stratum(item)
+        rows.append(
+            {
+                "source_row_id": item.source_row_id,
+                "gbifID": item.gbif_id,
+                "media_references": item.media_references,
+                "media_host": item.host or "<MISSING>",
+                "host_population_rows": host_count,
+                "host_size_band": "large" if host_count >= 1_000 else "medium" if host_count >= 25 else "small",
+                "provider": item.provider or "<MISSING>",
+                "publisher": item.publisher or "<MISSING>",
+                "dataset_name": item.dataset_name or "<MISSING>",
+                "url_pattern": _url_pattern(item),
+                "license_state": _license_state(item),
+                "reference_type": _reference_type(item.media_references),
+                "taxon_rank": item.taxon_rank or "<MISSING>",
+                "country_code": item.country_code or "<MISSING>",
+                "expected_adapter": _expected_adapter(item),
+                "rights_blocked": item.rights_blocked,
+                "selection_stratum": "|".join(stratum),
+                "selection_hash": "sha256:" + _selection_hash(item.source_row_id),
+            }
+        )
+    return pa.Table.from_pylist(rows, schema=PILOT_SELECTION_SCHEMA)
+
+
+def _pilot_stratum(item: ResolutionInput) -> tuple[str, ...]:
+    return (
+        item.provider or "<MISSING>",
+        item.publisher or "<MISSING>",
+        _url_pattern(item),
+        _license_state(item),
+        _reference_type(item.media_references),
+        item.taxon_rank or "<MISSING>",
+        item.country_code or "<MISSING>",
+        _expected_adapter(item),
+    )
+
+
+def _expected_adapter(item: ResolutionInput) -> str:
+    for adapter in DEFAULT_PROVIDER_ADAPTERS:
+        if adapter.supports(item):
+            return adapter.adapter_id
+    return "generic_structured_or_gbif"
+
+
+def _url_pattern(item: ResolutionInput) -> str:
+    from urllib.parse import urlsplit
+    parsed = urlsplit(item.media_references)
+    path = parsed.path.casefold()
+    if any(adapter.supports(item) for adapter in DEFAULT_PROVIDER_ADAPTERS):
+        return _expected_adapter(item)
+    if "/occurrence/" in path:
+        return "occurrence_record"
+    suffix = Path(path).suffix
+    return f"path_suffix:{suffix}" if suffix else "extensionless_reference"
+
+
+def _reference_type(url: str) -> str:
+    from urllib.parse import urlsplit
+    suffix = Path(urlsplit(url).path.casefold()).suffix
+    if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".tif", ".tiff"}:
+        return "image_like_reference"
+    if suffix in {".json", ".xml"}:
+        return "structured_endpoint"
+    return "html_or_unknown_reference"
+
+
+def _license_state(item: ResolutionInput) -> str:
+    if item.rights_blocked:
+        return "explicitly_restricted"
+    return item.license_basis
+
+
+def _selection_hash(value: str) -> str:
+    return hashlib.sha256(f"gbif-media-url-pilot/v2|{value}".encode()).hexdigest()
 
 
 def _read_selected_tables(
