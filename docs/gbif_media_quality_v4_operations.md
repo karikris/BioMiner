@@ -18,6 +18,7 @@ not treated as an ordinary repairable null.
 | Layer | Grain | Purpose |
 | --- | --- | --- |
 | `source_lineage/source_media_status.parquet` | raw multimedia assertion | Stable identity and reason-coded raw-to-v3 funnel status |
+| `source_lineage/identity_v2/parts/**/*.parquet` | raw multimedia assertion | Download key, immutable source location, ingestion time, and cryptographic source-value hash |
 | `occurrence_quality/occurrence_quality.parquet` | `gbifID` | Occurrence, temporal, spatial, taxonomic, and identification checks |
 | `media_assertion_quality/media_assertion_quality.parquet` | media assertion | Request-free URL syntax, type/format, rights, and provenance checks |
 | `derived_assertions/*` | sparse assertion/candidate | Original-preserving temporal, geographic, taxonomic, life-stage, and sex evidence |
@@ -26,6 +27,9 @@ not treated as an ordinary repairable null.
 | `media_resources/parts/**/*.parquet` | canonical URL resource | Canonical media identity and explicitly untested network/content observations |
 | `ai_readiness/parts/*.parquet` | media assertion | Independent readiness gates, ingestion decision, and reason codes |
 | `representativeness/*.parquet` | dimension, taxon, provider, or dataset | Raw and URL-adjusted support, bias flags, scorecards, and remediation evidence |
+| `representativeness_concentration/concentration_metrics.parquet` | species, cohort, concentration dimension | Provider, creator, regional, and temporal HHI, maximum share, and effective count |
+| `freshness/*.parquet` | provider/dataset or derived manifest | Timestamp conflicts and configurable stale/current classifications |
+| `provider_enrichment/provider_enrichment_registry.parquet` | provider adapter | Versioned structured-metadata contracts for the seven remediation priorities; execution status is explicit |
 | `completeness_gates/*.parquet` | gate and reporting dimension | Seven cumulative-use gates with media, occurrence, URL, and status denominators |
 | `quality_results/review_capsules/*.parquet` | deterministic review item | Sealed before/after/evidence capsules for rights, attribution, duplicates, and exclusions |
 | `incremental_state/state/**/*.parquet` | media assertion | Binary domain hashes for future snapshot diffs |
@@ -48,10 +52,14 @@ Run from the BioMiner repository with the pinned Python environment:
 uv run biominer gbif-media-quality baseline
 uv run biominer gbif-media-quality local-checks
 uv run biominer gbif-media-quality enrich
+uv run biominer gbif-media-quality source-lineage
 uv run biominer gbif-media-quality rights --output-directory data/derived/gbif_media_database/v4-next/rights_and_attribution
 uv run biominer gbif-media-quality duplicates --output-directory data/derived/gbif_media_database/v4-next/duplicates
 uv run biominer gbif-media-quality ai-readiness --output-directory data/derived/gbif_media_database/v4-next/ai_readiness
 uv run biominer gbif-media-quality representativeness --output-directory data/derived/gbif_media_database/v4-next/representativeness
+uv run biominer gbif-media-quality concentration --output-directory data/derived/gbif_media_database/v4-next/representativeness_concentration
+uv run biominer gbif-media-quality freshness --output-directory data/derived/gbif_media_database/v4-next/freshness
+uv run biominer gbif-media-quality provider-registry --output-directory data/derived/gbif_media_database/v4-next/provider_enrichment
 uv run biominer gbif-media-quality media-resources --output-directory data/derived/gbif_media_database/v4-next/media_resources
 uv run biominer gbif-media-quality gates --output-directory data/derived/gbif_media_database/v4-next/completeness_gates
 uv run biominer gbif-media-quality review-capsules --output-directory data/derived/gbif_media_database/v4-next/quality_results/review_capsules
@@ -83,6 +91,12 @@ per-record requests. Never copy the occurrence licence into the media licence,
 infer a creator from unrelated occurrence fields, or turn provider defaults
 into direct source assertions. Publish candidates with evidence and review
 status before promotion.
+
+The provider registry exposes versioned adapters for the seven prioritized
+providers. Registry publication is offline and does not mean an adapter has
+executed: `execution_status=NOT_TESTED` remains authoritative until structured
+provider evidence has been fetched, cached, and validated under explicit
+network authorization.
 
 ## Duplicate analysis and AI readiness
 
