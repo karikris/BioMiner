@@ -18,13 +18,20 @@ from biominer.gbif_quality.policy import (
     build_field_policy,
     field_policy_table,
 )
+from biominer.gbif_quality.profile import (
+    COMPLETENESS_SCHEMA_VERSION,
+    CompletenessProfile,
+    profile_completeness,
+)
 
 __all__ = [
+    "COMPLETENESS_SCHEMA_VERSION",
     "FIELD_POLICY_SCHEMA_VERSION",
     "FUNNEL_SCHEMA_VERSION",
     "INVENTORY_SCHEMA_VERSION",
     "FunnelConfig",
     "FieldPolicy",
+    "CompletenessProfile",
     "SourceInventory",
     "SourceInventoryConfig",
     "SourceFunnel",
@@ -32,4 +39,5 @@ __all__ = [
     "build_source_funnel",
     "build_source_inventory",
     "field_policy_table",
+    "profile_completeness",
 ]
