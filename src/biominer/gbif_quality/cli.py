@@ -17,6 +17,7 @@ from biominer.gbif_quality.media_resources import publish_media_resources
 from biominer.gbif_quality.representativeness import publish_representativeness
 from biominer.gbif_quality.review_capsules import publish_review_capsules
 from biominer.gbif_quality.rights import publish_media_rights
+from biominer.gbif_quality.source_lineage import publish_source_assertion_lineage
 
 from biominer.gbif_quality.pipeline import (
     Phase1Config,
@@ -94,6 +95,23 @@ def add_gbif_quality_parser(
         if name == "incremental":
             stage.add_argument("--previous-state-glob")
 
+    lineage = stages.add_parser(
+        "source-lineage", help="publish source-row locations and cryptographic value hashes"
+    )
+    lineage.add_argument("--repository-root", default=".")
+    lineage.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    lineage.add_argument("--multimedia-parquet")
+    lineage.add_argument(
+        "--output-directory",
+        default=f"{DEFAULT_DATA_ROOT}/source_lineage/identity_v2",
+    )
+    lineage.add_argument("--expected-rows", type=int, default=18_680_565)
+    lineage.add_argument("--partition-rows", type=int, default=1_000_000)
+    lineage.add_argument("--code-commit")
+    lineage.add_argument("--temp-directory")
+    lineage.add_argument("--memory-limit", default="6GB")
+    lineage.add_argument("--threads", type=int, default=4)
+
     reports = stages.add_parser("reports", help="render the final evidence report suite")
     reports.add_argument("--repository-root", default=".")
     reports.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
@@ -128,6 +146,7 @@ def run_gbif_quality_command(args: argparse.Namespace) -> int:
         "gates",
         "review-capsules",
         "incremental",
+        "source-lineage",
         "reports",
         "acceptance",
     }:
@@ -193,6 +212,28 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
     data = _resolve_from_repository(repository, args.data_root)
     commit = args.code_commit or _git_commit(repository)
     stage = args.gbif_quality_command
+    if stage == "source-lineage":
+        multimedia = (
+            _resolve_from_repository(repository, args.multimedia_parquet)
+            if args.multimedia_parquet
+            else _artifact_from_inventory(repository, data, "multimedia_extension")
+        )
+        return publish_source_assertion_lineage(
+            multimedia_parquet=multimedia,
+            source_status_parquet=data / "source_lineage/source_media_status.parquet",
+            source_inventory_json=data / "source_inventory.json",
+            output_directory=_resolve_from_repository(repository, args.output_directory),
+            expected_rows=args.expected_rows,
+            code_commit=commit,
+            partition_rows=args.partition_rows,
+            memory_limit=args.memory_limit,
+            threads=args.threads,
+            temp_directory=(
+                _resolve_from_repository(repository, args.temp_directory)
+                if args.temp_directory
+                else None
+            ),
+        )
     if stage == "reports":
         return publish_final_reports(
             data_root=data,
@@ -322,12 +363,16 @@ def _source_snapshot_id(data: Path) -> str:
 
 
 def _v3_from_inventory(repository: Path, data: Path) -> Path:
+    return _artifact_from_inventory(repository, data, "rights_filtered_v3")
+
+
+def _artifact_from_inventory(repository: Path, data: Path, role: str) -> Path:
     rows = pq.read_table(
         data / "source_inventory.parquet",
-        filters=[("artifact_role", "=", "rights_filtered_v3")],
+        filters=[("artifact_role", "=", role)],
     ).to_pylist()
     if len(rows) != 1:
-        raise ValueError("source inventory must contain exactly one rights_filtered_v3 row")
+        raise ValueError(f"source inventory must contain exactly one {role} row")
     return _resolve_from_repository(repository, rows[0]["path"])
 
 

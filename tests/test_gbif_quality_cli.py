@@ -76,3 +76,12 @@ def test_quality_incremental_accepts_previous_state_for_diffing() -> None:
 
     assert args.previous_state_glob == "previous/**/*.parquet"
     assert args.partitions == 16
+
+
+def test_quality_source_lineage_defaults_cover_raw_multimedia_rows() -> None:
+    args = build_parser().parse_args([COMMAND, "source-lineage"])
+
+    assert args.expected_rows == 18_680_565
+    assert args.partition_rows == 1_000_000
+    assert args.output_directory.endswith("source_lineage/identity_v2")
+    assert args.multimedia_parquet is None
