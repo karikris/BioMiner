@@ -122,6 +122,8 @@ def _source_row(gbif_id, direct, reference, rank, species):
         "coordinateUncertaintyInMeters": "10",
         "eventID": None,
         "parentEventID": None,
+        "locationID": None,
+        "locality": "Sydney",
         "eventDate": "2025-01-02",
     }
 

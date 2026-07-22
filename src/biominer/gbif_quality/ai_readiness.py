@@ -427,8 +427,9 @@ def _publication_sql(
               || cast(round(try_cast(decimalLongitude AS DOUBLE),1) AS VARCHAR))
             ELSE NULL END AS location_group,
           'sha256:' || sha256('event|' || coalesce(cast(datasetKey AS VARCHAR),'<NULL>')
-            || '|' || coalesce(cast(eventID AS VARCHAR),cast(parentEventID AS VARCHAR),
-              cast(eventDate AS VARCHAR),'<NULL>')) AS event_group
+            || '|' || coalesce(cast(eventDate AS VARCHAR),'<NULL>')
+            || '|' || coalesce(cast(locationID AS VARCHAR),cast(locality AS VARCHAR),
+              cast(countryCode AS VARCHAR),'<NULL>')) AS event_group
         FROM joined
       ), gates AS (
         SELECT *,
