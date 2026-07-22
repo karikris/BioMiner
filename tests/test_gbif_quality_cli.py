@@ -24,3 +24,13 @@ def test_quality_local_checks_cli_is_resumable_and_network_free() -> None:
     assert args.memory_limit == "4GB"
     assert args.threads == 4
     assert args.batch_rows == 100_000
+
+
+def test_quality_enrichment_cli_is_resumable_and_network_free() -> None:
+    args = build_parser().parse_args([COMMAND, "enrich"])
+
+    assert args.gbif_quality_command == "enrich"
+    assert args.data_root == "data/derived/gbif_media_database/v4"
+    assert args.memory_limit == "4GB"
+    assert args.threads == 4
+    assert args.batch_rows == 50_000
