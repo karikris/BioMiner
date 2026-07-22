@@ -5,6 +5,11 @@ from biominer.gbif_quality.baseline import (
     BaselinePublication,
     publish_baseline,
 )
+from biominer.gbif_quality.assertions import (
+    DERIVED_ASSERTION_VERSION,
+    DerivedAssertion,
+    build_assertion,
+)
 from biominer.gbif_quality.funnel import (
     FUNNEL_SCHEMA_VERSION,
     FunnelConfig,
@@ -70,6 +75,7 @@ from biominer.gbif_quality.source_ledger import (
 __all__ = [
     "BASELINE_SCHEMA_VERSION",
     "CHECK_REGISTRY_VERSION",
+    "DERIVED_ASSERTION_VERSION",
     "COMPLETENESS_SCHEMA_VERSION",
     "FIELD_POLICY_SCHEMA_VERSION",
     "FUNNEL_SCHEMA_VERSION",
@@ -89,6 +95,7 @@ __all__ = [
     "CompletenessProfile",
     "BaselinePublication",
     "CheckDefinition",
+    "DerivedAssertion",
     "QualityStatus",
     "SourceInventory",
     "SourceInventoryConfig",
@@ -99,6 +106,7 @@ __all__ = [
     "check_registry",
     "check_registry_table",
     "build_field_policy",
+    "build_assertion",
     "build_source_funnel",
     "build_source_inventory",
     "field_policy_table",
