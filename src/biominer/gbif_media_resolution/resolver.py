@@ -10,9 +10,10 @@ import hashlib
 import ipaddress
 import json
 import random
+import re
 import socket
 import time
-from urllib.parse import parse_qsl, urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 from PIL import ImageFile
@@ -221,7 +222,12 @@ def validate_public_http_url(
     *,
     resolve_host: Callable[[str], Sequence[str]] = resolve_host_addresses,
 ) -> ValidatedURL:
-    parsed = urlsplit(str(url).strip())
+    raw_url = str(url).strip()
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw_url):
+        raise ValueError("URL contains control characters")
+    if re.search(r"%(?![0-9A-Fa-f]{2})", raw_url):
+        raise ValueError("URL contains invalid percent encoding")
+    parsed = urlsplit(raw_url)
     scheme = parsed.scheme.casefold()
     if scheme not in {"http", "https"}:
         raise ValueError("URL scheme must be HTTP or HTTPS")
@@ -255,7 +261,7 @@ def validate_public_http_url(
         raise ValueError("host did not resolve")
     if any(not ipaddress.ip_address(item).is_global for item in addresses):
         raise ValueError("host resolves to a non-public address")
-    return ValidatedURL(str(url).strip(), scheme, host, port, addresses)
+    return ValidatedURL(raw_url, scheme, host, port, addresses)
 
 
 def sniff_image_content_type(content: bytes) -> str | None:
@@ -520,6 +526,7 @@ class MediaURLResolver:
         current_url = url
         redirects = 0
         retry_number = 0
+        visited: set[str] = {current_url}
         while retry_number < self.config.max_attempts:
             validated = self._validate(current_url)
             self._wait_for_origin(validated.host)
@@ -548,6 +555,12 @@ class MediaURLResolver:
                         if redirects > self.config.max_redirects:
                             raise _ResolutionFailure(ResolutionStatus.UNRESOLVED_PROVIDER_UNAVAILABLE, "redirect_limit_exceeded")
                         self._validate(target)
+                        if target in visited:
+                            raise _ResolutionFailure(
+                                ResolutionStatus.UNRESOLVED_PROVIDER_UNAVAILABLE,
+                                "redirect_loop_detected",
+                            )
+                        visited.add(target)
                         current_url = target
                         continue
                     if status in RETRY_STATUSES:
@@ -734,8 +747,11 @@ class MediaURLResolver:
     ) -> None:
         sequence = len(self._attempts) + 1
         ended = self._timestamp()
+        safe_requested_url = redact_url_for_audit(requested_url)
+        safe_response_url = redact_url_for_audit(response_url) if response_url else None
+        safe_redirect_from = redact_url_for_audit(redirect_from) if redirect_from else None
         attempt_id = canonical_semantic_fingerprint(
-            {"source_row_id": self._source_row_id, "sequence": sequence, "phase": phase, "method": method, "requested_url": requested_url, "started_at": started}
+            {"source_row_id": self._source_row_id, "sequence": sequence, "phase": phase, "method": method, "requested_url": safe_requested_url, "started_at": started}
         )
         self._attempts.append(
             ResolutionAttempt(
@@ -744,9 +760,9 @@ class MediaURLResolver:
                 sequence=sequence,
                 phase=phase,
                 method=method,
-                requested_url=requested_url,
-                response_url=response_url,
-                redirect_from=redirect_from,
+                requested_url=safe_requested_url,
+                response_url=safe_response_url,
+                redirect_from=safe_redirect_from,
                 status_code=status_code,
                 outcome=outcome,
                 error=error,
@@ -764,14 +780,15 @@ class MediaURLResolver:
     def _record_transport(self, started: str, phase: str, method: str, url: str, retry_number: int, exc: Exception) -> None:
         sequence = len(self._attempts) + 1
         ended = self._timestamp()
+        safe_url = redact_url_for_audit(url)
         self._attempts.append(
             ResolutionAttempt(
-                attempt_id=canonical_semantic_fingerprint({"source_row_id": self._source_row_id, "sequence": sequence, "phase": phase, "method": method, "requested_url": url, "started_at": started}),
+                attempt_id=canonical_semantic_fingerprint({"source_row_id": self._source_row_id, "sequence": sequence, "phase": phase, "method": method, "requested_url": safe_url, "started_at": started}),
                 source_row_id=self._source_row_id,
                 sequence=sequence,
                 phase=phase,
                 method=method,
-                requested_url=url,
+                requested_url=safe_url,
                 response_url=None,
                 redirect_from=None,
                 status_code=None,
@@ -836,6 +853,19 @@ class MediaURLResolver:
         maximum = min(self.config.backoff_cap_seconds, self.config.backoff_base_seconds * (2 ** (retry_number - 1)))
         seed = hashlib.sha256(f"{self._source_row_id}:{url}:{retry_number}".encode()).digest()
         return random.Random(seed).uniform(0.0, maximum)
+
+
+def redact_url_for_audit(url: str) -> str:
+    """Redact credential-like query values while retaining URL structure."""
+
+    parsed = urlsplit(url)
+    query = [
+        (key, "<redacted>" if key.casefold() in SIGNED_QUERY_KEYS else value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+    ]
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
 
 
 def _read_bounded(response: httpx.Response, *, max_bytes: int) -> bytes:

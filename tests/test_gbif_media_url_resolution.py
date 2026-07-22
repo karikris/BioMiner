@@ -8,7 +8,11 @@ import duckdb
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from PIL import Image
+
+from biominer.cli import build_parser
+from biominer.gbif_media_resolution.cli import COMMAND, run_gbif_media_resolution_command
 
 from biominer.gbif_media_resolution.models import (
     ResolutionInput,
@@ -28,6 +32,7 @@ from biominer.gbif_media_resolution.resolver import (
     extract_structured_image_candidates,
     sniff_image_content_type,
     validate_public_http_url,
+    redact_url_for_audit,
 )
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -124,6 +129,8 @@ def test_public_url_validation_rejects_credentials_and_private_dns() -> None:
     for url, addresses in (
         ("ftp://example.org/x", PUBLIC_DNS),
         ("https://user:secret@example.org/x", PUBLIC_DNS),
+        ("https://example.org/bad%2", PUBLIC_DNS),
+        ("https://example.org/bad\npath", PUBLIC_DNS),
         ("https://example.org/x", lambda _host: ("127.0.0.1",)),
         (
             "https://example.org/x",
@@ -136,6 +143,36 @@ def test_public_url_validation_rejects_credentials_and_private_dns() -> None:
             pass
         else:  # pragma: no cover - assertion spelling keeps the failing URL visible.
             raise AssertionError(f"unsafe URL accepted: {url}")
+
+
+def test_audit_url_redacts_signed_query_values() -> None:
+    value = redact_url_for_audit(
+        "https://example.org/image.jpg?X-Amz-Signature=secret&size=large"
+    )
+
+    assert "secret" not in value
+    assert "size=large" in value
+
+
+def test_cli_requires_explicit_network_and_full_queue_opt_in() -> None:
+    parser = build_parser()
+    prepare = parser.parse_args([
+        COMMAND, "prepare", "--source", "x", "--source-manifest", "m",
+        "--output-root", "o", "--run-id", "r",
+    ])
+    assert prepare.mode == "pilot"
+    full = parser.parse_args([
+        COMMAND, "prepare", "--source", "x", "--source-manifest", "m",
+        "--output-root", "o", "--run-id", "r", "--mode", "full",
+    ])
+    with pytest.raises(ValueError, match="--allow-full-queue"):
+        run_gbif_media_resolution_command(full)
+    work = parser.parse_args([
+        COMMAND, "work", "--output-root", "o", "--run-id", "r",
+        "--worker-id", "w",
+    ])
+    with pytest.raises(ValueError, match="--execute-network"):
+        run_gbif_media_resolution_command(work)
 
 
 def test_structured_html_extraction_does_not_scrape_generic_images() -> None:
@@ -199,6 +236,27 @@ def test_resolver_follows_redirect_and_validates_structured_candidate() -> None:
         "https://example.org/page/123",
         "https://example.org/images/123.jpg",
     ]
+
+
+def test_resolver_detects_redirect_loop_before_hop_budget() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.gbif.org":
+            return httpx.Response(200, json={"key": 123, "media": []})
+        if request.url.path == "/record/123":
+            return httpx.Response(302, headers={"Location": "/loop"})
+        if request.url.path == "/loop":
+            return httpx.Response(302, headers={"Location": "/record/123"})
+        raise AssertionError(request.url)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result, attempts = MediaURLResolver(
+            config=ResolverConfig(max_attempts=1, max_redirects=10),
+            http_client=client,
+            resolve_host=PUBLIC_DNS,
+        ).resolve(_input())
+
+    assert result.terminal_reason == "redirect_loop_detected"
+    assert len(attempts) == 3
 
 
 def test_rights_blocked_and_youtube_make_zero_requests() -> None:

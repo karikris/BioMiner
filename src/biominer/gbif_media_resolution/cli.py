@@ -38,7 +38,12 @@ def add_gbif_media_resolution_parser(
     prepare.add_argument("--expected-missing-rows", type=int, default=130_689)
     prepare.add_argument("--expected-rights-blocked-rows", type=int, default=4_055)
     prepare.add_argument("--enqueue-batch-rows", type=int, default=1_000)
-    prepare.add_argument("--mode", choices=("pilot", "full"), default="full")
+    prepare.add_argument("--mode", choices=("pilot", "full"), default="pilot")
+    prepare.add_argument(
+        "--allow-full-queue",
+        action="store_true",
+        help="explicitly allow enqueueing the full resolver workload",
+    )
     _add_resolver_arguments(prepare)
 
     worker = stages.add_parser("work", help="resolve one or more bounded batches")
@@ -49,6 +54,11 @@ def add_gbif_media_resolution_parser(
     worker.add_argument("--batch-rows", type=int, default=25)
     worker.add_argument("--max-batches", type=int, default=1)
     worker.add_argument("--stale-after-seconds", type=int, default=900)
+    worker.add_argument(
+        "--execute-network",
+        action="store_true",
+        help="explicit opt-in required before any resolver network requests",
+    )
     _add_resolver_arguments(worker)
 
     finalize = stages.add_parser("finalize", help="reduce shards and publish v1 sidecars")
@@ -73,6 +83,8 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
     if stage is None:
         return 2
     if stage == "prepare":
+        if args.mode == "full" and not args.allow_full_queue:
+            raise ValueError("full queue preparation requires --allow-full-queue")
         resolver_config = _resolver_config(args)
         result = prepare_resolution(
             source=args.source,
@@ -87,6 +99,8 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             resolver_config=resolver_config,
         )
     elif stage == "work":
+        if not args.execute_network:
+            raise ValueError("resolver network execution requires --execute-network")
         if args.max_batches <= 0:
             raise ValueError("max_batches must be positive")
         store = _workstore(args)
