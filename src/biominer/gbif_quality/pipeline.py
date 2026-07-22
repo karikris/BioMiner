@@ -20,6 +20,11 @@ from biominer.gbif_quality.schema_audit import audit_parquet_schema
 from biominer.gbif_quality.source_ledger import publish_source_media_ledger
 from biominer.gbif_quality.media_checks import publish_media_assertion_quality
 from biominer.gbif_quality.occurrence_checks import publish_occurrence_quality
+from biominer.gbif_quality.biology import publish_biological_candidates
+from biominer.gbif_quality.geography import publish_geographic_enrichment
+from biominer.gbif_quality.phase3 import publish_phase3_summary
+from biominer.gbif_quality.taxonomy import publish_species_rank_repairs
+from biominer.gbif_quality.temporal import publish_temporal_quality_v2
 
 
 V3_PARQUET = Path(
@@ -87,6 +92,25 @@ class Phase2Config:
                 if self.temp_directory is not None
                 else None
             ),
+            memory_limit=self.memory_limit,
+            threads=self.threads,
+            batch_rows=self.batch_rows,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Phase3Config:
+    repository_root: str | Path
+    data_root: str | Path = Path("data/derived/gbif_media_database/v4")
+    memory_limit: str = "4GB"
+    threads: int = 4
+    batch_rows: int = 50_000
+
+    def resolved(self) -> Phase3Config:
+        root = Path(self.repository_root).resolve()
+        return Phase3Config(
+            repository_root=root,
+            data_root=_resolve(root, Path(self.data_root)),
             memory_limit=self.memory_limit,
             threads=self.threads,
             batch_rows=self.batch_rows,
@@ -215,6 +239,106 @@ def run_phase2_local_checks(config: Phase2Config) -> dict[str, Any]:
     }
 
 
+def run_phase3_enrichment(config: Phase3Config) -> dict[str, Any]:
+    """Run or resume request-free Phase 3 deterministic enrichment."""
+
+    cfg = config.resolved()
+    root = Path(cfg.repository_root)
+    data_root = Path(cfg.data_root)
+    baseline = _read_json(data_root / "baseline.json")
+    funnel = _read_json(data_root / "source_funnel.json")
+    inventory = _read_json(data_root / "source_inventory.json")
+    snapshot = str(baseline["source_snapshot_id"])
+    counts = funnel["counts"]
+    commit = _git_commit(root)
+    derived_root = data_root / "derived_assertions"
+    temporal_root = derived_root / "temporal"
+    if not _validated_stage_ready(temporal_root):
+        publish_temporal_quality_v2(
+            v3_parquet=_resolve(root, V3_PARQUET),
+            output_directory=temporal_root,
+            source_snapshot_id=snapshot,
+            source_publication_date=str(inventory["source_publication_date"]),
+            expected_media_rows=int(counts["v3_media_rows"]),
+            expected_occurrences=int(counts["v3_occurrences"]),
+            expected_derived_year_media_rows=2_360,
+            expected_derived_month_media_rows=4_941,
+            expected_derived_day_media_rows=18_741,
+            expected_ancient_media_rows=2_236,
+            expected_ancient_occurrences=1_722,
+            code_commit=commit,
+            batch_rows=cfg.batch_rows,
+        )
+    geography_root = derived_root / "geography"
+    if not _validated_stage_ready(geography_root):
+        publish_geographic_enrichment(
+            v3_parquet=_resolve(root, V3_PARQUET),
+            output_directory=geography_root,
+            source_snapshot_id=snapshot,
+            expected_coordinate_country_media_rows=7_374,
+            expected_coordinate_country_occurrences=4_923,
+            expected_missing_continent_media_rows=18_527,
+            expected_missing_continent_occurrences=12_384,
+            expected_missing_region_media_rows=679,
+            expected_missing_region_occurrences=375,
+            code_commit=commit,
+            memory_limit=cfg.memory_limit,
+            threads=cfg.threads,
+        )
+    taxonomy_root = derived_root / "taxonomy"
+    if not _validated_stage_ready(taxonomy_root):
+        publish_species_rank_repairs(
+            v3_parquet=_resolve(root, V3_PARQUET),
+            output_directory=taxonomy_root,
+            source_snapshot_id=snapshot,
+            expected_candidate_media_rows=337,
+            expected_candidate_occurrences=221,
+            code_commit=commit,
+            memory_limit=cfg.memory_limit,
+            threads=cfg.threads,
+        )
+    biology_root = derived_root / "biology"
+    if not _validated_stage_ready(biology_root):
+        publish_biological_candidates(
+            v3_parquet=_resolve(root, V3_PARQUET),
+            output_directory=biology_root,
+            source_snapshot_id=snapshot,
+            expected_media_rows=int(counts["v3_media_rows"]),
+            expected_occurrences=int(counts["v3_occurrences"]),
+            code_commit=commit,
+            memory_limit=cfg.memory_limit,
+            threads=cfg.threads,
+        )
+    summary_root = data_root / "quality_results" / "phase3"
+    if not _validated_stage_ready(summary_root):
+        publish_phase3_summary(
+            temporal_directory=temporal_root,
+            geography_directory=geography_root,
+            taxonomy_directory=taxonomy_root,
+            biology_directory=biology_root,
+            output_directory=summary_root,
+            source_snapshot_id=snapshot,
+            expected_media_rows=int(counts["v3_media_rows"]),
+            expected_occurrences=int(counts["v3_occurrences"]),
+            code_commit=commit,
+        )
+    manifest = _read_json(summary_root / "manifest.json")
+    return {
+        "status": "complete",
+        "phase": 3,
+        "code_commit": commit,
+        "source_snapshot_id": snapshot,
+        "source_rows": manifest["counts"]["source_media_rows"],
+        "occurrences": manifest["counts"]["source_occurrences"],
+        "derived_assertions": manifest["counts"]["derived_assertions"],
+        "manual_review_rows": manifest["counts"]["manual_review_rows"],
+        "semantic_assertion_fingerprint": manifest["semantic_assertion_fingerprint"],
+        "output": str(summary_root),
+        "resumable": True,
+        "network_requests": 0,
+    }
+
+
 def default_inventory_config(repository_root: str | Path) -> SourceInventoryConfig:
     root = Path(repository_root).resolve()
     return SourceInventoryConfig(
@@ -298,6 +422,22 @@ def _stage_ready(path: Path, expected_rows: int) -> bool:
     return expected_rows in row_counts
 
 
+def _validated_stage_ready(path: Path) -> bool:
+    manifest_path = path / "manifest.json"
+    if not manifest_path.is_file():
+        if path.exists():
+            raise ValueError(f"incomplete stage exists without manifest: {path}")
+        return False
+    manifest = _read_json(manifest_path)
+    validation = manifest.get("validation", {})
+    if not isinstance(validation, dict) or not validation or not all(validation.values()):
+        raise ValueError(f"stage validation is incomplete: {path}")
+    for item in manifest.get("artifacts", []):
+        if not (path / str(item["path"])).is_file():
+            raise ValueError(f"stage artifact is missing: {path / str(item['path'])}")
+    return True
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     value = __import__("json").loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -312,9 +452,11 @@ def _resolve(root: Path, path: Path) -> Path:
 __all__ = [
     "Phase1Config",
     "Phase2Config",
+    "Phase3Config",
     "V3_PARQUET",
     "default_funnel_config",
     "default_inventory_config",
     "run_phase1_baseline",
     "run_phase2_local_checks",
+    "run_phase3_enrichment",
 ]

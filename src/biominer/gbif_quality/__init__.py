@@ -41,8 +41,10 @@ from biominer.gbif_quality.policy import (
 from biominer.gbif_quality.pipeline import (
     Phase1Config,
     Phase2Config,
+    Phase3Config,
     run_phase1_baseline,
     run_phase2_local_checks,
+    run_phase3_enrichment,
 )
 from biominer.gbif_quality.phase2 import (
     PHASE2_VERSION,
@@ -103,6 +105,7 @@ __all__ = [
     "ParsedEventDate",
     "Phase1Config",
     "Phase2Config",
+    "Phase3Config",
     "CompletenessProfile",
     "BaselinePublication",
     "CheckDefinition",
@@ -132,4 +135,5 @@ __all__ = [
     "publish_temporal_quality_v2",
     "run_phase1_baseline",
     "run_phase2_local_checks",
+    "run_phase3_enrichment",
 ]

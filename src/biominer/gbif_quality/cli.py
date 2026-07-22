@@ -6,8 +6,10 @@ import json
 from biominer.gbif_quality.pipeline import (
     Phase1Config,
     Phase2Config,
+    Phase3Config,
     run_phase1_baseline,
     run_phase2_local_checks,
+    run_phase3_enrichment,
 )
 
 
@@ -44,9 +46,29 @@ def add_gbif_quality_parser(
     local.add_argument("--memory-limit", default="4GB")
     local.add_argument("--threads", type=int, default=4)
     local.add_argument("--batch-rows", type=int, default=100_000)
+    enrichment = stages.add_parser(
+        "enrich", help="run or resume deterministic Phase 3 enrichment"
+    )
+    enrichment.add_argument("--repository-root", default=".")
+    enrichment.add_argument("--data-root", default="data/derived/gbif_media_database/v4")
+    enrichment.add_argument("--memory-limit", default="4GB")
+    enrichment.add_argument("--threads", type=int, default=4)
+    enrichment.add_argument("--batch-rows", type=int, default=50_000)
 
 
 def run_gbif_quality_command(args: argparse.Namespace) -> int:
+    if args.gbif_quality_command == "enrich":
+        result = run_phase3_enrichment(
+            Phase3Config(
+                repository_root=args.repository_root,
+                data_root=args.data_root,
+                memory_limit=args.memory_limit,
+                threads=args.threads,
+                batch_rows=args.batch_rows,
+            )
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     if args.gbif_quality_command == "local-checks":
         result = run_phase2_local_checks(
             Phase2Config(
