@@ -23,8 +23,11 @@ not treated as an ordinary repairable null.
 | `derived_assertions/*` | sparse assertion/candidate | Original-preserving temporal, geographic, taxonomic, life-stage, and sex evidence |
 | `rights_and_attribution/media_rights.parquet` | media assertion | Explicit media licence normalization and attribution evidence; occurrence licence remains separate |
 | `duplicates/duplicate_membership.parquet` | media assertion | Row/URL groups, cross-label conflicts, and leakage identifiers |
+| `media_resources/parts/**/*.parquet` | canonical URL resource | Canonical media identity and explicitly untested network/content observations |
 | `ai_readiness/parts/*.parquet` | media assertion | Independent readiness gates, ingestion decision, and reason codes |
 | `representativeness/*.parquet` | dimension, taxon, provider, or dataset | Raw and URL-adjusted support, bias flags, scorecards, and remediation evidence |
+| `completeness_gates/*.parquet` | gate and reporting dimension | Seven cumulative-use gates with media, occurrence, URL, and status denominators |
+| `quality_results/review_capsules/*.parquet` | deterministic review item | Sealed before/after/evidence capsules for rights, attribution, duplicates, and exclusions |
 | `incremental_state/state/**/*.parquet` | media assertion | Binary domain hashes for future snapshot diffs |
 | `incremental_validation/changed_row_queue.parquet` | changed assertion only | Sparse refresh queue; unchanged rows are absent |
 
@@ -45,13 +48,21 @@ Run from the BioMiner repository with the pinned Python environment:
 uv run biominer gbif-media-quality baseline
 uv run biominer gbif-media-quality local-checks
 uv run biominer gbif-media-quality enrich
+uv run biominer gbif-media-quality rights --output-directory data/derived/gbif_media_database/v4-next/rights_and_attribution
+uv run biominer gbif-media-quality duplicates --output-directory data/derived/gbif_media_database/v4-next/duplicates
+uv run biominer gbif-media-quality ai-readiness --output-directory data/derived/gbif_media_database/v4-next/ai_readiness
+uv run biominer gbif-media-quality representativeness --output-directory data/derived/gbif_media_database/v4-next/representativeness
+uv run biominer gbif-media-quality media-resources --output-directory data/derived/gbif_media_database/v4-next/media_resources
+uv run biominer gbif-media-quality gates --output-directory data/derived/gbif_media_database/v4-next/completeness_gates
+uv run biominer gbif-media-quality review-capsules --output-directory data/derived/gbif_media_database/v4-next/quality_results/review_capsules
+uv run biominer gbif-media-quality incremental --output-directory data/derived/gbif_media_database/v4-next/incremental_state
 ```
 
-The rights, duplicate, AI-readiness, representativeness, incremental, and
-report publishers are package APIs in `biominer.gbif_quality`. Their production
-manifests record the exact input paths, configuration, code commit, row counts,
-part checksums, and validation gates. A publisher refuses to replace an
-existing data directory; choose a new versioned destination for a new run.
+The CLI resolves the pinned v3 input and source snapshot from the v4 source
+inventory unless they are explicitly overridden. Production manifests record
+the exact input paths, configuration, code commit, row counts, part checksums,
+and validation gates. Every publisher refuses to replace an existing data
+directory; choose a new versioned destination for a new run.
 
 ## Resolver pilot and targeted URL resolution
 
@@ -83,7 +94,7 @@ the same group across train, validation, and test.
 
 ## Incremental refresh
 
-Point `previous_state_glob` at the prior `state/**/*.parquet`. The publisher
+Pass `--previous-state-glob` pointing at the prior `state/**/*.parquet`. The publisher
 hashes URL, rights, spatial, temporal, identification, taxonomy, and provider
 domains independently. Only new, deleted, or changed assertions enter
 `changed_row_queue.parquet`. URL and provider TTL policy is stored separately;

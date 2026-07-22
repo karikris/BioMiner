@@ -34,3 +34,45 @@ def test_quality_enrichment_cli_is_resumable_and_network_free() -> None:
     assert args.memory_limit == "4GB"
     assert args.threads == 4
     assert args.batch_rows == 50_000
+
+
+def test_quality_offline_publication_commands_have_bounded_defaults() -> None:
+    for command in (
+        "rights",
+        "duplicates",
+        "ai-readiness",
+        "representativeness",
+        "media-resources",
+        "gates",
+        "review-capsules",
+        "incremental",
+    ):
+        args = build_parser().parse_args([COMMAND, command])
+
+        assert args.gbif_quality_command == command
+        assert args.data_root == "data/derived/gbif_media_database/v4"
+        assert args.expected_rows == 16_612_063
+        assert args.memory_limit == "6GB"
+        assert args.threads == 4
+        assert args.v3 is None
+        assert args.code_commit is None
+
+
+def test_quality_acceptance_defaults_pin_v3_checksum() -> None:
+    args = build_parser().parse_args([COMMAND, "acceptance"])
+
+    assert args.report_root == "reports/gbif_media_database/v4"
+    assert args.output_directory.endswith("quality_results/global_acceptance")
+    assert args.test_receipt.endswith("quality_results/test_receipt.json")
+    assert args.expected_v3_sha256 == (
+        "c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f"
+    )
+
+
+def test_quality_incremental_accepts_previous_state_for_diffing() -> None:
+    args = build_parser().parse_args(
+        [COMMAND, "incremental", "--previous-state-glob", "previous/**/*.parquet"]
+    )
+
+    assert args.previous_state_glob == "previous/**/*.parquet"
+    assert args.partitions == 16
