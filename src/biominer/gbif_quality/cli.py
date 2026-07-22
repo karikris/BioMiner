@@ -16,6 +16,9 @@ from biominer.gbif_quality.freshness import publish_freshness_audit
 from biominer.gbif_quality.gates import publish_gate_breakdowns
 from biominer.gbif_quality.incremental import publish_incremental_state
 from biominer.gbif_quality.media_resources import publish_media_resources
+from biominer.gbif_quality.provider_enrichment import (
+    publish_provider_enrichment_registry,
+)
 from biominer.gbif_quality.representativeness import publish_representativeness
 from biominer.gbif_quality.review_capsules import publish_review_capsules
 from biominer.gbif_quality.rights import publish_media_rights
@@ -119,6 +122,17 @@ def add_gbif_quality_parser(
     lineage.add_argument("--memory-limit", default="6GB")
     lineage.add_argument("--threads", type=int, default=4)
 
+    provider_registry = stages.add_parser(
+        "provider-registry", help="publish the prioritized provider enrichment interfaces"
+    )
+    provider_registry.add_argument("--repository-root", default=".")
+    provider_registry.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    provider_registry.add_argument(
+        "--output-directory", default=f"{DEFAULT_DATA_ROOT}/provider_enrichment"
+    )
+    provider_registry.add_argument("--source-snapshot-id")
+    provider_registry.add_argument("--code-commit")
+
     reports = stages.add_parser("reports", help="render the final evidence report suite")
     reports.add_argument("--repository-root", default=".")
     reports.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
@@ -156,6 +170,7 @@ def run_gbif_quality_command(args: argparse.Namespace) -> int:
         "incremental",
         "freshness",
         "source-lineage",
+        "provider-registry",
         "reports",
         "acceptance",
     }:
@@ -221,6 +236,12 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
     data = _resolve_from_repository(repository, args.data_root)
     commit = args.code_commit or _git_commit(repository)
     stage = args.gbif_quality_command
+    if stage == "provider-registry":
+        return publish_provider_enrichment_registry(
+            output_directory=_resolve_from_repository(repository, args.output_directory),
+            source_snapshot_id=args.source_snapshot_id or _source_snapshot_id(data),
+            code_commit=commit,
+        )
     if stage == "source-lineage":
         multimedia = (
             _resolve_from_repository(repository, args.multimedia_parquet)

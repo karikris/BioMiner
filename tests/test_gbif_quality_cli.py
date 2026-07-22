@@ -94,3 +94,10 @@ def test_quality_freshness_has_explicit_ttls() -> None:
 
     assert args.provider_stale_days == 365
     assert args.derived_stale_days == 30
+
+
+def test_quality_provider_registry_is_offline_by_construction() -> None:
+    args = build_parser().parse_args([COMMAND, "provider-registry"])
+
+    assert args.output_directory.endswith("provider_enrichment")
+    assert not hasattr(args, "execute_network")
