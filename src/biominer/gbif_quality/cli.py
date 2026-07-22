@@ -9,6 +9,7 @@ import pyarrow.parquet as pq
 
 from biominer.gbif_quality.acceptance import publish_acceptance_audit
 from biominer.gbif_quality.ai_readiness import publish_ai_readiness
+from biominer.gbif_quality.concentration import publish_concentration_metrics
 from biominer.gbif_quality.duplicates import publish_duplicate_groups
 from biominer.gbif_quality.final_reports import publish_final_reports
 from biominer.gbif_quality.gates import publish_gate_breakdowns
@@ -78,6 +79,7 @@ def add_gbif_quality_parser(
         ("duplicates", "publish URL and metadata duplicate groups"),
         ("ai-readiness", "publish fail-closed AI-readiness decisions"),
         ("representativeness", "publish coverage and provider bias scorecards"),
+        ("concentration", "publish provider, creator, regional, and temporal concentration"),
         ("media-resources", "publish canonical media-resource observations"),
         ("gates", "publish the seven completeness-gate breakdowns"),
         ("review-capsules", "publish deterministic manual-review capsules"),
@@ -142,6 +144,7 @@ def run_gbif_quality_command(args: argparse.Namespace) -> int:
         "duplicates",
         "ai-readiness",
         "representativeness",
+        "concentration",
         "media-resources",
         "gates",
         "review-capsules",
@@ -306,6 +309,13 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
             ai_readiness_glob=ai_glob,
             **bounded,
         )
+    if stage == "concentration":
+        return publish_concentration_metrics(
+            **common,
+            media_quality_parquet=media_quality,
+            ai_readiness_glob=ai_glob,
+            **bounded,
+        )
     if stage == "media-resources":
         resource_common = dict(common)
         resource_common.pop("v3_parquet")
@@ -395,6 +405,7 @@ def _default_output_name(stage: str) -> str:
         "duplicates": "duplicates",
         "ai-readiness": "ai_readiness",
         "representativeness": "representativeness",
+        "concentration": "representativeness_concentration",
         "media-resources": "media_resources",
         "gates": "completeness_gates",
         "review-capsules": "quality_results/review_capsules",

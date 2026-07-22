@@ -42,6 +42,7 @@ def test_quality_offline_publication_commands_have_bounded_defaults() -> None:
         "duplicates",
         "ai-readiness",
         "representativeness",
+        "concentration",
         "media-resources",
         "gates",
         "review-capsules",
