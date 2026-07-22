@@ -34,6 +34,11 @@ from biominer.gbif_quality.policy import (
     field_policy_table,
 )
 from biominer.gbif_quality.pipeline import Phase1Config, run_phase1_baseline
+from biominer.gbif_quality.phase2 import (
+    PHASE2_VERSION,
+    Phase2Result,
+    publish_phase2_summary,
+)
 from biominer.gbif_quality.profile import (
     COMPLETENESS_SCHEMA_VERSION,
     CompletenessProfile,
@@ -66,12 +71,14 @@ __all__ = [
     "INVENTORY_SCHEMA_VERSION",
     "MEDIA_QUALITY_VERSION",
     "OCCURRENCE_QUALITY_VERSION",
+    "PHASE2_VERSION",
     "SCHEMA_AUDIT_VERSION",
     "SOURCE_LEDGER_VERSION",
     "FunnelConfig",
     "FieldPolicy",
     "MediaQualityResult",
     "OccurrenceQualityResult",
+    "Phase2Result",
     "Phase1Config",
     "CompletenessProfile",
     "BaselinePublication",
@@ -93,6 +100,7 @@ __all__ = [
     "publish_baseline",
     "publish_media_assertion_quality",
     "publish_occurrence_quality",
+    "publish_phase2_summary",
     "publish_source_media_ledger",
     "run_phase1_baseline",
 ]
