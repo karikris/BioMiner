@@ -29,6 +29,13 @@ from biominer.gbif_quality.profile import (
     CompletenessProfile,
     profile_completeness,
 )
+from biominer.gbif_quality.registry import (
+    CHECK_REGISTRY_VERSION,
+    CheckDefinition,
+    QualityStatus,
+    check_registry,
+    check_registry_table,
+)
 from biominer.gbif_quality.schema_audit import (
     SCHEMA_AUDIT_VERSION,
     SchemaAudit,
@@ -37,6 +44,7 @@ from biominer.gbif_quality.schema_audit import (
 
 __all__ = [
     "BASELINE_SCHEMA_VERSION",
+    "CHECK_REGISTRY_VERSION",
     "COMPLETENESS_SCHEMA_VERSION",
     "FIELD_POLICY_SCHEMA_VERSION",
     "FUNNEL_SCHEMA_VERSION",
@@ -47,11 +55,15 @@ __all__ = [
     "Phase1Config",
     "CompletenessProfile",
     "BaselinePublication",
+    "CheckDefinition",
+    "QualityStatus",
     "SourceInventory",
     "SourceInventoryConfig",
     "SourceFunnel",
     "SchemaAudit",
     "audit_parquet_schema",
+    "check_registry",
+    "check_registry_table",
     "build_field_policy",
     "build_source_funnel",
     "build_source_inventory",
