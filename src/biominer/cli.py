@@ -33,6 +33,11 @@ from biominer.gbif_media_resolution.cli import (
     add_gbif_media_resolution_parser,
     run_gbif_media_resolution_command,
 )
+from biominer.gbif_quality.cli import (
+    COMMAND as GBIF_QUALITY_COMMAND,
+    add_gbif_quality_parser,
+    run_gbif_quality_command,
+)
 from biominer.gbif_temporal.cli import (
     COMMAND as GBIF_TEMPORAL_COMMAND,
     add_gbif_temporal_parser,
@@ -187,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
     add_gbif_media_resolution_parser(subparsers)
+    add_gbif_quality_parser(subparsers)
     add_gbif_temporal_parser(subparsers)
     evaluation = subparsers.add_parser("evaluation")
     evaluation_subparsers = evaluation.add_subparsers(dest="evaluation_command")
@@ -590,6 +596,8 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == GBIF_MEDIA_URL_COMMAND:
         return run_gbif_media_resolution_command(args)
+    if args.command == GBIF_QUALITY_COMMAND:
+        return run_gbif_quality_command(args)
     if args.command == GBIF_TEMPORAL_COMMAND:
         return run_gbif_temporal_command(args)
     if args.command == "dev" and args.dev_command == "vision":

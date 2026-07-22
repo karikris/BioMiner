@@ -1,5 +1,10 @@
 """Source-bound GBIF media quality audit and enrichment contracts."""
 
+from biominer.gbif_quality.baseline import (
+    BASELINE_SCHEMA_VERSION,
+    BaselinePublication,
+    publish_baseline,
+)
 from biominer.gbif_quality.funnel import (
     FUNNEL_SCHEMA_VERSION,
     FunnelConfig,
@@ -18,6 +23,7 @@ from biominer.gbif_quality.policy import (
     build_field_policy,
     field_policy_table,
 )
+from biominer.gbif_quality.pipeline import Phase1Config, run_phase1_baseline
 from biominer.gbif_quality.profile import (
     COMPLETENESS_SCHEMA_VERSION,
     CompletenessProfile,
@@ -30,6 +36,7 @@ from biominer.gbif_quality.schema_audit import (
 )
 
 __all__ = [
+    "BASELINE_SCHEMA_VERSION",
     "COMPLETENESS_SCHEMA_VERSION",
     "FIELD_POLICY_SCHEMA_VERSION",
     "FUNNEL_SCHEMA_VERSION",
@@ -37,7 +44,9 @@ __all__ = [
     "SCHEMA_AUDIT_VERSION",
     "FunnelConfig",
     "FieldPolicy",
+    "Phase1Config",
     "CompletenessProfile",
+    "BaselinePublication",
     "SourceInventory",
     "SourceInventoryConfig",
     "SourceFunnel",
@@ -48,4 +57,6 @@ __all__ = [
     "build_source_inventory",
     "field_policy_table",
     "profile_completeness",
+    "publish_baseline",
+    "run_phase1_baseline",
 ]
