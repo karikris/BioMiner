@@ -72,8 +72,8 @@ def _capsule_sql(paths,ai,output,snapshot,seed,limit):
         a.ai_ingestion_decision,a.reason_codes
       FROM read_parquet({source}) v POSITIONAL JOIN read_parquet({quality}) q
       POSITIONAL JOIN read_parquet({rights}) r
-      JOIN read_parquet({duplicates}) d USING(media_assertion_id)
-      JOIN read_parquet({ai_path}) a USING(media_assertion_id)
+      JOIN read_parquet({duplicates}) d ON q.media_assertion_id=d.media_assertion_id
+      JOIN read_parquet({ai_path}) a ON q.media_assertion_id=a.media_assertion_id
     ), sized AS (
       SELECT *,count(*) OVER(PARTITION BY provider) provider_rows,
         CASE WHEN count(*) OVER(PARTITION BY provider)>=100000 THEN 'HIGH_VOLUME'
