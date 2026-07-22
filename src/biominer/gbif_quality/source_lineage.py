@@ -50,13 +50,13 @@ def publish_source_assertion_lineage(
     snapshot = _required_text(inventory, "source_snapshot_id")
     download_key = _required_text(inventory, "source_download_key")
     source_doi = inventory.get("source_doi")
-    ingestion_timestamp = _required_text(inventory, "generated_at")
     multimedia_entry = next(
         row
         for row in inventory["artifacts"]
         if row["artifact_role"] == "multimedia_extension"
     )
     source_file_sha256 = _required_text(multimedia_entry, "sha256")
+    ingestion_timestamp = _ingestion_timestamp(inventory, multimedia_entry, inventory_path)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.parent / f".{destination.name}.{uuid4().hex}.staging"
@@ -186,6 +186,31 @@ def _required_text(value: dict[str, object], key: str) -> str:
     if not isinstance(result, str) or not result.strip():
         raise ValueError(f"source inventory has no valid {key}")
     return result.strip()
+
+
+def _ingestion_timestamp(
+    inventory: dict[str, object],
+    multimedia_entry: dict[str, object],
+    inventory_path: Path,
+) -> str:
+    direct = inventory.get("generated_at")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    manifest_value = multimedia_entry.get("manifest_path")
+    if not isinstance(manifest_value, str) or not manifest_value.strip():
+        raise ValueError("source inventory has no ingestion timestamp evidence")
+    manifest_path = Path(manifest_value)
+    if not manifest_path.is_absolute():
+        repository_candidate = inventory_path
+        while repository_candidate.parent != repository_candidate:
+            if (repository_candidate / ".git").exists():
+                manifest_path = repository_candidate / manifest_path
+                break
+            repository_candidate = repository_candidate.parent
+    if not manifest_path.is_file():
+        raise FileNotFoundError(manifest_path)
+    manifest = json.loads(manifest_path.read_text())
+    return _required_text(manifest, "generated_at")
 
 
 def _artifact(path: Path, root: Path) -> dict[str, object]:

@@ -13,6 +13,7 @@ def test_source_lineage_publishes_stable_locations_and_value_hashes(tmp_path) ->
     multimedia = tmp_path / "multimedia.parquet"
     status = tmp_path / "status.parquet"
     inventory = tmp_path / "source_inventory.json"
+    source_manifest = tmp_path / "dwca_manifest.json"
     output = tmp_path / "lineage"
     pq.write_table(
         pa.table(
@@ -37,16 +38,17 @@ def test_source_lineage_publishes_stable_locations_and_value_hashes(tmp_path) ->
         ),
         status,
     )
+    source_manifest.write_text(json.dumps({"generated_at": "2026-07-20T12:42:18Z"}))
     inventory.write_text(
         json.dumps(
             {
-                "generated_at": "2026-07-20T12:42:18Z",
                 "source_snapshot_id": "sha256:snapshot",
                 "source_download_key": "download-key",
                 "artifacts": [
                     {
                         "artifact_role": "multimedia_extension",
                         "sha256": "source-file-sha256",
+                        "manifest_path": str(source_manifest),
                     }
                 ],
             }
