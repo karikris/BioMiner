@@ -109,6 +109,10 @@ def publish_incremental_state(
         ).fetchone()
         if int(rows) != expected_rows or int(distinct_ids) != expected_rows:
             raise ValueError("incremental state does not reconcile")
+        state_semantic_fingerprint = _semantic_fingerprint(connection, current_glob)
+        previous_semantic_fingerprint = (
+            _semantic_fingerprint(connection, previous) if previous is not None else None
+        )
         if previous is None:
             pq.write_table(pa.Table.from_pylist([], schema=QUEUE_SCHEMA), queue, compression="zstd")
             change_counts: dict[str, int] = {"BASELINE_INITIALIZED": int(rows)}
@@ -151,6 +155,11 @@ def publish_incremental_state(
             queue_rows == 0 if previous is None else True
         ),
         "source_fields_unchanged": True,
+        "unchanged_rerun_semantically_identical": (
+            True
+            if previous is None or queue_rows > 0
+            else state_semantic_fingerprint == previous_semantic_fingerprint
+        ),
         "manifest_written_last": True,
     }
     if not all(validation.values()):
@@ -170,6 +179,8 @@ def publish_incremental_state(
             "distinct_media_assertions": int(distinct_ids),
             "queue_rows": queue_rows,
             "change_counts": change_counts,
+            "state_semantic_fingerprint": state_semantic_fingerprint,
+            "previous_semantic_fingerprint": previous_semantic_fingerprint,
         },
         "configuration": {
             "partitions": partitions,
@@ -265,6 +276,29 @@ def _write_freshness(path: Path, *, url_probe_ttl_days: int, provider_metadata_t
         ("boundary", None, boundary_dataset_version, "refresh_when_pinned_boundary_version_changes", "NOT_TESTED" if boundary_dataset_version == "NOT_TESTED" else "PASS"),
     ]
     pq.write_table(pa.Table.from_pylist([{"incremental_version": INCREMENTAL_VERSION, "evidence_domain": domain, "ttl_days": ttl, "version": version, "refresh_rule": rule, "current_status": status} for domain, ttl, version, rule, status in rows], schema=FRESHNESS_SCHEMA), path, compression="zstd")
+
+
+def _semantic_fingerprint(connection: duckdb.DuckDBPyConnection, source: str) -> str:
+    fields = (
+        "media_assertion_id",
+        "source_value_hash",
+        "media_url_value_hash",
+        "final_url_value_hash",
+        "image_content_hash",
+        "media_rights_value_hash",
+        "spatial_value_hash",
+        "temporal_value_hash",
+        "identification_value_hash",
+        "taxonomy_value_hash",
+        "provider_value_hash",
+    )
+    row_hash = "hash(" + ",".join(fields) + ")"
+    count, total, xor = connection.execute(
+        f"SELECT count(*),sum(({row_hash})::HUGEINT),bit_xor({row_hash}) "
+        f"FROM read_parquet({_lit(source)})"
+    ).fetchone()
+    payload = f"{count}|{total}|{xor}".encode()
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def _glob_files(value: str) -> list[Path]:

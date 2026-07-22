@@ -54,6 +54,11 @@ def test_incremental_state_does_not_queue_unchanged_rows(tmp_path: Path) -> None
         partitions=2,
     )
     assert rerun["counts"]["queue_rows"] == 0
+    assert (
+        rerun["counts"]["state_semantic_fingerprint"]
+        == rerun["counts"]["previous_semantic_fingerprint"]
+    )
+    assert rerun["validation"]["unchanged_rerun_semantically_identical"] is True
     changed_rows = [_source("1"), _source("2")]
     changed_rows[1]["media_identifier"] = "https://example.org/2-updated.jpg"
     pq.write_table(pa.Table.from_pylist(changed_rows), source)
