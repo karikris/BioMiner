@@ -20,6 +20,7 @@ from biominer.gbif_quality.provider_enrichment import (
     publish_provider_enrichment_registry,
 )
 from biominer.gbif_quality.representativeness import publish_representativeness
+from biominer.gbif_quality.recovery import publish_restart_validation
 from biominer.gbif_quality.review_capsules import publish_review_capsules
 from biominer.gbif_quality.rights import publish_media_rights
 from biominer.gbif_quality.source_lineage import publish_source_assertion_lineage
@@ -133,6 +134,17 @@ def add_gbif_quality_parser(
     provider_registry.add_argument("--source-snapshot-id")
     provider_registry.add_argument("--code-commit")
 
+    recovery = stages.add_parser(
+        "restart-validation", help="verify committed-stage and unchanged-row restart state"
+    )
+    recovery.add_argument("--repository-root", default=".")
+    recovery.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    recovery.add_argument(
+        "--output-directory",
+        default=f"{DEFAULT_DATA_ROOT}/quality_results/restart_validation",
+    )
+    recovery.add_argument("--code-commit")
+
     reports = stages.add_parser("reports", help="render the final evidence report suite")
     reports.add_argument("--repository-root", default=".")
     reports.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
@@ -171,6 +183,7 @@ def run_gbif_quality_command(args: argparse.Namespace) -> int:
         "freshness",
         "source-lineage",
         "provider-registry",
+        "restart-validation",
         "reports",
         "acceptance",
     }:
@@ -236,6 +249,12 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
     data = _resolve_from_repository(repository, args.data_root)
     commit = args.code_commit or _git_commit(repository)
     stage = args.gbif_quality_command
+    if stage == "restart-validation":
+        return publish_restart_validation(
+            data_root=data,
+            output_directory=_resolve_from_repository(repository, args.output_directory),
+            code_commit=commit,
+        )
     if stage == "provider-registry":
         return publish_provider_enrichment_registry(
             output_directory=_resolve_from_repository(repository, args.output_directory),

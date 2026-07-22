@@ -101,3 +101,10 @@ def test_quality_provider_registry_is_offline_by_construction() -> None:
 
     assert args.output_directory.endswith("provider_enrichment")
     assert not hasattr(args, "execute_network")
+
+
+def test_quality_restart_validation_has_no_mutating_recovery_flag() -> None:
+    args = build_parser().parse_args([COMMAND, "restart-validation"])
+
+    assert args.output_directory.endswith("quality_results/restart_validation")
+    assert not hasattr(args, "delete_staging")
