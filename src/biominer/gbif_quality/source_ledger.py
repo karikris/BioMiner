@@ -9,7 +9,6 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -48,6 +47,7 @@ def publish_source_media_ledger(
     code_commit: str,
     memory_limit: str = "4GB",
     temp_directory: str | Path | None = None,
+    batch_rows: int = 100_000,
 ) -> SourceLedgerResult:
     """Assign every raw joined media assertion one deterministic funnel status."""
 
@@ -70,6 +70,8 @@ def publish_source_media_ledger(
         raise ValueError(f"expected_counts missing: {sorted(required - set(expected_counts))}")
     if not source_snapshot_id or not code_commit:
         raise ValueError("source_snapshot_id and code_commit are required")
+    if batch_rows < 1:
+        raise ValueError("batch_rows must be positive")
     joined_schema = pq.ParquetFile(joined).schema_arrow
     normalized_schema = pq.ParquetFile(normalized).schema_arrow
     for field in ("gbifID", "year"):
@@ -87,38 +89,18 @@ def publish_source_media_ledger(
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.parent / f".{destination.name}.{uuid4().hex}.staging"
     staging.mkdir()
-    temporary = (
-        Path(temp_directory).resolve()
-        if temp_directory is not None
-        else staging / "duckdb_tmp"
-    )
-    temporary.mkdir(parents=True, exist_ok=True)
     output = staging / "source_media_status.parquet"
-    connection = duckdb.connect()
     try:
-        connection.execute("SET threads = 1")
-        connection.execute(f"SET memory_limit = {_literal(memory_limit)}")
-        connection.execute(f"SET temp_directory = {_literal(str(temporary))}")
-        connection.execute("SET preserve_insertion_order = true")
-        query = _ledger_query(joined, normalized, source_snapshot_id)
-        connection.execute(
-            f"COPY ({query}) TO {_literal(str(output))} "
-            "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 250000)"
+        counts = _write_ledger_streaming(
+            joined=joined,
+            normalized=normalized,
+            output=output,
+            source_snapshot_id=source_snapshot_id,
+            batch_rows=batch_rows,
         )
-        counts = _ledger_counts(connection, output)
-    except Exception:
-        connection.close()
+    except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
-        if temp_directory is None:
-            shutil.rmtree(temporary, ignore_errors=True)
         raise
-    finally:
-        try:
-            connection.close()
-        except Exception:
-            pass
-    if temp_directory is None:
-        shutil.rmtree(temporary, ignore_errors=True)
 
     expected = {
         "total_rows": int(expected_counts["raw_multimedia_rows"]),
@@ -174,6 +156,16 @@ def publish_source_media_ledger(
             "joined_parquet": str(joined),
             "normalized_parquet": str(normalized),
         },
+        "runtime": {
+            "method": "bounded_arrow_stream_alignment",
+            "batch_rows": batch_rows,
+            "memory_limit_advisory": memory_limit,
+            "temp_directory_advisory": (
+                str(Path(temp_directory).resolve())
+                if temp_directory is not None
+                else None
+            ),
+        },
         "counts": counts,
         "expected_counts": expected,
         "validation": validation,
@@ -190,95 +182,171 @@ def publish_source_media_ledger(
     )
 
 
-def _ledger_query(joined: Path, normalized: Path, snapshot: str) -> str:
-    year_value = "try_cast(nullif(trim(cast(year as varchar)), '') as double)"
-    identified = "nullif(trim(cast(n.identifiedBy as varchar)), '') is not null"
-    accepted = (
-        "lower(trim(cast(n.identificationVerificationStatus as varchar))) = 'accepted'"
-    )
-    has_image = "nullif(trim(cast(n.media_identifier as varchar)), '') is not null"
-    restricted = (
-        "coalesce(lower(cast(n.media_license as varchar)) like '%all rights reserved%' "
-        "or lower(trim(cast(n.media_license as varchar))) = 'copyright', false)"
-    )
-    return f"""
-        WITH source_ordered AS (
-            SELECT row_number() OVER () - 1 AS source_sort_position,
-                   gbifID,
-                   {year_value} AS parsed_year
-            FROM read_parquet({_literal(str(joined))})
-        ), source_numbered AS (
-            SELECT *,
-                   parsed_year IS NULL OR parsed_year >= 1960 AS year_retained,
-                   sum(CASE WHEN parsed_year IS NULL OR parsed_year >= 1960 THEN 1 ELSE 0 END)
-                     OVER (ORDER BY source_sort_position ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) - 1
-                     AS post_year_position
-            FROM source_ordered
-        ), normalized_ordered AS (
-            SELECT row_number() OVER () - 1 AS post_year_position,
-                   identifiedBy,
-                   identificationVerificationStatus,
-                   media_identifier,
-                   media_license
-            FROM read_parquet({_literal(str(normalized))})
-        ), classified AS (
-            SELECT s.source_sort_position,
-                   s.gbifID,
-                   s.year_retained,
-                   n.post_year_position IS NOT NULL AS normalized_row_resolved,
-                   ({identified}) OR ({accepted}) AS cohort_retained,
-                   ({has_image}) AND ({restricted}) AS rights_restricted
-            FROM source_numbered s
-            LEFT JOIN normalized_ordered n
-              ON s.year_retained AND s.post_year_position = n.post_year_position
-        )
-        SELECT {_literal(SOURCE_LEDGER_VERSION)} AS ledger_version,
-               {_literal(snapshot)} AS source_snapshot_id,
-               'multimedia.txt' AS source_file,
-               source_sort_position,
-               sha256({_literal(snapshot)} || '|multimedia.txt|' || cast(source_sort_position AS varchar))
-                 AS source_row_id,
-               gbifID,
-               CASE WHEN normalized_row_resolved OR NOT year_retained
-                    THEN 'resolved_occurrence' ELSE 'unresolved_occurrence' END AS media_join_status,
-               CASE
-                 WHEN NOT year_retained THEN 'EXCLUDED_PRE_1960'
-                 WHEN NOT cohort_retained THEN 'EXCLUDED_OUTSIDE_IDENTIFIED_OR_ACCEPTED'
-                 WHEN rights_restricted THEN 'EXCLUDED_EXPLICIT_MEDIA_RIGHTS'
-                 ELSE 'RETAINED_V3'
-               END AS v3_funnel_status,
-               CASE
-                 WHEN NOT year_retained THEN 'PARSEABLE_YEAR_BEFORE_1960'
-                 WHEN NOT cohort_retained THEN 'OUTSIDE_LEGACY_IDENTIFIED_OR_ACCEPTED_COHORT'
-                 WHEN rights_restricted THEN 'EXPLICIT_ALL_RIGHTS_RESERVED_OR_COPYRIGHT'
-                 ELSE 'NONE'
-               END AS exclusion_reason,
-               CASE WHEN year_retained AND cohort_retained AND NOT rights_restricted
-                    THEN 'NOT_TESTED' ELSE 'NOT_APPLICABLE' END AS local_quality_status
-        FROM classified
-        ORDER BY source_sort_position
-    """
-
-
-def _ledger_counts(
-    connection: duckdb.DuckDBPyConnection, output: Path
+def _write_ledger_streaming(
+    *,
+    joined: Path,
+    normalized: Path,
+    output: Path,
+    source_snapshot_id: str,
+    batch_rows: int,
 ) -> dict[str, int]:
-    row = connection.execute(
-        f"""
-        SELECT count(*)::BIGINT AS total_rows,
-               count(v3_funnel_status)::BIGINT AS status_rows,
-               count(*) FILTER (WHERE media_join_status = 'resolved_occurrence')::BIGINT AS resolved_occurrence,
-               count(*) FILTER (WHERE v3_funnel_status = 'EXCLUDED_PRE_1960')::BIGINT AS excluded_pre_1960,
-               count(*) FILTER (WHERE v3_funnel_status = 'EXCLUDED_OUTSIDE_IDENTIFIED_OR_ACCEPTED')::BIGINT AS excluded_outside_cohort,
-               count(*) FILTER (WHERE v3_funnel_status = 'EXCLUDED_EXPLICIT_MEDIA_RIGHTS')::BIGINT AS excluded_explicit_rights,
-               count(*) FILTER (WHERE v3_funnel_status = 'RETAINED_V3')::BIGINT AS retained_v3,
-               count(DISTINCT source_row_id)::BIGINT AS distinct_source_row_ids
-        FROM read_parquet({_literal(str(output))})
-        """
-    ).fetchone()
-    assert row is not None
-    names = [item[0] for item in connection.description]
-    return dict(zip(names, map(int, row), strict=True))
+    joined_file = pq.ParquetFile(joined)
+    normalized_file = pq.ParquetFile(normalized)
+    normalized_cursor = _NormalizedCursor(normalized_file, batch_rows=batch_rows)
+    writer = pq.ParquetWriter(
+        output,
+        SOURCE_LEDGER_SCHEMA,
+        compression="zstd",
+        use_dictionary=True,
+        write_statistics=True,
+    )
+    counts = {
+        "total_rows": 0,
+        "status_rows": 0,
+        "resolved_occurrence": 0,
+        "excluded_pre_1960": 0,
+        "excluded_outside_cohort": 0,
+        "excluded_explicit_rights": 0,
+        "retained_v3": 0,
+        "distinct_source_row_ids": 0,
+    }
+    identity_prefix = f"{source_snapshot_id}|multimedia.txt|".encode()
+    try:
+        for batch in joined_file.iter_batches(
+            batch_size=batch_rows, columns=["gbifID", "year"], use_threads=True
+        ):
+            gbif_ids = batch.column(0).to_pylist()
+            years = batch.column(1).to_pylist()
+            retained = [_year_retained(value) for value in years]
+            normalized_values = normalized_cursor.take(sum(retained))
+            normalized_index = 0
+            output_rows = {field.name: [] for field in SOURCE_LEDGER_SCHEMA}
+            for offset, (gbif_id, year_is_retained) in enumerate(
+                zip(gbif_ids, retained, strict=True)
+            ):
+                position = counts["total_rows"] + offset
+                if year_is_retained:
+                    identified_by = normalized_values["identifiedBy"][normalized_index]
+                    verification = normalized_values[
+                        "identificationVerificationStatus"
+                    ][normalized_index]
+                    identifier = normalized_values["media_identifier"][normalized_index]
+                    media_license = normalized_values["media_license"][normalized_index]
+                    normalized_index += 1
+                    cohort_retained = _nonblank(identified_by) or (
+                        str(verification or "").strip().casefold() == "accepted"
+                    )
+                    rights_restricted = _nonblank(identifier) and _restricted(
+                        media_license
+                    )
+                    if not cohort_retained:
+                        funnel_status = "EXCLUDED_OUTSIDE_IDENTIFIED_OR_ACCEPTED"
+                        exclusion = "OUTSIDE_LEGACY_IDENTIFIED_OR_ACCEPTED_COHORT"
+                        count_key = "excluded_outside_cohort"
+                    elif rights_restricted:
+                        funnel_status = "EXCLUDED_EXPLICIT_MEDIA_RIGHTS"
+                        exclusion = "EXPLICIT_ALL_RIGHTS_RESERVED_OR_COPYRIGHT"
+                        count_key = "excluded_explicit_rights"
+                    else:
+                        funnel_status = "RETAINED_V3"
+                        exclusion = "NONE"
+                        count_key = "retained_v3"
+                else:
+                    funnel_status = "EXCLUDED_PRE_1960"
+                    exclusion = "PARSEABLE_YEAR_BEFORE_1960"
+                    count_key = "excluded_pre_1960"
+                output_rows["ledger_version"].append(SOURCE_LEDGER_VERSION)
+                output_rows["source_snapshot_id"].append(source_snapshot_id)
+                output_rows["source_file"].append("multimedia.txt")
+                output_rows["source_sort_position"].append(position)
+                output_rows["source_row_id"].append(
+                    hashlib.sha256(identity_prefix + str(position).encode()).hexdigest()
+                )
+                output_rows["gbifID"].append(gbif_id)
+                output_rows["media_join_status"].append("resolved_occurrence")
+                output_rows["v3_funnel_status"].append(funnel_status)
+                output_rows["exclusion_reason"].append(exclusion)
+                output_rows["local_quality_status"].append(
+                    "NOT_TESTED" if funnel_status == "RETAINED_V3" else "NOT_APPLICABLE"
+                )
+                counts[count_key] += 1
+            if normalized_index != sum(retained):
+                raise RuntimeError("normalized cursor did not align with retained rows")
+            writer.write_table(
+                pa.Table.from_pydict(output_rows, schema=SOURCE_LEDGER_SCHEMA),
+                row_group_size=batch_rows,
+            )
+            counts["total_rows"] += batch.num_rows
+            counts["status_rows"] += batch.num_rows
+            counts["resolved_occurrence"] += batch.num_rows
+            counts["distinct_source_row_ids"] += batch.num_rows
+        normalized_cursor.assert_exhausted()
+    finally:
+        writer.close()
+    return counts
+
+
+class _NormalizedCursor:
+    _COLUMNS = (
+        "identifiedBy",
+        "identificationVerificationStatus",
+        "media_identifier",
+        "media_license",
+    )
+
+    def __init__(self, parquet: pq.ParquetFile, *, batch_rows: int) -> None:
+        self._batches = iter(
+            parquet.iter_batches(
+                batch_size=batch_rows, columns=list(self._COLUMNS), use_threads=True
+            )
+        )
+        self._batch: pa.RecordBatch | None = None
+        self._offset = 0
+
+    def take(self, count: int) -> dict[str, list[object]]:
+        values: dict[str, list[object]] = {name: [] for name in self._COLUMNS}
+        remaining = count
+        while remaining:
+            self._ensure_batch()
+            if self._batch is None:
+                raise ValueError("normalized Parquet ended before joined retained rows")
+            available = self._batch.num_rows - self._offset
+            size = min(available, remaining)
+            piece = self._batch.slice(self._offset, size)
+            for index, name in enumerate(self._COLUMNS):
+                values[name].extend(piece.column(index).to_pylist())
+            self._offset += size
+            remaining -= size
+        return values
+
+    def assert_exhausted(self) -> None:
+        self._ensure_batch()
+        if self._batch is not None:
+            raise ValueError("normalized Parquet has rows beyond joined retained rows")
+
+    def _ensure_batch(self) -> None:
+        if self._batch is not None and self._offset < self._batch.num_rows:
+            return
+        self._batch = next(self._batches, None)
+        self._offset = 0
+
+
+def _year_retained(value: object | None) -> bool:
+    if value is None or not str(value).strip():
+        return True
+    try:
+        return float(value) >= 1960
+    except (TypeError, ValueError):
+        return True
+
+
+def _nonblank(value: object | None) -> bool:
+    return value is not None and bool(str(value).strip())
+
+
+def _restricted(value: object | None) -> bool:
+    normalized = str(value or "").strip().casefold()
+    return "all rights reserved" in normalized or normalized == "copyright"
 
 
 def _parquet_artifact(path: Path) -> dict[str, object]:
@@ -314,10 +382,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 __all__ = [
