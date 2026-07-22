@@ -48,15 +48,22 @@ def publish_media_resources(*,duplicates_parquet:str|Path,output_directory:str|P
 def _resource_sql(source,output,snapshot,partitions):
     return f"""
     COPY (WITH grouped AS (
-      SELECT canonical_url_hash,arg_min(canonical_url,media_assertion_id) canonical_url,
-        arg_min(source_platform_group_id,media_assertion_id) source_platform_group_id,
-        count(*)::BIGINT assertion_count,count(distinct gbifID)::BIGINT distinct_occurrence_count,
-        max(coalesce(url_distinct_taxa,1))::BIGINT distinct_taxon_count,
-        max(coalesce(url_distinct_licenses,1))::BIGINT distinct_license_count,
-        CASE WHEN count(*) FILTER(WHERE cross_taxon_url_status='CONFLICT')>0 THEN 'CONFLICT' ELSE 'PASS' END cross_taxon_status,
-        CASE WHEN count(*) FILTER(WHERE cross_license_url_status='CONFLICT')>0 THEN 'CONFLICT' ELSE 'PASS' END cross_license_status,
-        min(media_assertion_id) representative_media_assertion_id,min(gbifID) representative_gbifID
-      FROM read_parquet({_lit(str(source))}) WHERE canonical_url_hash IS NOT NULL GROUP BY 1
+      SELECT canonical_url_hash,canonical_url,source_platform_group_id,
+        1::BIGINT assertion_count,1::BIGINT distinct_occurrence_count,
+        1::BIGINT distinct_taxon_count,1::BIGINT distinct_license_count,
+        cross_taxon_url_status cross_taxon_status,cross_license_url_status cross_license_status,
+        media_assertion_id representative_media_assertion_id,gbifID representative_gbifID
+      FROM read_parquet({_lit(str(source))})
+      WHERE canonical_url_hash IS NOT NULL AND canonical_url_group_size IS NULL
+      UNION ALL
+      SELECT canonical_url_hash,canonical_url,source_platform_group_id,
+        canonical_url_group_size assertion_count,url_distinct_occurrences distinct_occurrence_count,
+        url_distinct_taxa distinct_taxon_count,url_distinct_licenses distinct_license_count,
+        cross_taxon_url_status cross_taxon_status,cross_license_url_status cross_license_status,
+        media_assertion_id representative_media_assertion_id,gbifID representative_gbifID
+      FROM read_parquet({_lit(str(source))})
+      WHERE canonical_url_hash IS NOT NULL AND canonical_url_group_size IS NOT NULL
+      QUALIFY row_number() OVER(PARTITION BY canonical_url_hash ORDER BY media_assertion_id)=1
     ) SELECT (hash(canonical_url_hash)%{partitions})::INTEGER resource_partition,
       {_lit(RESOURCE_VERSION)} resource_version,{_lit(snapshot)} source_snapshot_id,
       'sha256:'||sha256('canonical-resource|'||canonical_url_hash) media_resource_id,
