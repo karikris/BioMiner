@@ -227,12 +227,16 @@ def publish_ai_readiness(
         "network_claims_withheld": _all_status(
             parts, "MEDIA_REACHABLE", {"NOT_TESTED", "NOT_APPLICABLE"}
         ),
-        "byte_claims_withheld": all(
+        "byte_claims_withheld": _all_status(
+            parts,
+            "MEDIA_TECHNICALLY_VALID",
+            {"NOT_TESTED", "NOT_APPLICABLE", "FAIL", "UNKNOWN"},
+        )
+        and all(
             _all_status(parts, field, {"NOT_TESTED", "NOT_APPLICABLE"})
             for field in (
                 "MEDIA_DECODABLE",
                 "MEDIA_TRANSCODE_REQUIRED",
-                "MEDIA_TECHNICALLY_VALID",
                 "MINIMUM_SIDE_224",
                 "MINIMUM_SIDE_512",
                 "MINIMUM_SIDE_768",
