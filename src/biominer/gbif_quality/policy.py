@@ -80,6 +80,8 @@ CONTROLLED_VOCABULARIES: dict[str, tuple[str, ...]] = {
         "MATERIAL_SAMPLE",
         "LIVING_SPECIMEN",
         "FOSSIL_SPECIMEN",
+        "MATERIAL_CITATION",
+        "OBSERVATION",
         "OCCURRENCE",
     ),
     "occurrenceStatus": ("PRESENT", "ABSENT"),
