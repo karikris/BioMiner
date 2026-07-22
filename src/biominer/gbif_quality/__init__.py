@@ -17,6 +17,11 @@ from biominer.gbif_quality.inventory import (
     SourceInventoryConfig,
     build_source_inventory,
 )
+from biominer.gbif_quality.media_checks import (
+    MEDIA_QUALITY_VERSION,
+    MediaQualityResult,
+    publish_media_assertion_quality,
+)
 from biominer.gbif_quality.policy import (
     FIELD_POLICY_SCHEMA_VERSION,
     FieldPolicy,
@@ -54,10 +59,12 @@ __all__ = [
     "FIELD_POLICY_SCHEMA_VERSION",
     "FUNNEL_SCHEMA_VERSION",
     "INVENTORY_SCHEMA_VERSION",
+    "MEDIA_QUALITY_VERSION",
     "SCHEMA_AUDIT_VERSION",
     "SOURCE_LEDGER_VERSION",
     "FunnelConfig",
     "FieldPolicy",
+    "MediaQualityResult",
     "Phase1Config",
     "CompletenessProfile",
     "BaselinePublication",
@@ -77,6 +84,7 @@ __all__ = [
     "field_policy_table",
     "profile_completeness",
     "publish_baseline",
+    "publish_media_assertion_quality",
     "publish_source_media_ledger",
     "run_phase1_baseline",
 ]
