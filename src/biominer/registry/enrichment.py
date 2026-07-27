@@ -539,7 +539,15 @@ def _enrich_species_context(
         name_assertions.extend(result.get("name_assertions", []))
         external_links.extend(result.get("external_links", []))
         source_snapshots.extend(result.get("source_snapshots", []))
-        work_records.append(_source_work_record(source=source, context=context, status="complete", request_count=request_count))
+        observed_request_count = int(result.get("request_count", request_count))
+        work_records.append(
+            _source_work_record(
+                source=source,
+                context=context,
+                status="complete",
+                request_count=observed_request_count,
+            )
+        )
     return SpeciesEnrichmentResult(
         accepted_taxon_key=context.accepted_taxon_key,
         name_assertions=tuple(name_assertions),

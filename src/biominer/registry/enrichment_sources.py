@@ -6,6 +6,7 @@ import json
 import logging
 import random
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -36,7 +37,9 @@ TAXREF_TAXA_SEARCH_PATH = "/api/taxa/search"
 TAXREF_SOURCE_PATH = f"{TAXREF_BASE_URL}{TAXREF_TAXA_SEARCH_PATH}"
 TAXREF_SOURCE_VERSION = "taxref-web-api-taxa-search"
 WIKIDATA_WDQS_URL = "https://query.wikidata.org"
-WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p846-p1843-labels-aliases"
+GBIF_API_URL = "https://api.gbif.org"
+GBIF_COL_XR_CHECKLIST_KEY = "7ddf754f-d193-4cc9-b351-99906754a03b"
+WIKIDATA_SOURCE_VERSION = "wikidata-wdqs-p225-p14607-p846-p1843-labels-aliases"
 OPEN_TREE_SOURCE_VERSION = "opentree-v3-tnrs"
 COL_NAME_USAGE_SEARCH_LIMIT = 1000
 INATURALIST_TAXA_PER_PAGE = 200
@@ -1079,9 +1082,70 @@ class INaturalistClient:
         return {"name_assertions": assertions, "external_links": links, "source_snapshots": [_snapshot("iNaturalist", "inaturalist-v1-taxa")]}
 
 
-class WikidataClient:
+@dataclass(frozen=True)
+class WikidataMatchEvidence:
+    match_method: str
+    lineage_check: str
+    request_count: int = 0
+
+
+@dataclass(frozen=True)
+class COLXRLegacyResolution:
+    matched: bool
+    request_count: int
+
+
+class GBIFCOLXRLegacyResolver:
+    """Resolve a legacy numeric GBIF taxon ID to the current COL XR concept."""
+
     def __init__(self, *, http_get: HTTPGet | None = None, max_retries: int = 5) -> None:
+        self._http_get = http_get or _json_get(GBIF_API_URL, max_retries=max_retries)
+        self._cache: dict[tuple[str, str], COLXRLegacyResolution] = {}
+
+    def resolve(self, context: SpeciesContext, legacy_gbif_id: str) -> COLXRLegacyResolution:
+        cache_key = (context.accepted_taxon_key, legacy_gbif_id)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if not legacy_gbif_id.isdigit():
+            resolution = COLXRLegacyResolution(matched=False, request_count=0)
+            self._cache[cache_key] = resolution
+            return resolution
+
+        legacy = self._http_get(f"/v1/species/{legacy_gbif_id}", {})
+        if not _legacy_gbif_taxon_matches_context(legacy, context):
+            resolution = COLXRLegacyResolution(matched=False, request_count=1)
+            self._cache[cache_key] = resolution
+            return resolution
+
+        params: dict[str, object] = {
+            "scientificName": context.accepted_scientific_name,
+            "rank": "SPECIES",
+            "checklistKey": GBIF_COL_XR_CHECKLIST_KEY,
+        }
+        if context.family:
+            params["family"] = context.family
+        if context.genus:
+            params["genus"] = context.genus
+        current = self._http_get("/v2/species/match", params)
+        resolution = COLXRLegacyResolution(
+            matched=_col_xr_match_matches_context(current, context),
+            request_count=2,
+        )
+        self._cache[cache_key] = resolution
+        return resolution
+
+
+class WikidataClient:
+    def __init__(
+        self,
+        *,
+        http_get: HTTPGet | None = None,
+        col_xr_resolver: GBIFCOLXRLegacyResolver | None = None,
+        max_retries: int = 5,
+    ) -> None:
         self._http_get = http_get or _json_get(WIKIDATA_WDQS_URL, max_retries=max_retries)
+        self._col_xr_resolver = col_xr_resolver or GBIFCOLXRLegacyResolver(max_retries=max_retries)
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         query = _wikidata_taxon_query(context.accepted_scientific_name)
@@ -1093,14 +1157,40 @@ class WikidataClient:
         links: list[dict[str, Any]] = []
         linked_taxa: set[str] = set()
         seen_assertions: set[tuple[str, str, str]] = set()
+        evidence_cache: dict[tuple[str, str, str], WikidataMatchEvidence | None] = {}
+        request_count = 1
         for binding in bindings:
-            if not isinstance(binding, dict) or not _wikidata_link_is_confident(binding, context):
+            if not isinstance(binding, dict):
                 continue
             qid = _wikidata_entity_id(_binding_value(binding, "taxon"))
             if not qid:
                 continue
+            evidence_key = (
+                qid,
+                _binding_value(binding, "gbifTaxonId"),
+                _binding_value(binding, "legacyGbifId") or _binding_value(binding, "gbifId"),
+            )
+            if evidence_key not in evidence_cache:
+                evidence_cache[evidence_key] = _wikidata_match_evidence(
+                    binding,
+                    context,
+                    col_xr_resolver=self._col_xr_resolver,
+                )
+                if evidence_cache[evidence_key] is not None:
+                    request_count += evidence_cache[evidence_key].request_count
+            evidence = evidence_cache[evidence_key]
+            if evidence is None:
+                continue
             if qid not in linked_taxa:
-                links.append(_external_link(context, source="Wikidata", source_taxon_id=qid, match_method="P225+P846"))
+                links.append(
+                    _external_link(
+                        context,
+                        source="Wikidata",
+                        source_taxon_id=qid,
+                        match_method=evidence.match_method,
+                        lineage_check=evidence.lineage_check,
+                    )
+                )
                 linked_taxa.add(qid)
             for name, language, field in _wikidata_name_values(binding):
                 if normalize_name_key(name) == normalize_name_key(context.accepted_scientific_name):
@@ -1116,7 +1206,7 @@ class WikidataClient:
                         source="Wikidata",
                         source_record_id=f"wikidata:{qid}:{field}:{language}:{name}",
                         source_taxon_id=qid,
-                        lineage_check="accepted_taxon_key",
+                        lineage_check=evidence.lineage_check,
                         language=language,
                         script="",
                         name_class="vernacular" if field == "P1843" else "vernacular_alias",
@@ -1131,6 +1221,7 @@ class WikidataClient:
             "name_assertions": assertions,
             "external_links": links,
             "source_snapshots": [_snapshot("Wikidata", WIKIDATA_SOURCE_VERSION, query=query)],
+            "request_count": request_count,
         }
 
 
@@ -1298,30 +1389,136 @@ query TMDTaxonEntries($project: String, $first: Int, $after: String) {
 def _wikidata_taxon_query(scientific_name: str) -> str:
     escaped = scientific_name.replace('"', '\\"')
     return f"""
-SELECT ?taxon ?taxonLabel ?taxonLabelLang ?alias ?aliasLang ?commonName ?commonNameLang ?gbifId WHERE {{
+SELECT ?taxon ?scientificName ?nameValue ?nameLang ?nameField ?gbifTaxonId ?legacyGbifId WHERE {{
   ?taxon wdt:P225 "{escaped}" .
-  OPTIONAL {{ ?taxon wdt:P846 ?gbifId . }}
-  OPTIONAL {{ ?taxon wdt:P1843 ?commonName . BIND(LANG(?commonName) AS ?commonNameLang) }}
-  OPTIONAL {{ ?taxon rdfs:label ?taxonLabel . BIND(LANG(?taxonLabel) AS ?taxonLabelLang) }}
-  OPTIONAL {{ ?taxon skos:altLabel ?alias . BIND(LANG(?alias) AS ?aliasLang) }}
-  FILTER(!BOUND(?taxonLabelLang) || ?taxonLabelLang != "mul")
-  FILTER(!BOUND(?aliasLang) || ?aliasLang != "mul")
+  BIND("{escaped}" AS ?scientificName)
+  OPTIONAL {{ ?taxon wdt:P14607 ?gbifTaxonId . }}
+  OPTIONAL {{ ?taxon wdt:P846 ?legacyGbifId . }}
+  OPTIONAL {{
+    {{ ?taxon wdt:P1843 ?nameValue . BIND("P1843" AS ?nameField) }}
+    UNION
+    {{ ?taxon rdfs:label ?nameValue . BIND("rdfs:label" AS ?nameField) }}
+    UNION
+    {{ ?taxon skos:altLabel ?nameValue . BIND("skos:altLabel" AS ?nameField) }}
+    BIND(LANG(?nameValue) AS ?nameLang)
+    FILTER(?nameLang != "mul")
+  }}
 }}
 """.strip()
 
 
-def _wikidata_link_is_confident(binding: dict[str, Any], context: SpeciesContext) -> bool:
+def _wikidata_match_evidence(
+    binding: dict[str, Any],
+    context: SpeciesContext,
+    *,
+    col_xr_resolver: GBIFCOLXRLegacyResolver,
+) -> WikidataMatchEvidence | None:
     scientific_name = _binding_value(binding, "scientificName") or context.accepted_scientific_name
     if normalize_name_key(scientific_name) != normalize_name_key(context.accepted_scientific_name):
-        return False
+        return None
     accepted_key = str(context.accepted_taxon_key or "")
     if accepted_key.startswith("gbif:"):
-        gbif_id = _binding_value(binding, "gbifId")
-        return bool(gbif_id and f"gbif:{gbif_id}" == accepted_key)
-    return bool(_wikidata_entity_id(_binding_value(binding, "taxon")))
+        gbif_taxon_id = _binding_value(binding, "gbifTaxonId")
+        if gbif_taxon_id and f"gbif:{gbif_taxon_id}" == accepted_key:
+            return WikidataMatchEvidence(
+                match_method="P225+P14607",
+                lineage_check="accepted_taxon_key",
+            )
+        legacy_gbif_id = _binding_value(binding, "legacyGbifId") or _binding_value(binding, "gbifId")
+        if legacy_gbif_id and f"gbif:{legacy_gbif_id}" == accepted_key:
+            return WikidataMatchEvidence(
+                match_method="P225+P846",
+                lineage_check="accepted_taxon_key",
+            )
+        if legacy_gbif_id:
+            resolution = col_xr_resolver.resolve(context, legacy_gbif_id)
+            if resolution.matched:
+                return WikidataMatchEvidence(
+                    match_method="P225+P846+GBIF_COL_XR",
+                    lineage_check="legacy_taxon+accepted_taxon_key+family+genus",
+                    request_count=resolution.request_count,
+                )
+        return None
+    if _wikidata_entity_id(_binding_value(binding, "taxon")):
+        return WikidataMatchEvidence(
+            match_method="P225",
+            lineage_check="accepted_scientific_name",
+        )
+    return None
+
+
+def _wikidata_link_is_confident(binding: dict[str, Any], context: SpeciesContext) -> bool:
+    """Backward-compatible confidence helper for legacy callers and tests."""
+
+    return _wikidata_match_evidence(
+        binding,
+        context,
+        col_xr_resolver=GBIFCOLXRLegacyResolver(),
+    ) is not None
+
+
+def _legacy_gbif_taxon_matches_context(payload: dict[str, Any], context: SpeciesContext) -> bool:
+    names = {
+        normalize_name_key(payload.get("canonicalName")),
+        normalize_name_key(payload.get("species")),
+        normalize_name_key(payload.get("scientificName")),
+    }
+    if normalize_name_key(context.accepted_scientific_name) not in names:
+        return False
+    if str(payload.get("rank") or "").upper() != "SPECIES":
+        return False
+    if context.family and normalize_name_key(payload.get("family")) != normalize_name_key(context.family):
+        return False
+    if context.genus and normalize_name_key(payload.get("genus")) != normalize_name_key(context.genus):
+        return False
+    return True
+
+
+def _col_xr_match_matches_context(payload: dict[str, Any], context: SpeciesContext) -> bool:
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
+    if f"gbif:{usage.get('key') or ''}" != context.accepted_taxon_key:
+        return False
+    if str(usage.get("rank") or "").upper() != "SPECIES":
+        return False
+    if str(diagnostics.get("matchType") or "").upper() != "EXACT":
+        return False
+    if int(diagnostics.get("confidence") or 0) < 99:
+        return False
+    if normalize_name_key(usage.get("canonicalName")) != normalize_name_key(context.accepted_scientific_name):
+        return False
+
+    classification = {
+        str(row.get("rank") or "").upper(): row
+        for row in payload.get("classification") or []
+        if isinstance(row, dict)
+    }
+    for rank, expected_name, expected_key in (
+        ("FAMILY", context.family, context.family_key),
+        ("GENUS", context.genus, context.genus_key),
+    ):
+        if not expected_name and not expected_key:
+            continue
+        row = classification.get(rank)
+        if row is None:
+            return False
+        if expected_name and normalize_name_key(row.get("name")) != normalize_name_key(expected_name):
+            return False
+        if expected_key and f"gbif:{row.get('key') or ''}" != expected_key:
+            return False
+    return True
 
 
 def _wikidata_name_values(binding: dict[str, Any]) -> list[tuple[str, str, str]]:
+    name_value = _binding_value(binding, "nameValue").strip()
+    if name_value:
+        return [
+            (
+                name_value,
+                _binding_value(binding, "nameLang") or _binding_language(binding, "nameValue") or "und",
+                _binding_value(binding, "nameField") or "rdfs:label",
+            )
+        ]
     values: list[tuple[str, str, str]] = []
     for field, lang_field, source_property in (
         ("commonName", "commonNameLang", "P1843"),

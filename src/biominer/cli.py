@@ -63,6 +63,7 @@ from biominer.registry.translation_harvester import (
     MYMEMORY_MONTHLY_INPUT_WORD_LIMIT,
     MYMEMORY_MONTHLY_REQUEST_LIMIT,
     MYMEMORY_RESPONSE_BYTE_RESERVATION,
+    build_translation_candidates_from_registry,
 )
 from biominer.registry.translation_sources import DEFAULT_TRANSLATION_SOURCES, DEFAULT_TRANSLATION_TARGET_LOCALES_JSON
 from biominer.references.negative_manifest import (
@@ -364,6 +365,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_compile_enriched.add_argument("--registry-version", required=True)
     registry_compile_enriched.add_argument("--scope-json", default="config/butterfly_scope.json")
     registry_compile_enriched.add_argument("--query-curation-json")
+    registry_compile_enriched.add_argument("--enrichment-dir")
+    registry_compile_enriched.add_argument("--output-dir")
+    registry_compile_enriched.add_argument("--sources")
+    registry_compile_enriched.add_argument("--translation-sources")
     registry_fetch_taxonomy = dev_registry_subparsers.add_parser("fetch-taxonomy")
     registry_fetch_taxonomy.add_argument("--output-json", required=True)
     registry_fetch_taxonomy.add_argument("--scope-json", default="config/butterfly_scope.json")
@@ -384,6 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     registry_enrich_sources = dev_registry_subparsers.add_parser("enrich-sources")
     registry_enrich_sources.add_argument("--registry-dir", required=True)
+    registry_enrich_sources.add_argument("--enrichment-dir")
     registry_enrich_sources.add_argument("--sources", default=",".join(DEFAULT_ENRICHMENT_SOURCES))
     registry_enrich_sources.add_argument("--workers", type=int, default=8)
     registry_enrich_sources.add_argument("--progress-every", type=int, default=100)
@@ -392,6 +398,17 @@ def build_parser() -> argparse.ArgumentParser:
     registry_enrich_sources.add_argument("--inaturalist-daily-request-limit", type=int, default=INATURALIST_DAILY_REQUEST_LIMIT)
     registry_enrich_sources.add_argument("--limit", type=int, default=0)
     registry_enrich_sources.add_argument("--report-dir", default="reports")
+    registry_enrich_wikimedia = dev_registry_subparsers.add_parser("enrich-wikimedia-translations")
+    registry_enrich_wikimedia.add_argument("--registry-dir", required=True)
+    registry_enrich_wikimedia.add_argument("--enrichment-dir", required=True)
+    registry_enrich_wikimedia.add_argument("--target-locales-json", default=DEFAULT_TRANSLATION_TARGET_LOCALES_JSON)
+    registry_enrich_wikimedia.add_argument("--daily-request-limit", type=int, default=10000)
+    registry_enrich_wikimedia.add_argument("--workers", type=int, default=1)
+    registry_enrich_wikimedia.add_argument("--checkpoint-every", type=int, default=100)
+    registry_enrich_wikimedia.add_argument("--checkpoint-seconds", type=float, default=60.0)
+    registry_enrich_wikimedia.add_argument("--language-shards", type=int, default=0)
+    registry_enrich_wikimedia.add_argument("--max-retries", type=int, default=5)
+    registry_enrich_wikimedia.add_argument("--limit", type=int, default=0)
     registry_seed = dev_registry_subparsers.add_parser("seed-flickr-queries")
     registry_seed.add_argument("--query-definitions", required=True)
     registry_seed.add_argument("--state-db", default="data/state/flickr_poller.sqlite")
@@ -720,10 +737,24 @@ def run(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0
         if args.registry_command == "compile-enriched":
+            requested_sources = (
+                tuple(part.strip() for part in args.sources.split(",") if part.strip())
+                if args.sources is not None
+                else None
+            )
+            requested_translation_sources = (
+                tuple(part.strip() for part in args.translation_sources.split(",") if part.strip())
+                if args.translation_sources is not None
+                else None
+            )
             payload = compile_enriched_registry(
                 registry_dir=args.registry_dir,
+                enrichment_dir=args.enrichment_dir,
+                output_dir=args.output_dir,
                 registry_version=args.registry_version,
                 scope_path=args.scope_json,
+                requested_sources=requested_sources,
+                requested_translation_sources=requested_translation_sources,
                 query_curation_json=args.query_curation_json,
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -736,6 +767,7 @@ def run(args: argparse.Namespace) -> int:
             )
             payload = build_enrichment_sources_from_registry(
                 registry_dir=args.registry_dir,
+                enrichment_dir=args.enrichment_dir,
                 sources=tuple(part.strip() for part in args.sources.split(",") if part.strip()),
                 workers=args.workers,
                 progress_every=args.progress_every,
@@ -744,6 +776,27 @@ def run(args: argparse.Namespace) -> int:
                 inaturalist_daily_request_limit=args.inaturalist_daily_request_limit,
                 limit=args.limit,
                 report_dir=args.report_dir,
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        if args.registry_command == "enrich-wikimedia-translations":
+            logging.basicConfig(
+                level=getattr(logging, os.environ.get("BIOMINER_LOG_LEVEL", "INFO").upper(), logging.INFO),
+                format="%(asctime)s %(levelname)s %(name)s %(message)s",
+                force=True,
+            )
+            payload = build_translation_candidates_from_registry(
+                registry_dir=args.registry_dir,
+                enrichment_dir=args.enrichment_dir,
+                translation_sources=("wikimedia",),
+                target_locales_json=args.target_locales_json,
+                max_retries=args.max_retries,
+                daily_request_limit=args.daily_request_limit,
+                translation_workers=args.workers,
+                translation_checkpoint_every=args.checkpoint_every,
+                translation_checkpoint_seconds=args.checkpoint_seconds,
+                translation_language_shards=args.language_shards,
+                limit=args.limit,
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0

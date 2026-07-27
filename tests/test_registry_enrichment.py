@@ -22,6 +22,7 @@ from biominer.registry.enrichment import (
 )
 from biominer.registry.enrichment_sources import (
     CatalogueOfLifeClient,
+    GBIFCOLXRLegacyResolver,
     GBIFVernacularClient,
     INaturalistClient,
     ITISClient,
@@ -529,6 +530,176 @@ def test_wikidata_source_name_assertions_preserve_same_taxon_binding() -> None:
 
     assert assertion["source_taxon_id"] == "Q123"
     assert assertion["lineage_check"] == "accepted_taxon_key"
+
+
+def test_wikidata_source_accepts_current_col_xr_p14607_identifier_without_crosswalk() -> None:
+    class ResolverMustNotRun:
+        def resolve(self, context, legacy_gbif_id):  # noqa: ANN001, ANN202 - test double.
+            raise AssertionError("legacy resolver must not run for an exact P14607 binding")
+
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        assert "P14607" in params["query"]
+        assert "P846" in params["query"]
+        return {
+            "results": {
+                "bindings": [
+                    {
+                        "taxon": {"value": "http://www.wikidata.org/entity/Q285314"},
+                        "scientificName": {"value": "Papilio demoleus"},
+                        "gbifTaxonId": {"value": "6TLXW"},
+                        "commonName": {"value": "Lime butterfly", "xml:lang": "en"},
+                        "commonNameLang": {"value": "en"},
+                    }
+                ]
+            }
+        }
+
+    context = SpeciesContext(
+        accepted_taxon_key="gbif:6TLXW",
+        accepted_scientific_name="Papilio demoleus",
+        family_key="gbif:6254D",
+        family="Papilionidae",
+        genus_key="gbif:84RZD",
+        genus="Papilio",
+        current_names=("Papilio demoleus",),
+    )
+    result = WikidataClient(
+        http_get=fake_get,
+        col_xr_resolver=ResolverMustNotRun(),
+    ).enrich_species(context)
+
+    assert result["external_links"] == [
+        {
+            "accepted_taxon_key": "gbif:6TLXW",
+            "source": "Wikidata",
+            "source_taxon_id": "Q285314",
+            "match_method": "P225+P14607",
+            "match_confidence": "high",
+            "lineage_check": "accepted_taxon_key",
+        }
+    ]
+    assert result["name_assertions"][0]["display_name"] == "Lime butterfly"
+    assert result["request_count"] == 1
+
+
+def test_wikidata_source_crosswalks_legacy_p846_through_gbif_col_xr_with_lineage() -> None:
+    gbif_requests: list[tuple[str, dict[str, object]]] = []
+
+    def fake_gbif_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        gbif_requests.append((path, params))
+        if path == "/v1/species/1938069":
+            return {
+                "canonicalName": "Papilio demoleus",
+                "species": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family": "Papilionidae",
+                "genus": "Papilio",
+            }
+        assert path == "/v2/species/match"
+        return {
+            "usage": {
+                "key": "6TLXW",
+                "canonicalName": "Papilio demoleus",
+                "rank": "SPECIES",
+            },
+            "classification": [
+                {"key": "6254D", "name": "Papilionidae", "rank": "FAMILY"},
+                {"key": "84RZD", "name": "Papilio", "rank": "GENUS"},
+            ],
+            "diagnostics": {"matchType": "EXACT", "confidence": 100},
+        }
+
+    def fake_wikidata_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        return {
+            "results": {
+                "bindings": [
+                    {
+                        "taxon": {"value": "http://www.wikidata.org/entity/Q285314"},
+                        "scientificName": {"value": "Papilio demoleus"},
+                        "legacyGbifId": {"value": "1938069"},
+                        "commonName": {"value": "Lime butterfly", "xml:lang": "en"},
+                        "commonNameLang": {"value": "en"},
+                    }
+                ]
+            }
+        }
+
+    context = SpeciesContext(
+        accepted_taxon_key="gbif:6TLXW",
+        accepted_scientific_name="Papilio demoleus",
+        family_key="gbif:6254D",
+        family="Papilionidae",
+        genus_key="gbif:84RZD",
+        genus="Papilio",
+        current_names=("Papilio demoleus",),
+    )
+    result = WikidataClient(
+        http_get=fake_wikidata_get,
+        col_xr_resolver=GBIFCOLXRLegacyResolver(http_get=fake_gbif_get),
+    ).enrich_species(context)
+
+    assert result["external_links"][0]["match_method"] == "P225+P846+GBIF_COL_XR"
+    assert result["external_links"][0]["lineage_check"] == "legacy_taxon+accepted_taxon_key+family+genus"
+    assert result["request_count"] == 3
+    assert gbif_requests[1][1] == {
+        "scientificName": "Papilio demoleus",
+        "rank": "SPECIES",
+        "checklistKey": "7ddf754f-d193-4cc9-b351-99906754a03b",
+        "family": "Papilionidae",
+        "genus": "Papilio",
+    }
+
+
+def test_wikidata_source_rejects_legacy_crosswalk_with_wrong_col_xr_lineage() -> None:
+    def fake_gbif_get(path, params):  # noqa: ANN001, ANN202 - source test double.
+        if path.startswith("/v1/species/"):
+            return {
+                "canonicalName": "Papilio demoleus",
+                "rank": "SPECIES",
+                "family": "Papilionidae",
+                "genus": "Papilio",
+            }
+        return {
+            "usage": {
+                "key": "6TLXW",
+                "canonicalName": "Papilio demoleus",
+                "rank": "SPECIES",
+            },
+            "classification": [
+                {"key": "WRONG", "name": "Nymphalidae", "rank": "FAMILY"},
+                {"key": "84RZD", "name": "Papilio", "rank": "GENUS"},
+            ],
+            "diagnostics": {"matchType": "EXACT", "confidence": 100},
+        }
+
+    result = WikidataClient(
+        http_get=lambda path, params: {
+            "results": {
+                "bindings": [
+                    {
+                        "taxon": {"value": "http://www.wikidata.org/entity/Q285314"},
+                        "scientificName": {"value": "Papilio demoleus"},
+                        "legacyGbifId": {"value": "1938069"},
+                        "commonName": {"value": "Lime butterfly", "xml:lang": "en"},
+                    }
+                ]
+            }
+        },
+        col_xr_resolver=GBIFCOLXRLegacyResolver(http_get=fake_gbif_get),
+    ).enrich_species(
+        SpeciesContext(
+            accepted_taxon_key="gbif:6TLXW",
+            accepted_scientific_name="Papilio demoleus",
+            family_key="gbif:6254D",
+            family="Papilionidae",
+            genus_key="gbif:84RZD",
+            genus="Papilio",
+            current_names=("Papilio demoleus",),
+        )
+    )
+
+    assert result["external_links"] == []
+    assert result["name_assertions"] == []
 
 
 def test_english_language_variants_normalize_and_deduplicate(tmp_path) -> None:
@@ -2793,6 +2964,7 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
     def fake_build(
         *,
         registry_dir,
+        enrichment_dir,
         sources,
         workers,
         progress_every,
@@ -2802,8 +2974,9 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
         limit,
         report_dir,
     ):  # noqa: ANN001 - CLI wiring test.
+        output_dir = enrichment_dir or registry_dir
         return write_enrichment_sources(
-            registry_dir,
+            output_dir,
             name_assertions=[
                 {
                     "accepted_taxon_key": "gbif:100",
@@ -2822,6 +2995,7 @@ def test_registry_enrich_sources_cli_writes_sources_into_registry_dir(tmp_path, 
             ],
         ) | {
             "registry_dir": str(registry_dir),
+            "enrichment_dir": str(output_dir),
             "source_order": list(sources),
             "species_seen": 1,
             "errors": [],
