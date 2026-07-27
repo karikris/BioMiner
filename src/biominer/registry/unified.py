@@ -412,17 +412,17 @@ def _observed_lineage(species: dict[str, Any], by_id: dict[str, dict[str, Any]])
                 "name": str(taxon.get("scientific_name") or taxon.get(rank.casefold()) or ""),
                 "rank": rank,
             }
-    if not any(rank in observed for rank in ("KINGDOM", "PHYLUM", "CLASS", "ORDER")):
-        # Butterfly-scope snapshots can begin at Papilionoidea. The four stable
-        # enclosing ranks are explicit in species_paths when the pinned CoL XR
-        # archive does not supply their source nodes directly.
-        observed.update(
-            {
-                "KINGDOM": {"node_id": "col-xr:animalia", "name": "Animalia", "rank": "KINGDOM"},
-                "PHYLUM": {"node_id": "col-xr:arthropoda", "name": "Arthropoda", "rank": "PHYLUM"},
-                "CLASS": {"node_id": "col-xr:insecta", "name": "Insecta", "rank": "CLASS"},
-                "ORDER": {"node_id": "col-xr:lepidoptera", "name": "Lepidoptera", "rank": "ORDER"},
-            }
+    # Butterfly-scope snapshots can begin at any enclosing rank. Fill each
+    # omitted stable ancestor independently without replacing observed nodes.
+    for rank, node_id, name in (
+        ("KINGDOM", "col-xr:animalia", "Animalia"),
+        ("PHYLUM", "col-xr:arthropoda", "Arthropoda"),
+        ("CLASS", "col-xr:insecta", "Insecta"),
+        ("ORDER", "col-xr:lepidoptera", "Lepidoptera"),
+    ):
+        observed.setdefault(
+            rank,
+            {"node_id": node_id, "name": name, "rank": rank},
         )
     if "SUPERFAMILY" not in observed:
         source_superfamily = next(
