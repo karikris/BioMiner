@@ -164,7 +164,16 @@ def _taxa_frame(
     scope_id: str,
     supported_only: bool = True,
 ) -> pl.DataFrame:
-    supported_ranks = {"KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES"}
+    supported_ranks = {
+        "KINGDOM",
+        "PHYLUM",
+        "CLASS",
+        "ORDER",
+        "SUPERFAMILY",
+        "FAMILY",
+        "GENUS",
+        "SPECIES",
+    }
     normalized_rows = [
             {
                 "registry_schema_version": REGISTRY_SCHEMA_VERSION,
@@ -415,7 +424,16 @@ def _row_has_blocking_collision_reason(row: dict[str, Any]) -> bool:
 
 def _qa_findings(taxa: pl.DataFrame, names: pl.DataFrame, queries: pl.DataFrame, scope) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    stored_ranks = {"KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES"}
+    stored_ranks = {
+        "KINGDOM",
+        "PHYLUM",
+        "CLASS",
+        "ORDER",
+        "SUPERFAMILY",
+        "FAMILY",
+        "GENUS",
+        "SPECIES",
+    }
     if scope.root_rank in stored_ranks and taxa.filter((pl.col("scientific_name") == scope.root_scientific_name) & (pl.col("rank") == scope.root_rank)).is_empty():
         findings.append(_finding("fatal", "missing_scope_root", scope.root_scientific_name))
     families = set(taxa.filter(pl.col("rank") == "FAMILY").select("scientific_name").to_series().to_list())

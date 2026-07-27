@@ -12,7 +12,16 @@ COL_XR_RELEASE = "COL26.6 XR"
 COL_XR_DOI = "10.48580/dgy8b"
 
 TRUST_TIERS = ("T1", "T2", "T3", "T4", "T5")
-PATH_RANKS = ("KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES")
+PATH_RANKS = (
+    "KINGDOM",
+    "PHYLUM",
+    "CLASS",
+    "ORDER",
+    "SUPERFAMILY",
+    "FAMILY",
+    "GENUS",
+    "SPECIES",
+)
 
 _SOURCE_PRECEDENCE = {
     "col xr": 0,
@@ -374,6 +383,25 @@ def _observed_lineage(species: dict[str, Any], by_id: dict[str, dict[str, Any]])
                 "ORDER": {"node_id": "col-xr:lepidoptera", "name": "Lepidoptera", "rank": "ORDER"},
             }
         )
+    if "SUPERFAMILY" not in observed:
+        source_superfamily = next(
+            (
+                taxon
+                for taxon in by_id.values()
+                if str(taxon.get("rank") or "").upper() == "SUPERFAMILY"
+                and str(taxon.get("scientific_name") or "").casefold() == "papilionoidea"
+            ),
+            None,
+        )
+        observed["SUPERFAMILY"] = {
+            "node_id": (
+                str(source_superfamily.get("accepted_taxon_key") or "")
+                if source_superfamily
+                else "col-xr:papilionoidea"
+            ),
+            "name": "Papilionoidea",
+            "rank": "SUPERFAMILY",
+        }
     # Source snapshots often flatten family/genus fields without emitting each
     # ancestor row. Preserve those observed identities instead of proxying them.
     for rank in ("FAMILY", "GENUS", "SPECIES"):

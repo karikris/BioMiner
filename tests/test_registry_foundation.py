@@ -142,7 +142,7 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     manifest = compile_registry_fixture(source, output, registry_version="test-registry")
 
     assert manifest["registry_version"] == "test-registry"
-    assert manifest["taxa_rows"] == 8
+    assert manifest["taxa_rows"] == 9
     assert manifest["name_rows"] == 3
     assert manifest["query_definition_rows"] == 4
     assert manifest["qa_status"] == "passed"
@@ -163,10 +163,16 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
         "PHYLUM",
         "CLASS",
         "ORDER",
+        "SUPERFAMILY",
         "FAMILY",
         "GENUS",
         "SPECIES",
     }
+    assert taxa.filter(pl.col("rank") == "SUPERFAMILY").select("scientific_name").item() == "Papilionoidea"
+
+    paths = pl.read_parquet(output / "species_paths.parquet")
+    assert paths.select("superfamily").item() == "Papilionoidea"
+    assert paths.select("superfamily_node_id").item() == "gbif:1"
 
     names = pl.read_parquet(output / "names.parquet")
     assert names.select("normalized_match_key").to_series().to_list() == [
