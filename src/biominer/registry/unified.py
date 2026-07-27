@@ -12,7 +12,23 @@ COL_XR_RELEASE = "COL26.6 XR"
 COL_XR_DOI = "10.48580/dgy8b"
 
 TRUST_TIERS = ("T1", "T2", "T3", "T4", "T5")
-PATH_RANKS = ("KINGDOM", "PHYLUM", "CLASS", "ORDER", "FAMILY", "GENUS", "SPECIES")
+PATH_RANKS = (
+    "KINGDOM",
+    "PHYLUM",
+    "CLASS",
+    "ORDER",
+    "SUPERFAMILY",
+    "FAMILY",
+    "GENUS",
+    "SPECIES",
+)
+QUERY_STAGE_ORDER = {
+    "SPECIES": 0,
+    "GENUS": 1,
+    "FAMILY": 2,
+    "SUPERFAMILY": 3,
+    "ORDER": 4,
+}
 
 _SOURCE_PRECEDENCE = {
     "col xr": 0,
@@ -89,7 +105,7 @@ def tier_number(value: object) -> int:
     return int(tier[1:])
 
 
-def canonicalize_keyword_rows(names: pl.DataFrame) -> pl.DataFrame:
+def canonicalize_keyword_rows(names: pl.DataFrame, taxa: pl.DataFrame | None = None) -> pl.DataFrame:
     """Retain every name association while selecting one executable term identity.
 
     Canonical identity is deliberately independent of registry version, source,
@@ -134,6 +150,15 @@ def canonicalize_keyword_rows(names: pl.DataFrame) -> pl.DataFrame:
     for row in rows:
         grouped.setdefault(str(row.get("normalized_match_key") or ""), []).append(row)
     for normalized, bucket in grouped.items():
+        owner_key, owner_rank, owner_name, ownership_basis = _keyword_owner(bucket, taxa)
+        for row in bucket:
+            row["keyword_owner_taxon_key"] = owner_key
+            row["keyword_owner_rank"] = owner_rank
+            row["keyword_owner_scientific_name"] = owner_name
+            row["keyword_ownership_basis"] = ownership_basis
+            if _hierarchy_query_allowed(row, owner_rank):
+                row["query_eligible"] = True
+                row["query_disabled_reason"] = ""
         actionable = [
             row
             for row in bucket
@@ -169,7 +194,10 @@ def canonical_query_rows(
     canonical = names.filter(pl.col("is_canonical_keyword") & pl.col("enabled") & pl.col("query_eligible"))
     for keyword in canonical.iter_rows(named=True):
         item = dict(keyword)
-        taxon = taxa_by_key.get(str(item.get("accepted_taxon_key") or ""), {})
+        owner_key = str(item.get("keyword_owner_taxon_key") or item.get("accepted_taxon_key") or "")
+        taxon = taxa_by_key.get(owner_key, {})
+        owner_rank = str(item.get("keyword_owner_rank") or taxon.get("rank") or "")
+        query_stage = _query_stage(item, owner_rank)
         for field in ("tags", "text"):
             logical_query_id = stable_identity("flickr-logical-query", item["normalized_match_key"], field)
             rows.append(
@@ -181,9 +209,19 @@ def canonical_query_rows(
                     "registry_schema_version": registry_schema_version,
                     "compiler_version": compiler_version,
                     "registry_version": registry_version,
-                    "accepted_taxon_key": item.get("accepted_taxon_key") or "",
+                    "accepted_taxon_key": owner_key,
                     "accepted_scientific_name": taxon.get("scientific_name") or "",
                     "accepted_rank": taxon.get("rank") or "",
+                    "keyword_owner_taxon_key": owner_key,
+                    "keyword_owner_rank": owner_rank,
+                    "keyword_owner_scientific_name": (
+                        item.get("keyword_owner_scientific_name")
+                        or taxon.get("scientific_name")
+                        or ""
+                    ),
+                    "keyword_ownership_basis": item.get("keyword_ownership_basis") or "",
+                    "query_stage": query_stage,
+                    "query_stage_order": QUERY_STAGE_ORDER.get(owner_rank, 99),
                     "family_key": taxon.get("family_key") or "",
                     "family": taxon.get("family") or "",
                     "genus_key": taxon.get("genus_key") or "",
@@ -211,7 +249,11 @@ def canonical_query_rows(
                     "precision_tier": item.get("precision_tier") or "",
                     "search_field": field,
                     "search_priority": global_query_priority(
-                        item["effective_trust_tier"], item.get("name_class"), field
+                        item["effective_trust_tier"],
+                        item.get("name_class"),
+                        field,
+                        stage_order=QUERY_STAGE_ORDER.get(owner_rank, 99),
+                        terminal=query_stage == "terminal_butterfly",
                     ),
                     "enabled": True,
                     "disabled_reason": "",
@@ -223,12 +265,20 @@ def canonical_query_rows(
     return sorted(rows, key=lambda row: (row["search_priority"], row["normalized_match_key"], row["logical_query_id"]))
 
 
-def global_query_priority(tier: object, name_class: object, field: object) -> int:
+def global_query_priority(
+    tier: object,
+    name_class: object,
+    field: object,
+    *,
+    stage_order: int = 0,
+    terminal: bool = False,
+) -> int:
+    stage_offset = (5 if terminal else stage_order) * 1000
     # Tier is the dominant component: no lower tier can sort ahead of a higher one.
     tier_offset = (tier_number(tier) - 1) * 100
     class_offset = _NAME_CLASS_PRECEDENCE.get(str(name_class or "").casefold(), 5) * 10
     field_offset = 0 if str(field) == "tags" else 1
-    return tier_offset + class_offset + field_offset
+    return stage_offset + tier_offset + class_offset + field_offset
 
 
 def compile_species_paths(
@@ -258,7 +308,7 @@ def compile_species_paths(
         observed = _observed_lineage(species, by_id)
         previous: dict[str, str] | None = None
         row: dict[str, Any] = {
-            "registry_schema_version": "unified-butterfly-registry-v1",
+            "registry_schema_version": "unified-butterfly-registry-v2",
             "registry_version": registry_version,
             "accepted_taxon_id": str(species.get("accepted_taxon_key") or ""),
             "accepted_taxon_key": str(species.get("accepted_taxon_key") or ""),
@@ -362,18 +412,37 @@ def _observed_lineage(species: dict[str, Any], by_id: dict[str, dict[str, Any]])
                 "name": str(taxon.get("scientific_name") or taxon.get(rank.casefold()) or ""),
                 "rank": rank,
             }
-    if not any(rank in observed for rank in ("KINGDOM", "PHYLUM", "CLASS", "ORDER")):
-        # Butterfly-scope snapshots can begin at Papilionoidea. The four stable
-        # enclosing ranks are explicit in species_paths when the pinned CoL XR
-        # archive does not supply their source nodes directly.
-        observed.update(
-            {
-                "KINGDOM": {"node_id": "col-xr:animalia", "name": "Animalia", "rank": "KINGDOM"},
-                "PHYLUM": {"node_id": "col-xr:arthropoda", "name": "Arthropoda", "rank": "PHYLUM"},
-                "CLASS": {"node_id": "col-xr:insecta", "name": "Insecta", "rank": "CLASS"},
-                "ORDER": {"node_id": "col-xr:lepidoptera", "name": "Lepidoptera", "rank": "ORDER"},
-            }
+    # Butterfly-scope snapshots can begin at any enclosing rank. Fill each
+    # omitted stable ancestor independently without replacing observed nodes.
+    for rank, node_id, name in (
+        ("KINGDOM", "col-xr:animalia", "Animalia"),
+        ("PHYLUM", "col-xr:arthropoda", "Arthropoda"),
+        ("CLASS", "col-xr:insecta", "Insecta"),
+        ("ORDER", "col-xr:lepidoptera", "Lepidoptera"),
+    ):
+        observed.setdefault(
+            rank,
+            {"node_id": node_id, "name": name, "rank": rank},
         )
+    if "SUPERFAMILY" not in observed:
+        source_superfamily = next(
+            (
+                taxon
+                for taxon in by_id.values()
+                if str(taxon.get("rank") or "").upper() == "SUPERFAMILY"
+                and str(taxon.get("scientific_name") or "").casefold() == "papilionoidea"
+            ),
+            None,
+        )
+        observed["SUPERFAMILY"] = {
+            "node_id": (
+                str(source_superfamily.get("accepted_taxon_key") or "")
+                if source_superfamily
+                else "col-xr:papilionoidea"
+            ),
+            "name": "Papilionoidea",
+            "rank": "SUPERFAMILY",
+        }
     # Source snapshots often flatten family/genus fields without emitting each
     # ancestor row. Preserve those observed identities instead of proxying them.
     for rank in ("FAMILY", "GENUS", "SPECIES"):
@@ -406,6 +475,115 @@ def _canonical_keyword_sort_key(row: dict[str, Any]) -> tuple[object, ...]:
     )
 
 
+def _hierarchy_query_allowed(row: dict[str, Any], owner_rank: str) -> bool:
+    if owner_rank not in QUERY_STAGE_ORDER:
+        return False
+    name_class = str(row.get("name_class") or "").casefold()
+    if name_class in {"accepted_scientific", "canonical_scientific"}:
+        return True
+    return (
+        owner_rank == "SUPERFAMILY"
+        and str(row.get("normalized_match_key") or "") == "butterfly"
+        and str(row.get("source") or "") == "butterfly_scope_policy"
+    )
+
+
+def _query_stage(row: dict[str, Any], owner_rank: str) -> str:
+    if (
+        owner_rank == "SUPERFAMILY"
+        and str(row.get("normalized_match_key") or "") == "butterfly"
+    ):
+        return "terminal_butterfly"
+    return owner_rank.casefold()
+
+
+def _keyword_owner(
+    bucket: list[dict[str, Any]],
+    taxa: pl.DataFrame | None,
+) -> tuple[str, str, str, str]:
+    direct_keys = sorted(
+        {
+            str(row.get("accepted_taxon_key") or "")
+            for row in bucket
+            if str(row.get("accepted_taxon_key") or "")
+        }
+    )
+    if taxa is None or taxa.is_empty() or not direct_keys:
+        key = direct_keys[0] if direct_keys else ""
+        return key, "", "", "direct_attachment"
+    by_key = {str(row["accepted_taxon_key"]): dict(row) for row in taxa.iter_rows(named=True)}
+    ancestor_paths = [_taxon_ancestor_path(key, by_key) for key in direct_keys]
+    common = set(ancestor_paths[0])
+    for path in ancestor_paths[1:]:
+        common.intersection_update(path)
+    common = {
+        key
+        for key in common
+        if str(by_key.get(key, {}).get("rank") or "") in QUERY_STAGE_ORDER
+    }
+    if common:
+        owner_key = min(
+            common,
+            key=lambda key: QUERY_STAGE_ORDER.get(
+                str(by_key.get(key, {}).get("rank") or ""),
+                99,
+            ),
+        )
+        # min selects the deepest common rank because species is stage zero.
+        if len(direct_keys) == 1:
+            owner_key = direct_keys[0]
+        owner = by_key.get(owner_key, {})
+        basis = "direct_attachment" if len(direct_keys) == 1 else "lowest_common_ancestor"
+        return (
+            owner_key,
+            str(owner.get("rank") or ""),
+            str(owner.get("scientific_name") or ""),
+            basis,
+        )
+    first = by_key.get(direct_keys[0], {})
+    return (
+        direct_keys[0],
+        str(first.get("rank") or ""),
+        str(first.get("scientific_name") or ""),
+        "ambiguous_cross_lineage",
+    )
+
+
+def _taxon_ancestor_path(
+    key: str,
+    by_key: dict[str, dict[str, Any]],
+) -> list[str]:
+    path: list[str] = []
+    current_key = key
+    visited: set[str] = set()
+    while current_key and current_key not in visited:
+        visited.add(current_key)
+        row = by_key.get(current_key)
+        if row is None:
+            break
+        path.append(current_key)
+        rank = str(row.get("rank") or "")
+        if rank == "SPECIES":
+            for flattened_key in (row.get("genus_key"), row.get("family_key")):
+                candidate = str(flattened_key or "")
+                if candidate and candidate not in path:
+                    path.append(candidate)
+        current_key = str(row.get("parent_key") or "")
+    # Flattened source rows can skip parent nodes. Add known ancestors by rank.
+    for rank in ("GENUS", "FAMILY", "SUPERFAMILY", "ORDER"):
+        candidates = [
+            candidate_key
+            for candidate_key, row in by_key.items()
+            if str(row.get("rank") or "") == rank
+            and (
+                candidate_key in path
+                or any(str(by_key.get(child, {}).get("parent_key") or "") == candidate_key for child in path)
+            )
+        ]
+        path.extend(candidate for candidate in candidates if candidate not in path)
+    return path
+
+
 def _keyword_columns_schema() -> dict[str, pl.DataType]:
     return {
         "keyword_id": pl.String,
@@ -414,6 +592,10 @@ def _keyword_columns_schema() -> dict[str, pl.DataType]:
         "effective_trust_tier": pl.String,
         "is_canonical_keyword": pl.Boolean,
         "suppressed_duplicate": pl.Boolean,
+        "keyword_owner_taxon_key": pl.String,
+        "keyword_owner_rank": pl.String,
+        "keyword_owner_scientific_name": pl.String,
+        "keyword_ownership_basis": pl.String,
     }
 
 

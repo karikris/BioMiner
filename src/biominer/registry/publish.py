@@ -477,7 +477,16 @@ def _validate_species_paths(paths: pl.DataFrame, taxa: pl.DataFrame) -> None:
         raise ValueError("species_paths do not cover every accepted species exactly once")
     path_columns = [
         f"{rank}_node_id"
-        for rank in ("kingdom", "phylum", "class", "order", "family", "genus", "species")
+        for rank in (
+            "kingdom",
+            "phylum",
+            "class",
+            "order",
+            "superfamily",
+            "family",
+            "genus",
+            "species",
+        )
     ]
     if enabled.select(pl.any_horizontal(*(pl.col(column) == "" for column in path_columns))).to_series().any():
         raise ValueError("species_paths contain a structurally incomplete enabled path")

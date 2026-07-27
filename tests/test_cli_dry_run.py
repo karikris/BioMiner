@@ -136,6 +136,7 @@ def test_registry_public_cli_exposes_only_build_and_audit() -> None:
         "compile-fixture",
         "compile-enriched",
         "enrich-sources",
+        "enrich-wikimedia-translations",
         "seed-flickr-queries",
     }:
         assert internal not in registry_choices
@@ -171,6 +172,73 @@ def test_registry_build_defaults_to_production_enrichment_sources() -> None:
     assert args.mymemory_monthly_input_word_limit == MYMEMORY_MONTHLY_INPUT_WORD_LIMIT
     assert args.mymemory_monthly_bandwidth_mb_limit == MYMEMORY_MONTHLY_BANDWIDTH_MB_LIMIT
     assert args.mymemory_response_byte_reservation == MYMEMORY_RESPONSE_BYTE_RESERVATION
+
+
+def test_dev_registry_exposes_resumable_wikimedia_only_translation_command() -> None:
+    args = build_parser().parse_args(
+        [
+            "dev",
+            "registry",
+            "enrich-wikimedia-translations",
+            "--registry-dir",
+            "data/registry/base",
+            "--enrichment-dir",
+            "data/registry/recovery",
+            "--daily-request-limit",
+            "9000",
+            "--checkpoint-every",
+            "25",
+        ]
+    )
+
+    assert args.registry_command == "enrich-wikimedia-translations"
+    assert args.registry_dir == "data/registry/base"
+    assert args.enrichment_dir == "data/registry/recovery"
+    assert args.daily_request_limit == 9000
+    assert args.checkpoint_every == 25
+    assert not hasattr(args, "translation_sources")
+
+
+def test_dev_registry_recovery_commands_accept_separate_enrichment_and_output_dirs() -> None:
+    parser = build_parser()
+    enrich = parser.parse_args(
+        [
+            "dev",
+            "registry",
+            "enrich-sources",
+            "--registry-dir",
+            "data/registry/base",
+            "--enrichment-dir",
+            "data/registry/recovery",
+            "--sources",
+            "wikidata",
+        ]
+    )
+    compile_args = parser.parse_args(
+        [
+            "dev",
+            "registry",
+            "compile-enriched",
+            "--registry-dir",
+            "data/registry/base",
+            "--enrichment-dir",
+            "data/registry/recovery",
+            "--output-dir",
+            "data/registry/v2",
+            "--registry-version",
+            "v2",
+            "--sources",
+            "wikidata,open_tree",
+            "--translation-sources",
+            "wikimedia",
+        ]
+    )
+
+    assert enrich.enrichment_dir == "data/registry/recovery"
+    assert compile_args.enrichment_dir == "data/registry/recovery"
+    assert compile_args.output_dir == "data/registry/v2"
+    assert compile_args.sources == "wikidata,open_tree"
+    assert compile_args.translation_sources == "wikimedia"
 
 
 def test_registry_build_source_defaults_exclude_blocked_providers() -> None:
@@ -1302,7 +1370,7 @@ def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) 
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["registry_version"] == "test-registry"
-    assert payload["query_definition_rows"] == 2
+    assert payload["query_definition_rows"] == 8
     assert (output / "manifest.json").exists()
     assert (output / "flickr_query_definitions.parquet").exists()
 

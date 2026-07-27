@@ -721,6 +721,44 @@ def test_wikimedia_provider_extracts_wikispecies_vernacular_names() -> None:
     assert requests[0][1]["prop"] == "wikitext"
 
 
+def test_wikispecies_recovers_qitem_from_pageprops_when_taxonbar_has_no_from() -> None:
+    requests = []
+
+    def fake_get(path, params):  # noqa: ANN001, ANN202 - provider test double.
+        requests.append((path, dict(params)))
+        if params["action"] == "parse":
+            return {
+                "parse": {
+                    "pageid": 52929,
+                    "title": "Papilio demoleus",
+                    "wikitext": {"*": "{{VN\n|en=Lime Butterfly\n}}\n{{Taxonbar}}"},
+                }
+            }
+        return {
+            "query": {
+                "pages": {
+                    "52929": {
+                        "pageid": 52929,
+                        "title": "Papilio demoleus",
+                        "pageprops": {"wikibase_item": "Q285314"},
+                    }
+                }
+            }
+        }
+
+    provider = WikimediaLanglinksProvider(http_get=fake_get)
+
+    links, request_count, _ = provider.vernacular_names(
+        "Papilio demoleus",
+        target_locales=("en",),
+    )
+
+    assert request_count == 2
+    assert links[0].wikidata_item == "Q285314"
+    assert requests[1][1]["prop"] == "pageprops"
+    assert requests[1][1]["ppprop"] == "wikibase_item"
+
+
 def test_load_translation_target_locales_preserves_bcp47_variants(tmp_path) -> None:
     locales = tmp_path / "locales.json"
     locales.write_text(json.dumps(["pt", "pt-BR", "zh", "zh-Hant"]), encoding="utf-8")
@@ -1138,6 +1176,12 @@ def test_translation_harvester_disables_unbound_wikimedia_langlinks(tmp_path) ->
     assert assertions.select("enabled").to_series().to_list() == [False]
     assert assertions.select("review_state").to_series().to_list() == ["candidate"]
     assert assertions.select("source_taxon_id").to_series().to_list() == [""]
+    assert assertions.select("observed_source_taxon_id").to_series().to_list() == ["Q999"]
+    assert assertions.select("expected_source_taxon_ids").to_series().to_list() == [["Q123"]]
+    assert assertions.select("source_binding_status").to_series().to_list() == ["qitem_mismatch"]
+    assert assertions.select("source_binding_evidence").to_series().to_list() == [
+        "wikibase_item_conflict"
+    ]
     assert assertions.select("disabled_reason").to_series().to_list() == ["wikimedia_page_not_bound_to_accepted_taxon"]
 
 

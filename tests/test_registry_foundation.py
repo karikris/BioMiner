@@ -142,9 +142,9 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
     manifest = compile_registry_fixture(source, output, registry_version="test-registry")
 
     assert manifest["registry_version"] == "test-registry"
-    assert manifest["taxa_rows"] == 8
-    assert manifest["name_rows"] == 3
-    assert manifest["query_definition_rows"] == 4
+    assert manifest["taxa_rows"] == 10
+    assert manifest["name_rows"] == 5
+    assert manifest["query_definition_rows"] == 8
     assert manifest["qa_status"] == "passed"
     assert manifest["qa_fatal_count"] == 0
     assert manifest["qa_warning_count"] == 1
@@ -163,15 +163,23 @@ def test_compile_registry_fixture_writes_normalized_parquet_and_manifest(tmp_pat
         "PHYLUM",
         "CLASS",
         "ORDER",
+        "SUPERFAMILY",
         "FAMILY",
         "GENUS",
         "SPECIES",
     }
+    assert taxa.filter(pl.col("rank") == "SUPERFAMILY").select("scientific_name").item() == "Papilionoidea"
+
+    paths = pl.read_parquet(output / "species_paths.parquet")
+    assert paths.select("superfamily").item() == "Papilionoidea"
+    assert paths.select("superfamily_node_id").item() == "gbif:1"
 
     names = pl.read_parquet(output / "names.parquet")
     assert names.select("normalized_match_key").to_series().to_list() == [
         "papilio demoleus",
         "lime butterfly",
+        "butterfly",
+        "lepidoptera",
         "butterfly",
     ]
 
@@ -184,24 +192,51 @@ def test_compile_registry_fixture_emits_atomic_flickr_queries_in_name_priority_o
     compile_registry_fixture(source, output, registry_version="test-registry")
 
     queries = pl.read_parquet(output / "flickr_query_definitions.parquet").sort("search_priority")
-    assert queries.select("search_field").to_series().to_list() == ["tags", "text", "tags", "text"]
+    assert queries.select("search_field").to_series().to_list() == [
+        "tags",
+        "text",
+        "tags",
+        "text",
+        "tags",
+        "text",
+        "tags",
+        "text",
+    ]
     assert queries.select("source_term").to_series().to_list() == [
         "Papilio demoleus",
         "Papilio demoleus",
         "Lime Butterfly",
         "Lime Butterfly",
+        "Lepidoptera",
+        "Lepidoptera",
+        "butterfly",
+        "butterfly",
     ]
     assert queries.select("normalized_query_term").to_series().to_list() == [
         "papilio demoleus",
         "papilio demoleus",
         "lime butterfly",
         "lime butterfly",
+        "lepidoptera",
+        "lepidoptera",
+        "butterfly",
+        "butterfly",
     ]
-    assert queries.select("query_definition_id").to_series().n_unique() == 4
-    assert queries.select(["normalized_query_term", "search_field", "region"]).unique().height == 4
+    assert queries.select("query_stage").to_series().to_list() == [
+        "species",
+        "species",
+        "species",
+        "species",
+        "order",
+        "order",
+        "terminal_butterfly",
+        "terminal_butterfly",
+    ]
+    assert queries.select("query_definition_id").to_series().n_unique() == 8
+    assert queries.select(["normalized_query_term", "search_field", "region"]).unique().height == 8
 
 
-def test_compile_registry_fixture_keeps_broad_scientific_names_out_of_queries(tmp_path) -> None:
+def test_compile_registry_fixture_queries_scientific_names_at_their_own_rank(tmp_path) -> None:
     source = tmp_path / "source.json"
     output = tmp_path / "registry"
     _write_fixture(source)
@@ -264,9 +299,13 @@ def test_compile_registry_fixture_keeps_broad_scientific_names_out_of_queries(tm
     queries = pl.read_parquet(output / "flickr_query_definitions.parquet")
     broad_names = names.filter(pl.col("display_name").is_in(["Papilionidae", "Papilio"])).sort("display_name")
 
-    assert broad_names.select("query_eligible").to_series().to_list() == [False, False]
-    assert broad_names.select("query_disabled_reason").to_series().to_list() == ["broad_scientific_name", "broad_scientific_name"]
-    assert not set(queries.select("source_term").to_series().to_list()) & {"Papilionidae", "Papilio"}
+    assert broad_names.select("query_eligible").to_series().to_list() == [True, True]
+    assert dict(
+        broad_names.select(["display_name", "keyword_owner_rank"]).iter_rows()
+    ) == {"Papilio": "GENUS", "Papilionidae": "FAMILY"}
+    hierarchy_queries = queries.filter(pl.col("source_term").is_in(["Papilionidae", "Papilio"]))
+    assert set(hierarchy_queries["source_term"]) == {"Papilionidae", "Papilio"}
+    assert set(hierarchy_queries["query_stage"]) == {"family", "genus"}
 
 
 def test_compile_registry_fixture_stores_enabled_but_query_ineligible_weak_names(tmp_path) -> None:
@@ -493,6 +532,8 @@ def test_compile_registry_fixture_canonicalizes_cross_species_common_name_collis
         "papilio demoleus",
         "danaus plexippus",
         "lime butterfly",
+        "lepidoptera",
+        "butterfly",
     }
     assert ledger.height == 1
     assert ledger.row(0, named=True)["normalized_match_key"] == "lime butterfly"

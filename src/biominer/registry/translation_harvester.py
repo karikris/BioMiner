@@ -560,6 +560,21 @@ class WikimediaLanglinksProvider:
             wikitext_value = str(wikitext or "")
         target_api_codes = {_api_language_code(locale) for locale in target_locales}
         wikidata_item = _wikispecies_taxonbar_item(wikitext_value)
+        request_count = 1
+        if not wikidata_item:
+            binding_payload = self._wikispecies_http_get(
+                "/w/api.php",
+                {
+                    "action": "query",
+                    "format": "json",
+                    "prop": "pageprops",
+                    "ppprop": "wikibase_item",
+                    "titles": page_title,
+                    "redirects": "1",
+                },
+            )
+            request_count += 1
+            wikidata_item = _wikimedia_pageprops_item(binding_payload)
         links = _wikispecies_vernacular_links(
             wikitext_value,
             target_api_codes=target_api_codes,
@@ -567,7 +582,7 @@ class WikimediaLanglinksProvider:
             page_title=page_title,
             wikidata_item=wikidata_item,
         )
-        return links, 1, page_title
+        return links, request_count, page_title
 
 
 class MyMemoryTranslationProvider:
@@ -1659,14 +1674,24 @@ def _wikidata_items_by_taxon(*roots: Path) -> dict[str, set[str]]:
     return result
 
 
-def _wikimedia_binding_disabled_reason(link: WikimediaLanglink, expected_wikidata_items: set[str]) -> str:
+def _wikimedia_binding_decision(
+    link: WikimediaLanglink,
+    expected_wikidata_items: set[str],
+) -> tuple[str, str, str]:
     if not expected_wikidata_items:
-        return "wikimedia_source_binding_missing"
+        return "wikimedia_source_binding_missing", "missing_expected_qitem", "none"
     if not link.wikidata_item:
-        return "wikimedia_page_missing_wikidata_item"
+        return "wikimedia_page_missing_wikidata_item", "missing_observed_qitem", "none"
     if link.wikidata_item not in expected_wikidata_items:
-        return "wikimedia_page_not_bound_to_accepted_taxon"
-    return ""
+        return "wikimedia_page_not_bound_to_accepted_taxon", "qitem_mismatch", "wikibase_item_conflict"
+    return "", "direct_qitem_match", "wikibase_item_exact"
+
+
+def _wikimedia_binding_disabled_reason(
+    link: WikimediaLanglink,
+    expected_wikidata_items: set[str],
+) -> str:
+    return _wikimedia_binding_decision(link, expected_wikidata_items)[0]
 
 
 def _append_wikimedia_assertions(
@@ -1688,7 +1713,10 @@ def _append_wikimedia_assertions(
         if assertion_key in seen_assertions:
             continue
         seen_assertions.add(assertion_key)
-        disabled_reason = _wikimedia_binding_disabled_reason(link, expected_wikidata_items)
+        disabled_reason, binding_status, binding_evidence = _wikimedia_binding_decision(
+            link,
+            expected_wikidata_items,
+        )
         bound_to_same_taxon = not disabled_reason
         assertions.append(
             {
@@ -1701,6 +1729,10 @@ def _append_wikimedia_assertions(
                 "source": "Wikimedia",
                 "source_record_id": f"wikimedia:{link.page_id}:{link.wikidata_item}:{link.language}:{title}",
                 "source_taxon_id": link.wikidata_item if bound_to_same_taxon else "",
+                "observed_source_taxon_id": link.wikidata_item,
+                "expected_source_taxon_ids": sorted(expected_wikidata_items),
+                "source_binding_status": binding_status,
+                "source_binding_evidence": binding_evidence,
                 "lineage_check": "accepted_taxon_key" if bound_to_same_taxon else "",
                 "trust_tier": "T3" if bound_to_same_taxon else "T4",
                 "precision_tier": "medium",
@@ -1716,6 +1748,21 @@ def _wikispecies_taxonbar_item(wikitext: str) -> str:
     match = re.search(r"\{\{\s*Taxonbar\b[^{}]*\|\s*from\s*=\s*(Q\d+)", wikitext, flags=re.IGNORECASE)
     if match:
         return match.group(1)
+    return ""
+
+
+def _wikimedia_pageprops_item(payload: dict[str, Any]) -> str:
+    pages = payload.get("query", {}).get("pages", {})
+    if not isinstance(pages, dict):
+        return ""
+    for page in pages.values():
+        if not isinstance(page, dict) or "missing" in page:
+            continue
+        pageprops = page.get("pageprops")
+        if isinstance(pageprops, dict):
+            wikidata_item = str(pageprops.get("wikibase_item") or "")
+            if re.fullmatch(r"Q\d+", wikidata_item):
+                return wikidata_item
     return ""
 
 

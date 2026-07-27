@@ -214,7 +214,16 @@ def _write_publishable_registry(registry: Path) -> None:
         ]
     ).write_parquet(registry / "taxa.parquet")
     path_row: dict[str, object] = {"accepted_taxon_key": TARGET_KEY, "enabled": True}
-    for rank in ("kingdom", "phylum", "class", "order", "family", "genus", "species"):
+    for rank in (
+        "kingdom",
+        "phylum",
+        "class",
+        "order",
+        "superfamily",
+        "family",
+        "genus",
+        "species",
+    ):
         path_row[f"{rank}_node_id"] = f"gbif:{rank}"
     pl.DataFrame([path_row]).write_parquet(registry / "species_paths.parquet")
     pl.DataFrame(

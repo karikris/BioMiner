@@ -539,7 +539,15 @@ def _enrich_species_context(
         name_assertions.extend(result.get("name_assertions", []))
         external_links.extend(result.get("external_links", []))
         source_snapshots.extend(result.get("source_snapshots", []))
-        work_records.append(_source_work_record(source=source, context=context, status="complete", request_count=request_count))
+        observed_request_count = int(result.get("request_count", request_count))
+        work_records.append(
+            _source_work_record(
+                source=source,
+                context=context,
+                status="complete",
+                request_count=observed_request_count,
+            )
+        )
     return SpeciesEnrichmentResult(
         accepted_taxon_key=context.accepted_taxon_key,
         name_assertions=tuple(name_assertions),
@@ -1103,6 +1111,12 @@ def _normalize_assertion(row: dict[str, Any]) -> dict[str, Any]:
         "source": source,
         "source_record_id": source_record_id,
         "source_taxon_id": str(row.get("source_taxon_id") or ""),
+        "observed_source_taxon_id": str(row.get("observed_source_taxon_id") or ""),
+        "expected_source_taxon_ids": [
+            str(value) for value in (row.get("expected_source_taxon_ids") or [])
+        ],
+        "source_binding_status": str(row.get("source_binding_status") or ""),
+        "source_binding_evidence": str(row.get("source_binding_evidence") or ""),
         "lineage_check": str(row.get("lineage_check") or ""),
         "trust_tier": decision.trust_tier.value,
         "precision_tier": str(row.get("precision_tier") or ""),
@@ -1515,6 +1529,10 @@ def _name_assertion_schema() -> dict[str, pl.DataType]:
         "source": pl.String,
         "source_record_id": pl.String,
         "source_taxon_id": pl.String,
+        "observed_source_taxon_id": pl.String,
+        "expected_source_taxon_ids": pl.List(pl.String),
+        "source_binding_status": pl.String,
+        "source_binding_evidence": pl.String,
         "lineage_check": pl.String,
         "trust_tier": pl.String,
         "precision_tier": pl.String,
