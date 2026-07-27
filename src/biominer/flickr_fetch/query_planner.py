@@ -76,6 +76,11 @@ class FlickrQuery:
     query_definition_id: str | None = None
     accepted_taxon_key: str | None = None
     accepted_scientific_name: str | None = None
+    keyword_owner_taxon_key: str | None = None
+    keyword_owner_rank: str | None = None
+    keyword_ownership_basis: str | None = None
+    query_stage: str | None = None
+    query_stage_order: int = 99
     family_key: str | None = None
     genus_key: str | None = None
     species_key: str | None = None
@@ -153,6 +158,11 @@ def load_registry_flickr_queries_from_frame(
                 query_definition_id=str(row.get("query_definition_id") or "") or None,
                 accepted_taxon_key=str(row.get("accepted_taxon_key") or "") or None,
                 accepted_scientific_name=str(row.get("accepted_scientific_name") or "") or None,
+                keyword_owner_taxon_key=str(row.get("keyword_owner_taxon_key") or "") or None,
+                keyword_owner_rank=str(row.get("keyword_owner_rank") or "") or None,
+                keyword_ownership_basis=str(row.get("keyword_ownership_basis") or "") or None,
+                query_stage=str(row.get("query_stage") or "") or None,
+                query_stage_order=_int_or_default(row.get("query_stage_order"), 99),
                 family_key=str(row.get("family_key") or "") or None,
                 genus_key=str(row.get("genus_key") or "") or None,
                 species_key=str(row.get("species_key") or "") or None,

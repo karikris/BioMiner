@@ -25,8 +25,8 @@ from biominer.registry.unified import (
 from biominer.storage.parquet import write_parquet
 
 
-REGISTRY_SCHEMA_VERSION = "unified-butterfly-registry-v1"
-COMPILER_VERSION = "unified-registry-compiler-v1"
+REGISTRY_SCHEMA_VERSION = "unified-butterfly-registry-v2"
+COMPILER_VERSION = "unified-registry-compiler-v2"
 COLLISION_REVIEW_STATES = {"reviewed", "curator_reviewed", "manual_reviewed", "query_approved"}
 
 
@@ -105,13 +105,13 @@ def compile_registry_frames(
     query_curation_rules: tuple[QueryCurationRule, ...] = (),
 ) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
     scope = load_scope(scope_path)
-    source_taxa = source_payload.get("taxa", [])
+    source_taxa = _ensure_butterfly_hierarchy_taxa(source_payload.get("taxa", []))
     lineage_taxa = _taxa_frame(source_taxa, scope_id=scope.scope_id, supported_only=False)
     taxa = _taxa_frame(source_taxa, scope_id=scope.scope_id)
     retained_taxon_keys = set(taxa["accepted_taxon_key"].to_list())
     retained_name_rows = [
         row
-        for row in source_payload.get("names", [])
+        for row in _ensure_butterfly_hierarchy_names(source_payload.get("names", []), source_taxa)
         if str(row.get("accepted_taxon_key") or "") in retained_taxon_keys
     ]
     names = _names_frame(retained_name_rows, registry_version=registry_version)
@@ -120,7 +120,7 @@ def compile_registry_frames(
     collision_names = _ensure_query_eligibility_columns(global_names_for_collision) if global_names_for_collision is not None else names
     name_collision_ledger = _name_collision_ledger_frame(collision_names, registry_version=registry_version)
     names = apply_query_curation(names, query_curation)
-    names = canonicalize_keyword_rows(names)
+    names = canonicalize_keyword_rows(names, taxa)
     evidence = _name_evidence_frame(retained_name_rows, registry_version=registry_version, source_payload=source_payload)
     queries = _query_definitions_frame(names, taxa, registry_version=registry_version, query_curation_rules=query_curation)
     species_paths = compile_species_paths(
@@ -156,6 +156,84 @@ def compile_registry_frames(
         query_curation_rule_count=len(query_curation),
     )
     return frames, manifest
+
+
+def _ensure_butterfly_hierarchy_taxa(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized = [dict(row) for row in rows]
+    order = next(
+        (
+            row
+            for row in normalized
+            if str(row.get("rank") or "").upper() == "ORDER"
+            and str(row.get("scientific_name") or "").casefold() == "lepidoptera"
+        ),
+        None,
+    )
+    if order is None:
+        order = {
+            "accepted_taxon_key": "scope:lepidoptera",
+            "scientific_name": "Lepidoptera",
+            "rank": "ORDER",
+            "parent_key": "",
+            "source_taxon_id": "scope:lepidoptera",
+            "source_release": "butterfly_scope_policy_v1",
+        }
+        normalized.append(order)
+    order_key = str(order.get("accepted_taxon_key") or "")
+    for row in normalized:
+        if (
+            str(row.get("rank") or "").upper() == "SUPERFAMILY"
+            and str(row.get("scientific_name") or "").casefold() == "papilionoidea"
+            and not str(row.get("parent_key") or "")
+        ):
+            row["parent_key"] = order_key
+    return normalized
+
+
+def _ensure_butterfly_hierarchy_names(
+    rows: list[dict[str, Any]],
+    taxa: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized = [dict(row) for row in rows]
+    taxa_by_name = {
+        str(row.get("scientific_name") or "").casefold(): str(row.get("accepted_taxon_key") or "")
+        for row in taxa
+    }
+    additions = (
+        ("Lepidoptera", "accepted_scientific", "la", taxa_by_name.get("lepidoptera", "")),
+        ("butterfly", "vernacular", "en", taxa_by_name.get("papilionoidea", "")),
+    )
+    existing = {
+        (
+            str(row.get("display_name") or row.get("verbatim_name") or "").casefold(),
+            str(row.get("accepted_taxon_key") or ""),
+        )
+        for row in normalized
+    }
+    for display_name, name_class, language, accepted_taxon_key in additions:
+        if not accepted_taxon_key or (display_name.casefold(), accepted_taxon_key) in existing:
+            continue
+        normalized.append(
+            {
+                "accepted_taxon_key": accepted_taxon_key,
+                "verbatim_name": display_name,
+                "display_name": display_name,
+                "language": language,
+                "script": "Latn",
+                "region": "",
+                "bbox": "",
+                "name_class": name_class,
+                "source": "butterfly_scope_policy",
+                "source_record_id": f"butterfly_scope_policy:{display_name.casefold()}",
+                "trust_tier": "T1",
+                "precision_tier": "scope",
+                "confidence": "high",
+                "enabled": True,
+            }
+        )
+    return normalized
 
 
 def _taxa_frame(
@@ -268,6 +346,10 @@ def _names_frame(rows: list[dict[str, Any]], *, registry_version: str) -> pl.Dat
             "effective_trust_tier": "",
             "is_canonical_keyword": False,
             "suppressed_duplicate": False,
+            "keyword_owner_taxon_key": "",
+            "keyword_owner_rank": "",
+            "keyword_owner_scientific_name": "",
+            "keyword_ownership_basis": "",
         }
         query_decision = assess_name_query_eligibility(name_row)
         normalized_rows.setdefault(
@@ -347,7 +429,7 @@ def _query_definitions_frame(
     names = _ensure_query_eligibility_columns(names)
     names = apply_query_curation(names, query_curation_rules)
     if "canonical_keyword_id" not in names.columns or names.filter(pl.col("canonical_keyword_id") != "").is_empty():
-        names = canonicalize_keyword_rows(names)
+        names = canonicalize_keyword_rows(names, taxa)
     rows = canonical_query_rows(
         names,
         taxa,
@@ -725,6 +807,10 @@ def _names_schema() -> dict[str, pl.DataType]:
         "effective_trust_tier": pl.String,
         "is_canonical_keyword": pl.Boolean,
         "suppressed_duplicate": pl.Boolean,
+        "keyword_owner_taxon_key": pl.String,
+        "keyword_owner_rank": pl.String,
+        "keyword_owner_scientific_name": pl.String,
+        "keyword_ownership_basis": pl.String,
     }
 
 
@@ -774,6 +860,12 @@ def _query_schema() -> dict[str, pl.DataType]:
         "accepted_taxon_key": pl.String,
         "accepted_scientific_name": pl.String,
         "accepted_rank": pl.String,
+        "keyword_owner_taxon_key": pl.String,
+        "keyword_owner_rank": pl.String,
+        "keyword_owner_scientific_name": pl.String,
+        "keyword_ownership_basis": pl.String,
+        "query_stage": pl.String,
+        "query_stage_order": pl.Int64,
         "family_key": pl.String,
         "family": pl.String,
         "genus_key": pl.String,
@@ -815,6 +907,9 @@ def _ensure_query_eligibility_columns(names: pl.DataFrame) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     for row in names.to_dicts():
         if _row_has_blocking_collision_reason(row):
+            rows.append(row)
+            continue
+        if str(row.get("keyword_owner_rank") or "") and bool(row.get("query_eligible")):
             rows.append(row)
             continue
         decision = assess_name_query_eligibility(row)

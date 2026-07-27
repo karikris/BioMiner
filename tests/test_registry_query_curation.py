@@ -178,14 +178,20 @@ def test_papilio_query_curation_updates_query_keyword_regression_counts(tmp_path
         "misapplied_common_name_conflicts_with_other_species",
         "broad_group_name_not_species_specific",
     ]
-    assert queries.height == 94
-    assert queries.select("normalized_query_term").n_unique() == 47
+    assert queries.height == 98
+    assert queries.select("normalized_query_term").n_unique() == 49
     assert not {"dingy swallowtail", "small citrus butterfly", "swallowtails"} & set(
         queries.select("normalized_query_term").to_series().to_list()
     )
-    assert manifest["query_definition_unique_term_count"] == 47
-    assert manifest["query_definition_unique_term_counts_by_source"] == {"GBIF": 47}
-    assert manifest["query_definition_rows_by_source"] == {"GBIF": 94}
+    assert manifest["query_definition_unique_term_count"] == 49
+    assert manifest["query_definition_unique_term_counts_by_source"] == {
+        "GBIF": 47,
+        "butterfly_scope_policy": 2,
+    }
+    assert manifest["query_definition_rows_by_source"] == {
+        "GBIF": 94,
+        "butterfly_scope_policy": 4,
+    }
     assert manifest["query_definition_unique_term_counts_by_source"].get("CoL", 0) == 0
 
 

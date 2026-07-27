@@ -176,12 +176,42 @@ def test_same_cross_species_cross_tier_term_has_one_logical_query_per_field(tmp_
     names = pl.read_parquet(registry / "names.parquet")
     queries = pl.read_parquet(registry / "flickr_query_definitions.parquet")
 
-    assert names["canonical_keyword_id"].n_unique() == 1
-    assert names.filter(pl.col("is_canonical_keyword"))["accepted_taxon_key"].to_list() == ["col:rapae"]
-    assert names["effective_trust_tier"].unique().to_list() == ["T1"]
+    shared_names = names.filter(pl.col("normalized_match_key") == "cabbage white")
+    shared_queries = queries.filter(pl.col("normalized_match_key") == "cabbage white")
+    assert shared_names["canonical_keyword_id"].n_unique() == 1
+    assert shared_names.filter(pl.col("is_canonical_keyword"))["accepted_taxon_key"].to_list() == ["col:rapae"]
+    assert shared_names["effective_trust_tier"].unique().to_list() == ["T1"]
+    assert shared_names["keyword_owner_taxon_key"].unique().to_list() == ["col:Pieris"]
+    assert shared_names["keyword_owner_rank"].unique().to_list() == ["GENUS"]
+    assert shared_queries.height == 2
+    assert set(shared_queries["search_field"].to_list()) == {"tags", "text"}
+    assert set(shared_queries["accepted_taxon_key"].to_list()) == {"col:Pieris"}
+    loaded = load_registry_flickr_queries_from_frame(shared_queries)
+    assert len(loaded) == 2
+    assert {query.keyword_owner_rank for query in loaded} == {"GENUS"}
+
+
+def test_species_and_genus_common_name_is_queried_only_at_genus(tmp_path) -> None:
+    registry = _registry(
+        tmp_path,
+        [
+            _name("col:rapae", "Shallowtail", "T3", "iNaturalist", "species-name"),
+            _name("col:Pieris", "Shallowtail", "T3", "iNaturalist", "genus-name"),
+        ],
+    )
+
+    names = pl.read_parquet(registry / "names.parquet").filter(
+        pl.col("normalized_match_key") == "shallowtail"
+    )
+    queries = pl.read_parquet(registry / "flickr_query_definitions.parquet").filter(
+        pl.col("normalized_match_key") == "shallowtail"
+    )
+
+    assert names["keyword_owner_taxon_key"].unique().to_list() == ["col:Pieris"]
+    assert names["keyword_ownership_basis"].unique().to_list() == ["lowest_common_ancestor"]
     assert queries.height == 2
-    assert set(queries["search_field"].to_list()) == {"tags", "text"}
-    assert len(load_registry_flickr_queries_from_frame(queries)) == 2
+    assert set(queries["accepted_taxon_key"]) == {"col:Pieris"}
+    assert set(queries["query_stage"]) == {"genus"}
 
 
 def test_registry_upgrade_backfills_new_keyword_without_new_request_or_photo_queue(tmp_path) -> None:
@@ -210,7 +240,7 @@ def test_registry_upgrade_backfills_new_keyword_without_new_request_or_photo_que
         keyword_associations=pl.DataFrame([extra], schema=names.schema),
     )
 
-    assert first["logical_queries_inserted"] == 2
+    assert first["logical_queries_inserted"] == 6
     assert inserted[:3] == (1, 0, 1)
     assert second["keyword_associations_inserted"] == 1
     assert state.enqueue_work_item(query) == 0
