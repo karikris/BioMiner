@@ -1329,7 +1329,7 @@ def test_registry_compile_fixture_cli_writes_registry_outputs(tmp_path, capsys) 
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["registry_version"] == "test-registry"
-    assert payload["query_definition_rows"] == 2
+    assert payload["query_definition_rows"] == 8
     assert (output / "manifest.json").exists()
     assert (output / "flickr_query_definitions.parquet").exists()
 
