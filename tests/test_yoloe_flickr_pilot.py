@@ -12,6 +12,7 @@ class _FakeDetector:
     model_id = "fake-yoloe"
     model_version = "test"
     checkpoint = "fake.pt"
+    prompt_classes = ("insect",)
     prompt_set_fingerprint = "sha256:" + "0" * 64
 
     def detect_batch(self, images: list[DecodedImage]) -> list[list[DetectionCandidate]]:
@@ -36,11 +37,18 @@ def test_pilot_is_deterministic_and_records_visual_screening_only(tmp_path: Path
     source = tmp_path / "source.sqlite"
     _source_db(source, 8)
     monkeypatch.setattr(yoloe_pilot, "_download_decode", lambda row, config: DecodedImage(1, 1, "RGB", b"\0\0\0"))
-    config = YoloePilotConfig(state_db=source, output_dir=tmp_path / "staging", reports_dir=tmp_path / "reports", sample_size=5)
+    config = YoloePilotConfig(
+        state_db=source,
+        output_dir=tmp_path / "staging",
+        reports_dir=tmp_path / "reports",
+        sample_size=5,
+        prompt_classes=("insect",),
+    )
     result = run_yoloe_pilot(config, detector=_FakeDetector())
     assert result.report["counts"]["classified"] == 5
     assert result.report["butterfly_or_insect_visual_screening_estimate"]["positive_images"] == 5
     assert "not taxonomic validation" in result.report["scientific_scope"]
+    assert result.report["runtime"]["prompt_classes"] == ["insect"]
     first = result.sample_path.read_bytes()
     again = run_yoloe_pilot(config, detector=_FakeDetector())
     assert again.sample_path.read_bytes() == first

@@ -29,10 +29,15 @@ PILOT_VERSION = "flickr-yoloe-screening-pilot-v1"
 POSITIVE_LABELS = frozenset({"adult_butterfly", "possible_adult_butterfly", "moth_like", "caterpillar", "pupa", "insect_like"})
 
 
+class YoloeBatchError(RuntimeError):
+    """A model-wide batch failure that requires a fresh sidecar process."""
+
+
 class Detector(Protocol):
     model_id: str
     model_version: str
     checkpoint: str
+    prompt_classes: Sequence[str]
     prompt_set_fingerprint: str
     def detect_batch(self, images: Sequence[DecodedImage]) -> list[list[DetectionCandidate]]: ...
     def close(self) -> None: ...
@@ -58,6 +63,7 @@ class YoloePilotConfig:
     retries: int = 2
     max_image_bytes: int = 20_000_000
     max_attempts: int = 3
+    prompt_classes: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.sample_size <= 0 or self.download_workers <= 0 or self.yoloe_batch_size <= 0:
@@ -66,6 +72,8 @@ class YoloePilotConfig:
             raise ValueError("max_image_bytes and max_attempts must be positive")
         if self.device not in {"mps", "cpu", "auto"}:
             raise ValueError("device must be mps, cpu, or auto")
+        if self.prompt_classes is not None and not self.prompt_classes:
+            raise ValueError("prompt_classes must contain at least one prompt when provided")
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +97,7 @@ def run_yoloe_pilot(config: YoloePilotConfig, *, detector: Detector | None = Non
     detector = detector or YoloE26SidecarObjectDetector(
         runtime_python=str(config.runtime_python), checkpoint=config.checkpoint, device=config.device,
         imgsz=config.imgsz, conf=config.confidence, iou=config.iou, max_det=config.max_det,
+        prompt_classes=config.prompt_classes,
     )
     try:
         _run_pending(sample, state_path, config, detector)
@@ -169,6 +178,7 @@ def _run_pending(sample: pl.DataFrame, state_path: Path, config: YoloePilotConfi
         except Exception as exc:
             for row in rows:
                 _record_failure(state_path, row, "yoloe", exc)
+            raise YoloeBatchError(f"YOLOE batch failed: {type(exc).__name__}: {exc}") from exc
 
 
 def _download_decode(row: dict[str, Any], config: YoloePilotConfig) -> DecodedImage:
@@ -198,8 +208,12 @@ def _record_result(path: Path, row: dict[str, Any], detections: Sequence[Detecti
                "screening_positive": route in {"butterfly_like", "other_lepidoptera_or_life_stage", "other_insect_like"},
                "detection_count": len(detections), "labels": sorted(labels),
                "detections_json": json.dumps([{"label": item.label, "score": item.score, "bbox_xyxy": item.bbox_xyxy} for item in detections], separators=(",", ":"), sort_keys=True)}
+    for field in ("shard_index", "global_sample_rank"):
+        if field in row:
+            payload[field] = row[field]
     with sqlite3.connect(path) as conn:
         conn.execute("INSERT OR REPLACE INTO results VALUES (?, ?, ?)", (str(row["flickr_photo_id"]), json.dumps(payload, sort_keys=True), _now()))
+        conn.execute("DELETE FROM failures WHERE flickr_photo_id = ?", (str(row["flickr_photo_id"]),))
 
 
 def _record_failure(path: Path, row: dict[str, Any], stage: str, exc: Exception) -> None:
@@ -233,7 +247,7 @@ def _report(sample: pl.DataFrame, results: pl.DataFrame, failures: pl.DataFrame,
     return {"schema_version": PILOT_VERSION, "status": "complete" if n == sample.height else "incomplete_retryable", "generated_at": _now(),
             "scientific_scope": "YOLOE visual screening evidence only; not taxonomic validation or an actual-butterfly count.",
             "sample": {"population_with_image_url": int(sample["snapshot_population_with_image_url"][0]), "sample_size": sample.height, "seed": config.sample_seed, "sample_register": str(config.output_dir / "sample_register.parquet")},
-            "runtime": {"model_id": detector.model_id, "model_version": detector.model_version, "checkpoint": detector.checkpoint, "prompt_set_fingerprint": detector.prompt_set_fingerprint, "device": config.device, "imgsz": config.imgsz, "confidence": config.confidence, "iou": config.iou, "max_det": config.max_det},
+            "runtime": {"model_id": detector.model_id, "model_version": detector.model_version, "checkpoint": detector.checkpoint, "prompt_classes": list(detector.prompt_classes), "prompt_set_fingerprint": detector.prompt_set_fingerprint, "device": config.device, "imgsz": config.imgsz, "confidence": config.confidence, "iou": config.iou, "max_det": config.max_det},
             "counts": {"classified": n, "operational_failures": failures.height, "routes": counts},
             "butterfly_or_insect_visual_screening_estimate": {"positive_images": positives, "classified_images": n, "proportion": positives / n if n else None, "wilson_95_interval": [low, high] if n else None}}
 

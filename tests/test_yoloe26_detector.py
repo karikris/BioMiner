@@ -44,6 +44,44 @@ def test_yoloe26_default_prompts_and_coarse_labels_are_stable() -> None:
         yoloe26_coarse_label("custom proposal")
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    (
+        "insect",
+        "beetle",
+        "fly",
+        "mosquito",
+        "bee",
+        "wasp",
+        "ant",
+        "grasshopper",
+        "cricket",
+        "true bug",
+        "cicada",
+        "dragonfly",
+        "damselfly",
+        "mantis",
+        "cockroach",
+        "termite",
+        "stick insect",
+        "lacewing",
+        "caddisfly",
+        "mayfly",
+        "stonefly",
+        "earwig",
+    ),
+)
+def test_yoloe26_broad_insect_prompts_remain_coarse_screening_evidence(prompt: str) -> None:
+    assert yoloe26_coarse_label(prompt) == "insect_like"
+
+
+def test_yoloe26_broad_insect_set_preserves_specific_lepidoptera_and_specimen_routes() -> None:
+    assert yoloe26_coarse_label("butterfly") == "adult_butterfly"
+    assert yoloe26_coarse_label("moth") == "moth_like"
+    assert yoloe26_coarse_label("caterpillar") == "caterpillar"
+    assert yoloe26_coarse_label("pinned insect specimen") == "pinned_specimen"
+
+
 def test_yoloe26_prompt_set_fingerprint_is_normalized_and_order_sensitive() -> None:
     fingerprint = yoloe26_prompt_set_fingerprint((" Butterfly  ", "MOTH"))
 

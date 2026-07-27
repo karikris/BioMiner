@@ -241,6 +241,40 @@ def test_dev_registry_recovery_commands_accept_separate_enrichment_and_output_di
     assert compile_args.translation_sources == "wikimedia"
 
 
+def test_yoloe_flickr_cli_accepts_an_exact_single_prompt() -> None:
+    args = build_parser().parse_args(
+        [
+            "dev",
+            "vision",
+            "yoloe-flickr-sample",
+            "--output-dir",
+            "staging/yoloe/australia-insect",
+            "--prompt-class",
+            "insect",
+        ]
+    )
+
+    assert args.prompt_class == ["insect"]
+
+
+def test_sharded_yoloe_cli_has_requested_parallel_defaults() -> None:
+    args = build_parser().parse_args(
+        [
+            "dev",
+            "vision",
+            "yoloe-flickr-sharded",
+            "--output-dir",
+            "staging/yoloe/australia-insect-sharded",
+        ]
+    )
+
+    assert args.shards == 4
+    assert args.download_workers_per_shard == 4
+    assert args.yoloe_batch_size == 8
+    assert args.imgsz == 768
+    assert args.prompt_class is None
+
+
 def test_registry_build_source_defaults_exclude_blocked_providers() -> None:
     source_names = {source.casefold() for source in DEFAULT_ENRICHMENT_SOURCES}
 

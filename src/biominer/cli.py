@@ -663,6 +663,40 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     yoloe_pilot.add_argument("--retries", type=int, default=2)
     yoloe_pilot.add_argument("--max-image-bytes", type=int, default=20_000_000)
     yoloe_pilot.add_argument("--max-attempts", type=int, default=3)
+    yoloe_pilot.add_argument(
+        "--prompt-class",
+        action="append",
+        help="YOLOE object prompt; repeat for multiple prompts (default: configured coarse prompt set)",
+    )
+    yoloe_sharded = subparsers.add_parser(
+        "yoloe-flickr-sharded",
+        help="screen one immutable Flickr snapshot with isolated persistent YOLOE shards",
+    )
+    yoloe_sharded.add_argument("--state-db", default="data/state/flickr_australia_bbox.sqlite")
+    yoloe_sharded.add_argument("--output-dir", required=True)
+    yoloe_sharded.add_argument("--reports-dir", default="reports")
+    yoloe_sharded.add_argument("--expected-images", type=int)
+    yoloe_sharded.add_argument("--shards", type=int, default=4)
+    yoloe_sharded.add_argument("--sample-seed", default="australia-flickr-yoloe-full-v1")
+    yoloe_sharded.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
+    yoloe_sharded.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
+    yoloe_sharded.add_argument("--device", default="mps", choices=("auto", "mps", "cpu"))
+    yoloe_sharded.add_argument("--imgsz", type=int, default=768)
+    yoloe_sharded.add_argument("--confidence", type=float, default=0.20)
+    yoloe_sharded.add_argument("--iou", type=float, default=0.50)
+    yoloe_sharded.add_argument("--max-det", type=int, default=8)
+    yoloe_sharded.add_argument("--download-workers-per-shard", type=int, default=4)
+    yoloe_sharded.add_argument("--yoloe-batch-size", type=int, default=8)
+    yoloe_sharded.add_argument("--timeout-seconds", type=float, default=30.0)
+    yoloe_sharded.add_argument("--retries", type=int, default=2)
+    yoloe_sharded.add_argument("--max-image-bytes", type=int, default=20_000_000)
+    yoloe_sharded.add_argument("--max-attempts", type=int, default=3)
+    yoloe_sharded.add_argument(
+        "--prompt-class",
+        action="append",
+        default=None,
+        help='YOLOE object prompt; repeat for multiple prompts (default: exactly "insect")',
+    )
     detect_eval = subparsers.add_parser("eval")
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
@@ -694,6 +728,8 @@ def run(args: argparse.Namespace) -> int:
             return _run_yoloe26_smoke(args)
         if args.vision_command == "yoloe-flickr-sample":
             return _run_yoloe_flickr_sample(args)
+        if args.vision_command == "yoloe-flickr-sharded":
+            return _run_yoloe_flickr_sharded(args)
         if args.vision_command == "eval":
             return _run_detect_eval(args)
         return 2
@@ -1880,6 +1916,7 @@ def _run_yoloe_flickr_sample(args: argparse.Namespace) -> int:
                 retries=args.retries,
                 max_image_bytes=args.max_image_bytes,
                 max_attempts=args.max_attempts,
+                prompt_classes=tuple(args.prompt_class) if args.prompt_class else None,
             )
         )
     except (OSError, RuntimeError, ValueError, sqlite3.Error, pl.exceptions.PolarsError) as exc:
@@ -1889,6 +1926,56 @@ def _run_yoloe_flickr_sample(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "status": result.report["status"],
+                "sample": str(result.sample_path),
+                "results": str(result.results_path),
+                "failures": str(result.failures_path),
+                "report": str(result.report_path),
+                "counts": result.report["counts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _run_yoloe_flickr_sharded(args: argparse.Namespace) -> int:
+    """Run isolated, deterministic YOLOE shards and publish a guarded merge."""
+    from biominer.flickr_fetch.yoloe_sharded import ShardedYoloeConfig, run_sharded_yoloe
+
+    try:
+        result = run_sharded_yoloe(
+            ShardedYoloeConfig(
+                state_db=Path(args.state_db),
+                output_dir=Path(args.output_dir),
+                reports_dir=Path(args.reports_dir),
+                expected_images=args.expected_images,
+                shard_count=args.shards,
+                sample_seed=args.sample_seed,
+                runtime_python=Path(args.runtime_python),
+                checkpoint=args.checkpoint,
+                device=args.device,
+                imgsz=args.imgsz,
+                confidence=args.confidence,
+                iou=args.iou,
+                max_det=args.max_det,
+                download_workers_per_shard=args.download_workers_per_shard,
+                yoloe_batch_size=args.yoloe_batch_size,
+                timeout_seconds=args.timeout_seconds,
+                retries=args.retries,
+                max_image_bytes=args.max_image_bytes,
+                max_attempts=args.max_attempts,
+                prompt_classes=tuple(args.prompt_class) if args.prompt_class else ("insect",),
+            )
+        )
+    except (OSError, RuntimeError, ValueError, sqlite3.Error, pl.exceptions.PolarsError) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": result.report["status"],
+                "manifest": str(result.manifest_path),
                 "sample": str(result.sample_path),
                 "results": str(result.results_path),
                 "failures": str(result.failures_path),
