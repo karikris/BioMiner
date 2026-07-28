@@ -59,6 +59,7 @@ def test_geography_uses_pinned_boundary_and_retains_ambiguous_points(
                 _row("3", None, None, None, "1", "1"),
                 _row("4", None, None, None, "1", "2"),
                 _row("5", None, None, None, "10", "10"),
+                _row("6", None, None, None, "0", "0"),
             ]
         ),
         source,
@@ -122,8 +123,8 @@ def test_geography_uses_pinned_boundary_and_retains_ambiguous_points(
         v3_parquet=source,
         output_directory=tmp_path / "out-boundary",
         source_snapshot_id="sha256:test",
-        expected_coordinate_country_media_rows=3,
-        expected_coordinate_country_occurrences=3,
+        expected_coordinate_country_media_rows=4,
+        expected_coordinate_country_occurrences=4,
         expected_missing_continent_media_rows=0,
         expected_missing_continent_occurrences=0,
         expected_missing_region_media_rows=0,
@@ -146,9 +147,13 @@ def test_geography_uses_pinned_boundary_and_retains_ambiguous_points(
     assert outcomes["4"]["boundary_candidate_countryCodes"] == ["AU", "US"]
     assert outcomes["5"]["derived_countryCode"] is None
     assert outcomes["5"]["border_ambiguity_status"] == "OUTSIDE_OR_UNMAPPED"
+    assert outcomes["6"]["derived_countryCode"] is None
+    assert outcomes["6"]["country_derivation_status"] == "FAIL"
+    assert outcomes["6"]["country_derivation_reason"] == "exact_zero_zero_coordinate"
     assert result.manifest["counts"]["derived_country_occurrences"] == 1
     assert result.manifest["counts"]["ambiguous_border_occurrences"] == 1
     assert result.manifest["counts"]["outside_or_unmapped_occurrences"] == 1
+    assert result.manifest["counts"]["zero_zero_coordinate_occurrences"] == 1
     assert pq.read_table(result.assertion_path).num_rows == 4
 
 

@@ -146,10 +146,17 @@ def publish_geographic_enrichment(
             mapped_region is not None
             and float(row["gbif_region_confidence"] or 0) >= minimum_mapping_confidence
         )
-        valid_coordinates = _valid_coordinates(
+        coordinates_in_bounds = _coordinates_in_bounds(
             row["decimalLatitude"], row["decimalLongitude"]
         )
+        invalid_zero_zero = _is_zero_zero(
+            row["decimalLatitude"], row["decimalLongitude"]
+        )
+        valid_coordinates = coordinates_in_bounds and not invalid_zero_zero
         missing_country = country_code is None and valid_coordinates
+        baseline_coordinate_country_candidate = (
+            country_code is None and coordinates_in_bounds
+        )
         boundary_match_count = int(row["boundary_match_count"] or 0)
         derived_country_code = (
             _trimmed(row["boundary_country_code"])
@@ -196,6 +203,7 @@ def publish_geographic_enrichment(
         source_row_id = _source_row_id(source_snapshot_id, str(row["gbifID"]))
         country_status, country_reason = _country_boundary_status(
             missing_country=missing_country,
+            invalid_zero_zero=country_code is None and invalid_zero_zero,
             boundary_available=boundary is not None,
             boundary_match_count=boundary_match_count,
         )
@@ -254,6 +262,18 @@ def publish_geographic_enrichment(
         counts["affected_media_rows"] += int(row["affected_media_rows"])
         counts["coordinate_country_candidate_occurrences"] += int(missing_country)
         counts["coordinate_country_candidate_media_rows"] += int(missing_country) * int(row["affected_media_rows"])
+        counts["baseline_coordinate_country_candidate_occurrences"] += int(
+            baseline_coordinate_country_candidate
+        )
+        counts["baseline_coordinate_country_candidate_media_rows"] += int(
+            baseline_coordinate_country_candidate
+        ) * int(row["affected_media_rows"])
+        counts["zero_zero_coordinate_occurrences"] += int(
+            country_code is None and invalid_zero_zero
+        )
+        counts["zero_zero_coordinate_media_rows"] += int(
+            country_code is None and invalid_zero_zero
+        ) * int(row["affected_media_rows"])
         counts["derived_country_occurrences"] += int(derived_country_code is not None)
         counts["derived_country_media_rows"] += int(derived_country_code is not None) * int(row["affected_media_rows"])
         counts["ambiguous_border_occurrences"] += int(
@@ -327,8 +347,8 @@ def publish_geographic_enrichment(
         pq.write_table(pa.Table.from_pylist(outcomes, schema=GEOGRAPHIC_OUTCOME_SCHEMA), outcome_path, compression="zstd")
         pq.write_table(assertion_table(assertions), assertion_path, compression="zstd")
         expected = {
-            "coordinate_country_candidate_media_rows": expected_coordinate_country_media_rows,
-            "coordinate_country_candidate_occurrences": expected_coordinate_country_occurrences,
+            "baseline_coordinate_country_candidate_media_rows": expected_coordinate_country_media_rows,
+            "baseline_coordinate_country_candidate_occurrences": expected_coordinate_country_occurrences,
             "missing_continent_media_rows": expected_missing_continent_media_rows,
             "missing_continent_occurrences": expected_missing_continent_occurrences,
             "missing_region_media_rows": expected_missing_region_media_rows,
@@ -337,6 +357,7 @@ def publish_geographic_enrichment(
         validation = {f"{name}_match": counts[name] == value for name, value in expected.items()}
         validation.update({
             "all_coordinate_country_candidates_retained": counts["coordinate_country_candidate_occurrences"] <= len(outcomes),
+            "baseline_candidate_difference_explained": counts["baseline_coordinate_country_candidate_occurrences"] == counts["coordinate_country_candidate_occurrences"] + counts["zero_zero_coordinate_occurrences"],
             "coordinate_country_resolved_or_retained": counts["coordinate_country_candidate_occurrences"] == counts["derived_country_occurrences"] + counts["ambiguous_border_occurrences"] + counts["outside_or_unmapped_occurrences"] if boundary is not None else counts["derived_country_occurrences"] == 0,
             "boundary_reference_checksum_valid": boundary is None or bool(boundary["all_checksums_valid"]),
             "assertions_reconcile": len(assertions) == sum(
@@ -545,9 +566,12 @@ def _mapping_status(missing: bool, derived: str | None) -> tuple[str, str]:
 def _country_boundary_status(
     *,
     missing_country: bool,
+    invalid_zero_zero: bool,
     boundary_available: bool,
     boundary_match_count: int,
 ) -> tuple[str, str]:
+    if invalid_zero_zero:
+        return "FAIL", "exact_zero_zero_coordinate"
     if not missing_country:
         return "NOT_APPLICABLE", "country_code_present_or_coordinates_not_eligible"
     if not boundary_available:
@@ -589,12 +613,21 @@ def _border_status(
     return "PASS" if boundary_match_count == 1 else "OUTSIDE_OR_UNMAPPED"
 
 
-def _valid_coordinates(latitude: object | None, longitude: object | None) -> bool:
+def _coordinates_in_bounds(
+    latitude: object | None, longitude: object | None
+) -> bool:
     try:
         lat, lon = float(str(latitude)), float(str(longitude))
     except (TypeError, ValueError):
         return False
-    return -90 <= lat <= 90 and -180 <= lon <= 180 and (lat != 0 or lon != 0)
+    return -90 <= lat <= 90 and -180 <= lon <= 180
+
+
+def _is_zero_zero(latitude: object | None, longitude: object | None) -> bool:
+    try:
+        return float(str(latitude)) == 0 and float(str(longitude)) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _load_boundary_reference(manifest_path: Path) -> dict[str, object]:
