@@ -24,69 +24,182 @@ are wasteful for a bulk computer-to-computer handoff.
 
 ## Direct GBIF handoff from WSL2 to macOS
 
-For a Mac reachable over SSH, transfer only the validated publication, its
-sealed audit, and the slim locator index. Do not transfer `.current.staging`,
-DuckDB temp spill, old intermediate Parquets, mutable resolver work state, or
-the 38 GB superseded set. Parquet is already compressed; rebuilding it,
-recompressing it, or materializing a second full-width database before
-transfer only adds I/O.
+Transfer only the terminal resolver-integrated publication, its sealed audit,
+and the slim locator index. Do not transfer `.current.staging`, DuckDB temp
+spill, old intermediate Parquets, mutable resolver work state, or the 38 GB
+superseded set. Parquet is already compressed; rebuilding or recompressing it
+only adds I/O.
 
-On the Mac, enable Remote Login and prepare the destination:
+### 1. Seal a zero-copy transfer directory in WSL2
+
+Do this only after the terminal resolver, resolver-integrated publication,
+publication audit, and locator index have all completed. These commands fail
+before creating the handoff when any validator fails. `cp -al` creates
+same-filesystem hard links, so the staged 25–35 GB handoff consumes almost no
+additional data blocks.
 
 ```bash
-mkdir -p ~/BioMiner-data/gbif_media_final
+cd /home/toffe/github/karikris/BioMiner
+
+BASE="$PWD/data/derived/gbif_media_final/current"
+PUBLICATION="$PWD/data/derived/gbif_media_final/resolved-v1"
+RESOLUTION="$PWD/data/state/gbif-media-url-resolution/full-v1/finalized-v1"
+AUDIT="$PWD/data/derived/gbif_media_final/audit-v1"
+LOCATOR="$PWD/data/derived/gbif_media_final/locator-v1"
+HANDOFF="$PWD/data/transfer/gbif-media-final-20260729"
+
+test ! -e "$HANDOFF"
+
+.venv/bin/python scripts/validate_gbif_final_resolution_enrichment.py \
+  --output-directory "$PUBLICATION" \
+  --base-publication-directory "$BASE" \
+  --resolution-directory "$RESOLUTION" \
+  --repository-root "$PWD"
+
+.venv/bin/python scripts/validate_gbif_final_publication.py \
+  --audit-directory "$AUDIT" \
+  --primary-publication-directory "$PUBLICATION" \
+  --repository-root "$PWD"
+
+.venv/bin/python scripts/validate_gbif_final_locator_index.py \
+  --index-directory "$LOCATOR" \
+  --publication-audit-directory "$AUDIT" \
+  --publication-directory "$PUBLICATION" \
+  --repository-root "$PWD"
+
+mkdir -p "$HANDOFF"
+cp -al "$PUBLICATION" "$HANDOFF/publication"
+cp -al "$AUDIT" "$HANDOFF/audit"
+cp -al "$LOCATOR" "$HANDOFF/locator"
+git rev-parse HEAD > "$HANDOFF/SOURCE_GIT_COMMIT"
+
+(
+  cd "$HANDOFF"
+  find . -type f ! -name SHA256SUMS -print0 |
+    sort -z |
+    xargs -0 sha256sum > SHA256SUMS
+  sha256sum -c SHA256SUMS
+)
+
+chmod -R a-w "$HANDOFF"
+du -sh --apparent-size "$HANDOFF"
+du -sh "$HANDOFF"
 ```
 
-From WSL2, after `audit-v1/manifest.json` exists and validates:
+The apparent size is the number of bytes transferred. The allocated size
+should be small because the large files are hard-linked. Do not remove the
+original publication or the handoff until the Mac verification succeeds.
+
+Start the SSH server inside WSL2:
 
 ```bash
-MAC_TRANSFER_USER="<macOS-short-username>"
-MAC_TRANSFER_HOST="<macOS-LAN-IP-or-hostname>"
-
-rsync -ah --partial --append-verify --info=progress2 \
-  data/derived/gbif_media_final/current/ \
-  "${MAC_TRANSFER_USER}@${MAC_TRANSFER_HOST}:BioMiner-data/gbif_media_final/current/"
-
-rsync -ah --partial --append-verify --info=progress2 \
-  data/derived/gbif_media_final/audit-v1/ \
-  "${MAC_TRANSFER_USER}@${MAC_TRANSFER_HOST}:BioMiner-data/gbif_media_final/audit-v1/"
-
-rsync -ah --partial --append-verify --info=progress2 \
-  data/derived/gbif_media_final/locator-v1/ \
-  "${MAC_TRANSFER_USER}@${MAC_TRANSFER_HOST}:BioMiner-data/gbif_media_final/locator-v1/"
+sudo service ssh start
+sudo ss -ltnp | grep ':22'
+whoami
 ```
 
-Rerun the same commands after an interruption. `rsync` resumes the partial
-file and verifies the completed content. Do not add `--inplace` or
-`--remove-source-files`.
+With WSL2 mirrored networking, the Mac can normally use the Windows LAN IP and
+port 22. With default NAT networking, run the following once in an
+Administrator PowerShell window on Windows. Re-run it after a WSL restart
+because the internal WSL address may change:
 
-On the Mac, use a clone of the same BioMiner repository and independently
-validate the relocated publication. `--allow-cleaned-dependencies` is
-appropriate only when the PASS audit checksum-records dependencies that were
-deliberately omitted from the transfer; retain the cleanup manifest too if
-those inputs were removed on WSL. The flag does not waive final Parquet,
-primary-manifest, audit-artifact, schema, row-group, identity, or Git-commit
-checks.
+```powershell
+$WslIp = (wsl.exe -d Ubuntu hostname -I).Trim().Split()[0]
+$ListenPort = 2222
+
+netsh interface portproxy delete v4tov4 `
+  listenaddress=0.0.0.0 listenport=$ListenPort
+netsh interface portproxy add v4tov4 `
+  listenaddress=0.0.0.0 listenport=$ListenPort `
+  connectaddress=$WslIp connectport=22
+
+if (-not (Get-NetFirewallRule -DisplayName "WSL2 GBIF transfer" `
+  -ErrorAction SilentlyContinue)) {
+  New-NetFirewallRule -DisplayName "WSL2 GBIF transfer" `
+    -Direction Inbound -Action Allow -Protocol TCP `
+    -LocalPort $ListenPort -Profile Private
+}
+```
+
+Use `ipconfig` or `Get-NetIPAddress -AddressFamily IPv4` on Windows to find
+the Windows LAN address. Do not expose port 2222 through the internet router.
+
+### 2. Start and verify the pull from macOS
+
+Run these commands in Terminal on the Mac. The Mac initiates the transfer. Use
+port 22 for mirrored networking or port 2222 for the NAT port-forward above.
 
 ```bash
-cd /path/to/BioMiner
+WSL_USER="toffe"
+WINDOWS_LAN_IP="<for-example-192.168.1.50>"
+SSH_PORT="2222"
+REMOTE_ROOT="/home/toffe/github/karikris/BioMiner/data/transfer/gbif-media-final-20260729"
+DEST="$HOME/BioMiner-data/gbif-media-final-20260729"
+
+ssh -p "$SSH_PORT" "${WSL_USER}@${WINDOWS_LAN_IP}" \
+  "test -r '$REMOTE_ROOT/SHA256SUMS'"
+
+mkdir -p "$DEST"
+rsync -avhP --partial \
+  -e "ssh -p $SSH_PORT" \
+  "${WSL_USER}@${WINDOWS_LAN_IP}:${REMOTE_ROOT}/" \
+  "$DEST/"
+
+(
+  cd "$DEST"
+  shasum -a 256 -c SHA256SUMS
+)
+```
+
+Rerun the same `rsync` command after an interruption. It retains partial files
+and completes them without deleting the WSL copy. Do not add `--inplace`,
+`--delete`, or `--remove-source-files`.
+
+Use a clone of BioMiner on the Mac and check out the exact transferred
+commit. Then independently validate the relocated artifacts. Allowing cleaned
+dependencies does not waive final Parquet, primary-manifest, audit-artifact,
+schema, row-group, identity, Git-commit, locator, or checksum checks.
+
+```bash
+REPO="$HOME/github/karikris/BioMiner"
+DEST="$HOME/BioMiner-data/gbif-media-final-20260729"
+SOURCE_COMMIT="$(tr -d '[:space:]' < "$DEST/SOURCE_GIT_COMMIT")"
+
+git -C "$REPO" fetch origin main
+git -C "$REPO" checkout "$SOURCE_COMMIT"
+
+cd "$REPO"
+uv run python scripts/validate_gbif_final_resolution_enrichment.py \
+  --output-directory "$DEST/publication" \
+  --repository-root "$REPO"
+
 uv run python scripts/validate_gbif_final_publication.py \
-  --audit-directory ~/BioMiner-data/gbif_media_final/audit-v1 \
-  --primary-publication-directory ~/BioMiner-data/gbif_media_final/current \
-  --repository-root . \
+  --audit-directory "$DEST/audit" \
+  --primary-publication-directory "$DEST/publication" \
+  --repository-root "$REPO" \
   --allow-cleaned-dependencies
 
 uv run python scripts/validate_gbif_final_locator_index.py \
-  --index-directory ~/BioMiner-data/gbif_media_final/locator-v1 \
-  --publication-audit-directory ~/BioMiner-data/gbif_media_final/audit-v1 \
-  --publication-directory ~/BioMiner-data/gbif_media_final/current \
-  --repository-root . \
+  --index-directory "$DEST/locator" \
+  --publication-audit-directory "$DEST/audit" \
+  --publication-directory "$DEST/publication" \
+  --repository-root "$REPO" \
   --allow-cleaned-dependencies
 ```
 
+After all checksum and semantic validators pass on the Mac, the WSL staging
+hard links can be removed without touching the original publication:
+
+```bash
+chmod -R u+w \
+  /home/toffe/github/karikris/BioMiner/data/transfer/gbif-media-final-20260729
+rm -r \
+  /home/toffe/github/karikris/BioMiner/data/transfer/gbif-media-final-20260729
+```
+
 If both machines are not online together, use the content-addressed object
-handoff below. Its source set should still contain only `current/` and
-`audit-v1/` plus `locator-v1/`; never package the live staging or spill tree.
+handoff below. Its source set should still contain only the resolver-integrated
+publication, audit, and locator; never package the live staging or spill tree.
 
 ## Producer workflow
 
