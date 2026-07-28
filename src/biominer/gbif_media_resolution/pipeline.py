@@ -338,6 +338,8 @@ def run_worker(
 
     results: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
+    lease_renewed_at = time.monotonic()
+    renewal_interval_seconds = max(1.0, stale_after_seconds / 3.0)
     try:
         for work_item in claimed:
             item = ResolutionInput.from_payload(dict(work_item["payload"]))
@@ -348,9 +350,27 @@ def run_worker(
                 item_attempts = ()
             results.append(result.to_row())
             attempts.extend(attempt.to_row() for attempt in item_attempts)
+            if time.monotonic() - lease_renewed_at >= renewal_interval_seconds:
+                _renew_claimed_batch(
+                    workstore=workstore,
+                    claimed=claimed,
+                    worker_id=worker_id,
+                    stale_after_seconds=stale_after_seconds,
+                )
+                lease_renewed_at = time.monotonic()
     finally:
         if owns_resolver:
             active_resolver.close()
+
+    # Publication can only begin while every source claim is still held by this
+    # worker. This prevents an expired worker from registering an orphan shard
+    # and then discovering the lease loss one row at a time during commit.
+    _renew_claimed_batch(
+        workstore=workstore,
+        claimed=claimed,
+        worker_id=worker_id,
+        stale_after_seconds=stale_after_seconds,
+    )
 
     shard_token = canonical_semantic_fingerprint(
         {
@@ -414,6 +434,27 @@ def run_worker(
         "attempt_shard": str(attempt_path),
         "attempt_sha256": attempt_sha,
     }
+
+
+def _renew_claimed_batch(
+    *,
+    workstore: WorkStore,
+    claimed: list[dict[str, Any]],
+    worker_id: str,
+    stale_after_seconds: int,
+) -> None:
+    for work_item in claimed:
+        renewed = workstore.renew_claim(
+            str(work_item["work_key"]),
+            worker_id=worker_id,
+            attempt_count=int(work_item["attempt_count"]),
+            stale_after_seconds=stale_after_seconds,
+        )
+        if not renewed:
+            raise RuntimeError(
+                "claim lease was lost before shard publication: "
+                f"{work_item['work_key']}"
+            )
 
 
 def finalize_resolution(

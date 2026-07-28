@@ -616,3 +616,116 @@ def test_prepare_worker_finalize_and_publish_v4(tmp_path: Path) -> None:
     assert json.loads((v4 / "manifest.json").read_text())["manifest_policy"][
         "written_last"
     ]
+
+
+def test_worker_renews_every_claim_before_shard_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.parquet"
+    source_manifest = tmp_path / "source_manifest.json"
+    runtime = tmp_path / "runtime"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    _write_source(source)
+    source_manifest.write_text("{}\n", encoding="utf-8")
+    pilot_acceptance = _write_pilot_acceptance(tmp_path, source)
+    prepare_resolution(
+        source=source,
+        source_manifest=source_manifest,
+        output_root=runtime,
+        workstore=state,
+        run_id="lease-renewal-run",
+        expected_missing_rows=3,
+        mode="full",
+        pilot_acceptance_manifest=pilot_acceptance,
+        resolver_config=ResolverConfig(max_attempts=1),
+    )
+
+    renewed: list[str] = []
+    real_renew_claim = state.renew_claim
+
+    def recording_renew_claim(work_key: str, **kwargs: object) -> bool:
+        renewed.append(work_key)
+        return real_renew_claim(work_key, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(state, "renew_claim", recording_renew_claim)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Type": "image/png"},
+                content=_image_bytes("PNG"),
+            )
+            if request.url.path == "/record/1"
+            else httpx.Response(200, json={"key": 1, "media": []})
+        )
+    ) as client:
+        worker = run_worker(
+            workstore=state,
+            output_root=runtime,
+            run_id="lease-renewal-run",
+            worker_id="worker-lease",
+            batch_rows=10,
+            resolver=MediaURLResolver(
+                config=ResolverConfig(max_attempts=1),
+                http_client=client,
+                resolve_host=PUBLIC_DNS,
+            ),
+        )
+
+    assert worker["completed_rows"] == 3
+    assert len(renewed) == 3
+
+
+def test_worker_does_not_publish_shard_after_lease_loss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.parquet"
+    source_manifest = tmp_path / "source_manifest.json"
+    runtime = tmp_path / "runtime"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    _write_source(source)
+    source_manifest.write_text("{}\n", encoding="utf-8")
+    pilot_acceptance = _write_pilot_acceptance(tmp_path, source)
+    prepare_resolution(
+        source=source,
+        source_manifest=source_manifest,
+        output_root=runtime,
+        workstore=state,
+        run_id="lease-loss-run",
+        expected_missing_rows=3,
+        mode="full",
+        pilot_acceptance_manifest=pilot_acceptance,
+        resolver_config=ResolverConfig(max_attempts=1),
+    )
+    monkeypatch.setattr(state, "renew_claim", lambda *_args, **_kwargs: False)
+
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Type": "image/png"},
+                content=_image_bytes("PNG"),
+            )
+            if request.url.path == "/record/1"
+            else httpx.Response(200, json={"key": 1, "media": []})
+        )
+    ) as client:
+        with pytest.raises(
+            RuntimeError, match="claim lease was lost before shard publication"
+        ):
+            run_worker(
+                workstore=state,
+                output_root=runtime,
+                run_id="lease-loss-run",
+                worker_id="worker-expired",
+                batch_rows=10,
+                resolver=MediaURLResolver(
+                    config=ResolverConfig(max_attempts=1),
+                    http_client=client,
+                    resolve_host=PUBLIC_DNS,
+                ),
+            )
+
+    assert not (runtime / "shards").exists()
