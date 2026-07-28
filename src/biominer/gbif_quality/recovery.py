@@ -39,6 +39,7 @@ STAGE_MANIFESTS = (
     "incremental_validation/manifest.json",
     "freshness/manifest.json",
     "provider_enrichment/manifest.json",
+    "provider_enrichment_v2/manifest.json",
     "performance/manifest.json",
     "canonical_resource_analysis/v1/manifest.json",
 )
