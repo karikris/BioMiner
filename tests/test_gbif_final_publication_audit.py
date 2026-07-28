@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -261,6 +262,99 @@ def test_publication_audit_validator_rejects_changed_dependency(
     with pytest.raises(
         RuntimeError,
         match="audited dependency temporal inventory mismatch",
+    ):
+        validate_publication_audit(
+            arguments["output_directory"],
+            repository_root=arguments["repository_root"],
+        )
+    validate_publication_audit(
+        arguments["output_directory"],
+        repository_root=arguments["repository_root"],
+        require_dependencies=False,
+    )
+
+
+def test_publication_audit_binds_terminal_manifest_dependencies(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    publication = Path(str(arguments["publication_directory"]))
+    base = tmp_path / "base-publication"
+    resolution = tmp_path / "terminal-resolution"
+    base_artifact = _write(
+        base / FINAL_FILENAME,
+        {"gbifID": ["A", "B"]},
+    )
+    base_manifest_path = base / MANIFEST_FILENAME
+    base_manifest_path.write_text(
+        json.dumps({"schema_version": "base-fixture"}) + "\n",
+        encoding="utf-8",
+    )
+    resolution_results = _write(
+        resolution / "resolution_results.parquet",
+        {"source_row_id": ["resolution-1"]},
+    )
+    resolution_manifest_path = resolution / MANIFEST_FILENAME
+    resolution_manifest_path.write_text(
+        json.dumps({"schema_version": "resolution-fixture"}) + "\n",
+        encoding="utf-8",
+    )
+
+    final_path = publication / FINAL_FILENAME
+    os.utime(final_path, None)
+    primary_manifest_path = publication / MANIFEST_FILENAME
+    primary = json.loads(primary_manifest_path.read_text())
+    primary["inputs"].update(
+        {
+            "base_final_artifact": {
+                "path": str(base_artifact),
+                "sha256": _sha256(base_artifact),
+            },
+            "base_publication_manifest": {
+                "path": str(base_manifest_path),
+                "sha256": _sha256(base_manifest_path),
+            },
+            "resolution_results": {
+                "path": str(resolution_results),
+                "sha256": _sha256(resolution_results),
+            },
+            "resolution_manifest": {
+                "path": str(resolution_manifest_path),
+                "sha256": _sha256(resolution_manifest_path),
+            },
+        }
+    )
+    primary_manifest_path.write_text(
+        json.dumps(primary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    arguments["base_publication_directory"] = base
+    arguments["resolution_directory"] = resolution
+
+    manifest = audit_final_publication(**arguments)
+
+    assert manifest["counts"]["manifest_dependencies"] == 2
+    assert {
+        item["input_role"]
+        for item in manifest["manifest_dependencies"]
+    } == {"base_publication_manifest", "resolution_manifest"}
+    assert all(manifest["validation"].values())
+    assert (
+        validate_publication_audit(
+            arguments["output_directory"],
+            repository_root=arguments["repository_root"],
+        )
+        == manifest
+    )
+
+    resolution_manifest_path.write_text(
+        json.dumps({"schema_version": "tampered"}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="manifest dependency byte count differs|"
+        "manifest dependency checksum differs",
     ):
         validate_publication_audit(
             arguments["output_directory"],
