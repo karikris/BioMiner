@@ -24,6 +24,7 @@ META = """\
     <coreid index="0"/>
     <field index="1" term="http://purl.org/dc/terms/identifier"/>
     <field index="2" term="http://purl.org/dc/terms/creator"/>
+    <field term="http://purl.org/dc/terms/type" default="StillImage"/>
   </extension>
 </archive>
 """
@@ -63,6 +64,7 @@ def test_dwca_metadata_drives_bounded_row_stream(tmp_path: Path) -> None:
     assert media_rows[0].values == {
         "identifier": "https://example.org/1.jpg",
         "creator": "A Person",
+        "type": "StillImage",
     }
 
 

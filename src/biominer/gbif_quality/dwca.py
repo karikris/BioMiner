@@ -11,8 +11,9 @@ import zipfile
 
 @dataclass(frozen=True, slots=True)
 class DwcaField:
-    index: int
+    index: int | None
     term: str
+    default: str | None
 
     @property
     def name(self) -> str:
@@ -34,7 +35,9 @@ class DwcaTable:
 
     @property
     def maximum_index(self) -> int:
-        indexes = [field.index for field in self.fields]
+        indexes = [
+            field.index for field in self.fields if field.index is not None
+        ]
         indexes.extend(
             value
             for value in (self.id_index, self.core_id_index)
@@ -112,7 +115,11 @@ def iter_dwca_rows(
                 expected = table.maximum_index + 1
                 width_status = "PASS" if len(raw_values) >= expected else "FAIL"
                 values = {
-                    field.name: _value(raw_values, field.index)
+                    field.name: (
+                        _value(raw_values, field.index)
+                        if field.index is not None
+                        else field.default
+                    )
                     for field in table.fields
                 }
                 yield DwcaRow(
@@ -150,13 +157,20 @@ def _parse_table(
         raise ValueError(f"Darwin Core member is missing: {member}")
     fields = tuple(
         DwcaField(
-            index=_positive_index(child.attrib.get("index")),
+            index=(
+                _positive_index(child.attrib.get("index"))
+                if child.attrib.get("index") is not None
+                else None
+            ),
             term=_required_text(child.attrib.get("term"), field="term"),
+            default=_optional_text(child.attrib.get("default")),
         )
         for child in element
         if _local_name(child.tag) == "field"
     )
-    indexes = [field.index for field in fields]
+    if any(field.index is None and field.default is None for field in fields):
+        raise ValueError("Darwin Core unindexed field requires a default")
+    indexes = [field.index for field in fields if field.index is not None]
     if len(indexes) != len(set(indexes)):
         raise ValueError(f"Darwin Core {role} repeats a field index")
     id_index = _single_index(element, "id")
@@ -237,6 +251,12 @@ def _required_text(value: str | None, *, field: str) -> str:
     if not result:
         raise ValueError(f"Darwin Core {field} is required")
     return result
+
+
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _value(values: list[str], index: int | None) -> str | None:
