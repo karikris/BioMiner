@@ -17,6 +17,7 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 
 PART_RECEIPT_VERSION = "gbif-final-bounded-part/v1"
 ASSEMBLY_MANIFEST_VERSION = "gbif-final-bounded-assembly/v1"
+STATE_CLEANUP_RECEIPT_VERSION = "gbif-final-bounded-state-cleanup/v1"
 FINAL_FILENAME = "gbif_media_final_enriched.parquet"
 MANIFEST_FILENAME = "manifest.json"
 
@@ -607,6 +608,130 @@ def validate_assembled_output(
     return manifest
 
 
+def cleanup_bounded_state(
+    *,
+    output_directory: str | Path,
+    state_directory: str | Path,
+    cleanup_receipt_path: str | Path,
+) -> dict[str, Any]:
+    """Delete only verified bounded state after final publication is durable."""
+
+    output = Path(output_directory).resolve()
+    state = Path(state_directory).resolve()
+    cleanup_receipt = Path(cleanup_receipt_path).resolve()
+    if not state.is_dir() or state.is_symlink():
+        raise FileNotFoundError(state)
+    if (
+        state == output
+        or state.is_relative_to(output)
+        or output.is_relative_to(state)
+    ):
+        raise ValueError("bounded state and final output must not overlap")
+    if cleanup_receipt.exists():
+        raise FileExistsError(cleanup_receipt)
+    if (
+        cleanup_receipt.is_relative_to(state)
+        or cleanup_receipt.is_relative_to(output)
+    ):
+        raise ValueError(
+            "cleanup receipt must be outside state and final output"
+        )
+    required_markers = (
+        state / "source_spine" / MANIFEST_FILENAME,
+        state / "pipeline" / "checkpoint.json",
+    )
+    if any(not path.is_file() for path in required_markers):
+        raise RuntimeError(
+            "bounded state lacks required source-spine or pipeline markers"
+        )
+
+    manifest = validate_assembled_output(output)
+    part_paths: list[Path] = []
+    for evidence in manifest["part_evidence"]:
+        receipt_path = Path(evidence["receipt_path"]).resolve()
+        if not receipt_path.is_relative_to(state):
+            raise RuntimeError(
+                "bounded final receipt is outside the requested state tree"
+            )
+        part_path = Path(
+            str(receipt_path).removesuffix(".receipt.json")
+        )
+        if not receipt_path.is_file() or not part_path.is_file():
+            raise RuntimeError(
+                "bounded state cleanup requires every physical final part"
+            )
+        part_paths.extend((receipt_path, part_path))
+
+    state_entries = list(state.rglob("*"))
+    symlinks = [path for path in state_entries if path.is_symlink()]
+    if symlinks:
+        raise RuntimeError(
+            f"bounded state cleanup refuses symlinks: {symlinks[0]}"
+        )
+    state_files = [path for path in state_entries if path.is_file()]
+    deleted_bytes = sum(path.stat().st_size for path in state_files)
+    deleted_files = len(state_files)
+    final_manifest_path = output / MANIFEST_FILENAME
+    final_artifact_path = output / FINAL_FILENAME
+    evidence = {
+        "schema_version": STATE_CLEANUP_RECEIPT_VERSION,
+        "generated_at": _timestamp(),
+        "state_directory": str(state),
+        "deleted_file_count": deleted_files,
+        "deleted_physical_bytes": deleted_bytes,
+        "embedded_final_part_receipts": len(manifest["part_evidence"]),
+        "final_manifest_path": str(final_manifest_path),
+        "final_manifest_sha256": _prefixed_sha256(final_manifest_path),
+        "final_artifact_path": str(final_artifact_path),
+        "final_artifact_sha256": manifest["artifacts"][0][
+            "physical_sha256"
+        ],
+        "final_rows": manifest["counts"]["rows"],
+        "validation": {
+            "final_valid_before_cleanup": True,
+            "all_final_parts_inside_state": all(
+                path.is_relative_to(state) for path in part_paths
+            ),
+            "state_markers_present": True,
+            "state_contains_no_symlinks": True,
+            "external_part_receipts_embedded": bool(
+                manifest["manifest_policy"].get("part_receipts_embedded")
+            ),
+            "final_valid_after_cleanup": False,
+            "cleanup_receipt_written_last": True,
+        },
+        "cleanup_policy": {
+            "explicit_state_tree_only": True,
+            "final_output_preserved": True,
+            "cleanup_receipt_outside_publication": True,
+        },
+    }
+    if not all(
+        value
+        for key, value in evidence["validation"].items()
+        if key != "final_valid_after_cleanup"
+    ):
+        raise RuntimeError("bounded state cleanup preflight failed")
+
+    shutil.rmtree(state)
+    if state.exists():
+        raise RuntimeError("bounded state directory still exists after cleanup")
+    validated_after = validate_assembled_output(output)
+    if validated_after != manifest:
+        raise RuntimeError("final manifest changed during state cleanup")
+    evidence["validation"]["final_valid_after_cleanup"] = True
+    evidence["receipt_fingerprint"] = canonical_semantic_fingerprint(
+        {
+            key: value
+            for key, value in evidence.items()
+            if key != "receipt_fingerprint"
+        }
+    )
+    cleanup_receipt.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(cleanup_receipt, evidence)
+    return evidence
+
+
 def _validated_embedded_receipts(
     part_evidence: list[object],
     *,
@@ -885,7 +1010,9 @@ __all__ = [
     "FINAL_FILENAME",
     "MANIFEST_FILENAME",
     "PART_RECEIPT_VERSION",
+    "STATE_CLEANUP_RECEIPT_VERSION",
     "assemble_parts",
+    "cleanup_bounded_state",
     "preflight_assembly",
     "seal_record_batches",
     "seal_part",

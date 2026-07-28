@@ -10,7 +10,9 @@ import pytest
 from biominer.gbif_final.bounded import (
     ASSEMBLY_MANIFEST_VERSION,
     PART_RECEIPT_VERSION,
+    STATE_CLEANUP_RECEIPT_VERSION,
     assemble_parts,
+    cleanup_bounded_state,
     preflight_assembly,
     seal_record_batches,
     seal_part,
@@ -357,6 +359,56 @@ def test_assembly_validator_rejects_manifest_tampering(
         match="manifest fingerprint mismatch",
     ):
         validate_assembled_output(output)
+
+
+def test_cleanup_removes_only_marked_state_after_final_validation(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    (state / "source_spine").mkdir(parents=True)
+    (state / "source_spine" / "manifest.json").write_text("{}")
+    (state / "pipeline").mkdir()
+    (state / "pipeline" / "checkpoint.json").write_text("{}")
+    part = _seal(
+        state / "pipeline" / "windows" / "part-00000",
+        name="final",
+        start=0,
+        stop=2,
+        values=["a", "b"],
+    )
+    output = tmp_path / "final"
+    assemble_parts(
+        part_receipts=[part],
+        output_directory=output,
+        expected_rows=2,
+        code_commit="deadbeef",
+        source_scope={"rows": 2},
+        minimum_headroom_bytes=0,
+    )
+    cleanup_receipt = tmp_path / "cleanup-receipt.json"
+
+    with pytest.raises(
+        ValueError,
+        match="cleanup receipt must be outside",
+    ):
+        cleanup_bounded_state(
+            output_directory=output,
+            state_directory=state,
+            cleanup_receipt_path=state / "unsafe-receipt.json",
+        )
+
+    receipt = cleanup_bounded_state(
+        output_directory=output,
+        state_directory=state,
+        cleanup_receipt_path=cleanup_receipt,
+    )
+
+    assert receipt["schema_version"] == STATE_CLEANUP_RECEIPT_VERSION
+    assert receipt["validation"]["final_valid_after_cleanup"]
+    assert receipt["deleted_file_count"] == 4
+    assert not state.exists()
+    assert cleanup_receipt.is_file()
+    assert validate_assembled_output(output)["counts"]["rows"] == 2
 
 
 def test_assembly_refuses_gaps_overlaps_and_schema_drift(tmp_path: Path) -> None:

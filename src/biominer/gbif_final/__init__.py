@@ -2,6 +2,7 @@
 
 from biominer.gbif_final.bounded import (
     assemble_parts,
+    cleanup_bounded_state,
     preflight_assembly,
     seal_record_batches,
     seal_part,
@@ -39,6 +40,7 @@ __all__ = [
     "build_source_spine",
     "build_species_enrichment_dimension",
     "build_species_enrichments",
+    "cleanup_bounded_state",
     "preflight_assembly",
     "seal_record_batches",
     "seal_global_keyed_dimension",
