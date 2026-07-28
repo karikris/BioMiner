@@ -22,6 +22,7 @@ from biominer.gbif_final.global_sidecar import (
 )
 from biominer.gbif_final.materialize import seal_temporal_enriched_window
 from biominer.gbif_final.pipeline import build_final_parquet, build_species_enrichments
+from biominer.gbif_final.publication_audit import audit_final_publication
 from biominer.gbif_final.spine import (
     build_source_spine,
     validate_source_spine,
@@ -34,6 +35,7 @@ from biominer.gbif_final.windowed import (
 
 __all__ = [
     "assemble_parts",
+    "audit_final_publication",
     "build_final_parquet",
     "build_bounded_final_from_spine",
     "build_derived_assertion_dimension",
