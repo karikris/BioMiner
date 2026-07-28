@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from biominer.gbif_quality.provider_archive_enrichment import (
     publish_provider_archive_enrichment,
 )
+from biominer.gbif_quality.provider_review import publish_provider_review_sample
 
 
 MULTIMEDIA_META = """\
@@ -136,7 +137,9 @@ def test_provider_archive_enrichment_is_item_scoped_and_retains_outcomes(
             "occ-1\thttps://images.test/1.jpg\tNew Creator\tCC BY 4.0\t"
             "New Holder\timage/jpeg\tStillImage\n"
             "occ-2\thttps://images.test/2.jpg\tNew Creator\tCC BY 4.0\t"
-            "Existing Holder\timage/jpeg\tStillImage\n",
+            "Existing Holder\timage/jpeg\tStillImage\n"
+            "occ-3\thttps://images.test/replaced-3.jpg\t\tCopyright\t\t"
+            "image/jpeg\tStillImage\n",
         )
     vermont = archive_root / "vermont.zip"
     with zipfile.ZipFile(vermont, "w") as bundle:
@@ -193,8 +196,8 @@ def test_provider_archive_enrichment_is_item_scoped_and_retains_outcomes(
     assert result["counts"]["target_media_rows"] == 5
     assert result["counts"]["media_outcomes"] == 5
     assert result["counts"]["exact_identifier_matches"] == 2
-    assert result["counts"]["occurrence_context_matches"] == 2
-    assert result["counts"]["explicit_denied_context_items"] == 0
+    assert result["counts"]["occurrence_context_matches"] == 3
+    assert result["counts"]["explicit_denied_context_items"] == 1
     assert result["counts"]["new_assertions"] == 3
     assertions = pq.read_table(
         output / "provider_derived_assertions.parquet"
@@ -226,9 +229,34 @@ def test_provider_archive_enrichment_is_item_scoped_and_retains_outcomes(
     contexts = pq.read_table(
         output / "provider_occurrence_context.parquet"
     ).to_pylist()
-    assert {row["occurrenceID"] for row in contexts} == {"occ-1", "occ-2"}
+    assert {row["occurrenceID"] for row in contexts} == {
+        "occ-1",
+        "occ-2",
+        "occ-3",
+    }
     assert all(row["item_binding_status"] == "NOT_ITEM_BOUND" for row in contexts)
     assert all(not row["automatic_repair_permitted"] for row in contexts)
+    review_output = tmp_path / "provider-review"
+    review = publish_provider_review_sample(
+        provider_enrichment_directory=output,
+        output_directory=review_output,
+        code_commit="commit",
+        sample_per_stratum=1,
+    )
+    assert review["counts"]["explicit_denied_context_review_rows"] == 1
+    review_rows = pq.read_table(
+        review_output / "provider_review_sample.parquet"
+    ).to_pylist()
+    denied = [
+        row
+        for row in review_rows
+        if row["review_reason"]
+        == "current_archive_contains_explicitly_denied_item"
+    ]
+    assert len(denied) == 1
+    assert denied[0]["expected_review_decision"] == (
+        "DO_NOT_AUTOMATICALLY_REPAIR"
+    )
     assert (output / "manifest.json").is_file()
 
 

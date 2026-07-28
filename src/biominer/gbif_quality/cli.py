@@ -22,6 +22,7 @@ from biominer.gbif_quality.provider_enrichment import (
 from biominer.gbif_quality.provider_archive_enrichment import (
     publish_provider_archive_enrichment,
 )
+from biominer.gbif_quality.provider_review import publish_provider_review_sample
 from biominer.gbif_quality.representativeness import publish_representativeness
 from biominer.gbif_quality.recovery import publish_restart_validation
 from biominer.gbif_quality.review_capsules import publish_review_capsules
@@ -151,6 +152,26 @@ def add_gbif_quality_parser(
     )
     provider_archives.add_argument("--batch-rows", type=int, default=50_000)
 
+    provider_review = stages.add_parser(
+        "provider-review",
+        help="publish deterministic review samples from provider archive evidence",
+    )
+    provider_review.add_argument("--repository-root", default=".")
+    provider_review.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    provider_review.add_argument(
+        "--provider-enrichment-directory",
+        default=f"{DEFAULT_DATA_ROOT}/provider_enrichment_v4",
+    )
+    provider_review.add_argument(
+        "--output-directory",
+        default=(
+            f"{DEFAULT_DATA_ROOT}/quality_results/"
+            "provider_archive_review/v1"
+        ),
+    )
+    provider_review.add_argument("--sample-per-stratum", type=int, default=10)
+    provider_review.add_argument("--code-commit")
+
     recovery = stages.add_parser(
         "restart-validation", help="verify committed-stage and unchanged-row restart state"
     )
@@ -201,6 +222,7 @@ def run_gbif_quality_command(args: argparse.Namespace) -> int:
         "source-lineage",
         "provider-registry",
         "provider-archives",
+        "provider-review",
         "restart-validation",
         "reports",
         "acceptance",
@@ -304,6 +326,17 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
             memory_limit=args.memory_limit,
             threads=args.threads,
             batch_rows=args.batch_rows,
+        )
+    if stage == "provider-review":
+        return publish_provider_review_sample(
+            provider_enrichment_directory=_resolve_from_repository(
+                repository, args.provider_enrichment_directory
+            ),
+            output_directory=_resolve_from_repository(
+                repository, args.output_directory
+            ),
+            code_commit=commit,
+            sample_per_stratum=args.sample_per_stratum,
         )
     if stage == "source-lineage":
         multimedia = (

@@ -116,6 +116,15 @@ def test_quality_provider_archives_are_pinned_and_bounded() -> None:
     assert not hasattr(args, "execute_network")
 
 
+def test_quality_provider_review_is_deterministic_and_offline() -> None:
+    args = build_parser().parse_args([COMMAND, "provider-review"])
+
+    assert args.provider_enrichment_directory.endswith("provider_enrichment_v4")
+    assert args.output_directory.endswith("provider_archive_review/v1")
+    assert args.sample_per_stratum == 10
+    assert not hasattr(args, "execute_network")
+
+
 def test_quality_restart_validation_has_no_mutating_recovery_flag() -> None:
     args = build_parser().parse_args([COMMAND, "restart-validation"])
 
