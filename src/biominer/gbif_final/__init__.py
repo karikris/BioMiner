@@ -7,10 +7,12 @@ from biominer.gbif_final.bounded import (
     validate_part_receipt,
 )
 from biominer.gbif_final.pipeline import build_final_parquet, build_species_enrichments
+from biominer.gbif_final.spine import build_source_spine
 
 __all__ = [
     "assemble_parts",
     "build_final_parquet",
+    "build_source_spine",
     "build_species_enrichments",
     "preflight_assembly",
     "seal_part",
