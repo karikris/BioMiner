@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+from threading import Event, Thread
 import time
 from typing import Any
 from uuid import uuid4
@@ -338,8 +339,13 @@ def run_worker(
 
     results: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
-    lease_renewed_at = time.monotonic()
-    renewal_interval_seconds = max(1.0, stale_after_seconds / 3.0)
+    heartbeat = _ClaimLeaseHeartbeat(
+        workstore=workstore,
+        claimed=claimed,
+        worker_id=worker_id,
+        stale_after_seconds=stale_after_seconds,
+    )
+    heartbeat.start()
     try:
         for work_item in claimed:
             item = ResolutionInput.from_payload(dict(work_item["payload"]))
@@ -350,17 +356,11 @@ def run_worker(
                 item_attempts = ()
             results.append(result.to_row())
             attempts.extend(attempt.to_row() for attempt in item_attempts)
-            if time.monotonic() - lease_renewed_at >= renewal_interval_seconds:
-                _renew_claimed_batch(
-                    workstore=workstore,
-                    claimed=claimed,
-                    worker_id=worker_id,
-                    stale_after_seconds=stale_after_seconds,
-                )
-                lease_renewed_at = time.monotonic()
     finally:
+        heartbeat.stop()
         if owns_resolver:
             active_resolver.close()
+    heartbeat.raise_if_failed()
 
     # Publication can only begin while every source claim is still held by this
     # worker. This prevents an expired worker from registering an orphan shard
@@ -455,6 +455,54 @@ def _renew_claimed_batch(
                 "claim lease was lost before shard publication: "
                 f"{work_item['work_key']}"
             )
+
+
+class _ClaimLeaseHeartbeat:
+    def __init__(
+        self,
+        *,
+        workstore: WorkStore,
+        claimed: list[dict[str, Any]],
+        worker_id: str,
+        stale_after_seconds: int,
+    ) -> None:
+        self._workstore = workstore
+        self._claimed = claimed
+        self._worker_id = worker_id
+        self._stale_after_seconds = stale_after_seconds
+        self._interval_seconds = max(0.05, stale_after_seconds / 3.0)
+        self._stop = Event()
+        self._failure: BaseException | None = None
+        self._thread = Thread(
+            target=self._run,
+            name=f"gbif-media-resolution-lease-{worker_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join()
+
+    def raise_if_failed(self) -> None:
+        if self._failure is not None:
+            raise RuntimeError("resolver claim heartbeat failed") from self._failure
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            try:
+                _renew_claimed_batch(
+                    workstore=self._workstore,
+                    claimed=self._claimed,
+                    worker_id=self._worker_id,
+                    stale_after_seconds=self._stale_after_seconds,
+                )
+            except BaseException as exc:  # noqa: BLE001 - forwarded to worker thread.
+                self._failure = exc
+                self._stop.set()
+                return
 
 
 def finalize_resolution(

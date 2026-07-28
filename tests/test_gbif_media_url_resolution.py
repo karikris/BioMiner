@@ -4,6 +4,7 @@ from io import BytesIO
 import hashlib
 import json
 from pathlib import Path
+import time
 
 import duckdb
 import httpx
@@ -649,23 +650,24 @@ def test_worker_renews_every_claim_before_shard_publication(
         return real_renew_claim(work_key, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(state, "renew_claim", recording_renew_claim)
-    with httpx.Client(
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
+    def delayed_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/record/1":
+            time.sleep(1.1)
+            return httpx.Response(
                 200,
                 headers={"Content-Type": "image/png"},
                 content=_image_bytes("PNG"),
             )
-            if request.url.path == "/record/1"
-            else httpx.Response(200, json={"key": 1, "media": []})
-        )
-    ) as client:
+        return httpx.Response(200, json={"key": 1, "media": []})
+
+    with httpx.Client(transport=httpx.MockTransport(delayed_handler)) as client:
         worker = run_worker(
             workstore=state,
             output_root=runtime,
             run_id="lease-renewal-run",
             worker_id="worker-lease",
             batch_rows=10,
+            stale_after_seconds=1,
             resolver=MediaURLResolver(
                 config=ResolverConfig(max_attempts=1),
                 http_client=client,
@@ -674,7 +676,7 @@ def test_worker_renews_every_claim_before_shard_publication(
         )
 
     assert worker["completed_rows"] == 3
-    assert len(renewed) == 3
+    assert len(renewed) >= 6
 
 
 def test_worker_does_not_publish_shard_after_lease_loss(
