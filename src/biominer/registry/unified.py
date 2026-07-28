@@ -146,11 +146,26 @@ def canonicalize_keyword_rows(names: pl.DataFrame, taxa: pl.DataFrame | None = N
             }
         )
 
+    taxa_by_key = (
+        {str(row["accepted_taxon_key"]): dict(row) for row in taxa.iter_rows(named=True)}
+        if taxa is not None and not taxa.is_empty()
+        else None
+    )
+    ancestor_paths = (
+        {
+            key: _taxon_ancestor_path_without_global_scan(key, taxa_by_key)
+            for key in taxa_by_key
+        }
+        if taxa_by_key is not None
+        else None
+    )
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(str(row.get("normalized_match_key") or ""), []).append(row)
     for normalized, bucket in grouped.items():
-        owner_key, owner_rank, owner_name, ownership_basis = _keyword_owner(bucket, taxa)
+        owner_key, owner_rank, owner_name, ownership_basis = _keyword_owner(
+            bucket, taxa, by_key=taxa_by_key, ancestor_paths=ancestor_paths
+        )
         for row in bucket:
             row["keyword_owner_taxon_key"] = owner_key
             row["keyword_owner_rank"] = owner_rank
@@ -500,6 +515,9 @@ def _query_stage(row: dict[str, Any], owner_rank: str) -> str:
 def _keyword_owner(
     bucket: list[dict[str, Any]],
     taxa: pl.DataFrame | None,
+    *,
+    by_key: dict[str, dict[str, Any]] | None = None,
+    ancestor_paths: dict[str, list[str]] | None = None,
 ) -> tuple[str, str, str, str]:
     direct_keys = sorted(
         {
@@ -511,10 +529,21 @@ def _keyword_owner(
     if taxa is None or taxa.is_empty() or not direct_keys:
         key = direct_keys[0] if direct_keys else ""
         return key, "", "", "direct_attachment"
-    by_key = {str(row["accepted_taxon_key"]): dict(row) for row in taxa.iter_rows(named=True)}
-    ancestor_paths = [_taxon_ancestor_path(key, by_key) for key in direct_keys]
-    common = set(ancestor_paths[0])
-    for path in ancestor_paths[1:]:
+    if by_key is None:
+        by_key = {
+            str(row["accepted_taxon_key"]): dict(row)
+            for row in taxa.iter_rows(named=True)
+        }
+    direct_ancestor_paths = [
+        (
+            ancestor_paths.get(key, [])
+            if ancestor_paths is not None
+            else _taxon_ancestor_path(key, by_key)
+        )
+        for key in direct_keys
+    ]
+    common = set(direct_ancestor_paths[0])
+    for path in direct_ancestor_paths[1:]:
         common.intersection_update(path)
     common = {
         key
@@ -547,6 +576,32 @@ def _keyword_owner(
         str(first.get("scientific_name") or ""),
         "ambiguous_cross_lineage",
     )
+
+
+def _taxon_ancestor_path_without_global_scan(
+    key: str,
+    by_key: dict[str, dict[str, Any]],
+) -> list[str]:
+    path: list[str] = []
+    pending = [key]
+    visited: set[str] = set()
+    while pending:
+        current_key = pending.pop(0)
+        if not current_key or current_key in visited:
+            continue
+        visited.add(current_key)
+        row = by_key.get(current_key)
+        if row is None:
+            continue
+        path.append(current_key)
+        parent = str(row.get("parent_key") or "")
+        if parent:
+            pending.append(parent)
+        if str(row.get("rank") or "") == "SPECIES":
+            pending.extend(
+                str(row.get(field) or "") for field in ("genus_key", "family_key")
+            )
+    return path
 
 
 def _taxon_ancestor_path(
