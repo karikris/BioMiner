@@ -22,6 +22,60 @@ production objects retain staging, promotion, existence checks, and remote
 readback. Those safeguards are appropriate for mutable independent objects but
 are wasteful for a bulk computer-to-computer handoff.
 
+## Direct GBIF handoff from WSL2 to macOS
+
+For a Mac reachable over SSH, transfer only the validated publication and its
+sealed audit. Do not transfer `.current.staging`, DuckDB temp spill, old
+intermediate Parquets, mutable resolver work state, or the 38 GB superseded
+set. Parquet is already compressed; rebuilding it, recompressing it, or
+materializing a second database before transfer only adds I/O.
+
+On the Mac, enable Remote Login and prepare the destination:
+
+```bash
+mkdir -p ~/BioMiner-data/gbif_media_final
+```
+
+From WSL2, after `audit-v1/manifest.json` exists and validates:
+
+```bash
+MAC_TRANSFER_USER="<macOS-short-username>"
+MAC_TRANSFER_HOST="<macOS-LAN-IP-or-hostname>"
+
+rsync -ah --partial --append-verify --info=progress2 \
+  data/derived/gbif_media_final/current/ \
+  "${MAC_TRANSFER_USER}@${MAC_TRANSFER_HOST}:BioMiner-data/gbif_media_final/current/"
+
+rsync -ah --partial --append-verify --info=progress2 \
+  data/derived/gbif_media_final/audit-v1/ \
+  "${MAC_TRANSFER_USER}@${MAC_TRANSFER_HOST}:BioMiner-data/gbif_media_final/audit-v1/"
+```
+
+Rerun the same commands after an interruption. `rsync` resumes the partial
+file and verifies the completed content. Do not add `--inplace` or
+`--remove-source-files`.
+
+On the Mac, use a clone of the same BioMiner repository and independently
+validate the relocated publication. `--allow-cleaned-dependencies` is
+appropriate only when the PASS audit checksum-records dependencies that were
+deliberately omitted from the transfer; retain the cleanup manifest too if
+those inputs were removed on WSL. The flag does not waive final Parquet,
+primary-manifest, audit-artifact, schema, row-group, identity, or Git-commit
+checks.
+
+```bash
+cd /path/to/BioMiner
+uv run python scripts/validate_gbif_final_publication.py \
+  --audit-directory ~/BioMiner-data/gbif_media_final/audit-v1 \
+  --primary-publication-directory ~/BioMiner-data/gbif_media_final/current \
+  --repository-root . \
+  --allow-cleaned-dependencies
+```
+
+If both machines are not online together, use the content-addressed object
+handoff below. Its source set should still contain only `current/` and
+`audit-v1/`; never package the live staging or spill tree.
+
 ## Producer workflow
 
 Build and verify the bundle without making any remote request:

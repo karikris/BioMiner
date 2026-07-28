@@ -83,6 +83,97 @@ the exact input paths, configuration, code commit, row counts, part checksums,
 and validation gates. Every publisher refuses to replace an existing data
 directory; choose a new versioned destination for a new run.
 
+## Final enriched Parquet and retained filtering lineage
+
+`data/derived/gbif_media_final/current/` is a source of truth only when it
+contains exactly `gbif_media_final_enriched.parquet` and `manifest.json`, and a
+separate publication audit has independently passed. A staging Parquet is not
+a publication. Do not copy, clean inputs for, or advertise a final dataset
+while its builder still owns `.current.staging/`.
+
+The retained lineage is:
+
+1. Join occurrence and multimedia on `gbifID`, retaining one row per media
+   assertion and explicit unresolved join evidence.
+2. Remove columns below the authorized 5% completeness threshold.
+3. Normalize the user-authorized identification grouping so historical
+   `identified` values become `accepted`; this grouping is not the verbatim
+   Darwin Core status.
+4. Retain rows with `identifiedBy` or an accepted verification grouping.
+5. Exclude explicit Copyright and All Rights Reserved media.
+6. Exclude the 2,236 media rows attached to pre-1960 occurrences, retaining
+   their occurrence-level evidence in `temporal_derivations.parquet`.
+7. Add validated derived year, month, and day fields without changing the
+   original temporal fields.
+8. Add occurrence, media, rights, duplicate, AI-readiness, registry, keyword,
+   and Flickr-query evidence as nested columns.
+
+The rights-filtered input has 16,612,063 rows. The post-1960 temporal
+publication has 16,609,827 rows. Manifests, rather than these prose numbers,
+remain authoritative for a rerun.
+
+The bounded builder is the restartable implementation for future reruns. It
+builds slim dimensions once, aligns them to stable source ordinals, writes
+checksum-bound immutable parts, and assembles them sequentially. Its default
+DuckDB memory limit is 8 GB and its telemetry records process peak RSS,
+physical I/O, throughput, cache reuse, failures, and the terminal output
+manifest. Reusing the same state directory validates and skips sealed work.
+
+```bash
+uv run python scripts/build_gbif_final_enriched_bounded.py \
+  --temporal-parquet data/derived/gbif_media_temporal/v1/gbif_media_temporal.parquet \
+  --pre-temporal-parquet data/reference/gbif_global_papilionoidea_occurrence_multimedia_year_ge_1960_completeness_ge_5pct_verification_normalized_identified_by_or_accepted_rights_filtered_parquet/occurrence_multimedia_year_ge_1960_completeness_ge_5pct_verification_normalized_identified_by_or_accepted_rights_filtered.parquet \
+  --temporal-audit data/derived/gbif_media_temporal/v1/temporal_derivations.parquet \
+  --registry-dir data/derived/gbif_flickr_keyword_registry/v2/registry \
+  --source-assertions data/derived/gbif_flickr_keyword_registry/v2/enrichment/source_name_assertions.parquet \
+  --quality-dir data/derived/gbif_media_database/v4 \
+  --state-dir data/state/gbif-final-bounded-v1 \
+  --output-dir data/derived/gbif_media_final/bounded-v1 \
+  --producer-git-sha "<exact-builder-git-sha>" \
+  --memory-limit 8GB \
+  --threads 4
+```
+
+Independently audit the completed publication before transfer or cleanup. The
+expected producer SHA must be the exact value in the primary manifest, not
+current `HEAD`.
+
+```bash
+uv run python scripts/audit_gbif_final_enriched.py \
+  --publication-directory data/derived/gbif_media_final/current \
+  --temporal-parquet data/derived/gbif_media_temporal/v1/gbif_media_temporal.parquet \
+  --pre-temporal-parquet data/reference/gbif_global_papilionoidea_occurrence_multimedia_year_ge_1960_completeness_ge_5pct_verification_normalized_identified_by_or_accepted_rights_filtered_parquet/occurrence_multimedia_year_ge_1960_completeness_ge_5pct_verification_normalized_identified_by_or_accepted_rights_filtered.parquet \
+  --registry-directory data/derived/gbif_flickr_keyword_registry/v2/registry \
+  --source-assertions data/derived/gbif_flickr_keyword_registry/v2/enrichment/source_name_assertions.parquet \
+  --quality-directory data/derived/gbif_media_database/v4 \
+  --output-directory data/derived/gbif_media_final/audit-v1 \
+  --repository-root . \
+  --expected-producer-git-sha "<producer-git-sha-from-primary-manifest>" \
+  --memory-limit 8GB \
+  --threads 4
+```
+
+The superseded-artifact cleanup is dry-run by default. It permits only the 13
+named v1/v2 and pre-rights intermediate directories encoded in
+`superseded_cleanup.py`. It explicitly protects v3, v4, the rights-filtered
+source, raw intake Parquet and archive, unresolved-row audit, resolver state,
+the final publication, and its publication audit. Execution first persists
+checksummed intent, rechecks each file immediately before unlinking, resumes
+after interruption, rejects unexpected files, and writes its manifest last.
+
+```bash
+uv run python scripts/cleanup_superseded_gbif_artifacts.py \
+  --repository-root . \
+  --publication-audit-directory data/derived/gbif_media_final/audit-v1 \
+  --state-directory data/state/gbif-final-superseded-cleanup-v1
+
+uv run python scripts/cleanup_superseded_gbif_artifacts.py \
+  --repository-root . \
+  --publication-audit-directory data/derived/gbif_media_final/audit-v1 \
+  --state-directory data/state/gbif-final-superseded-cleanup-v1 \
+  --execute
+```
+
 ## Resolver pilot and targeted URL resolution
 
 Preparation is offline by default. Full-queue construction needs
