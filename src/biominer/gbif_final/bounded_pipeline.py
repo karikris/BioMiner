@@ -17,12 +17,15 @@ from biominer.gbif_final.bounded import (
     assemble_parts,
     validate_assembled_output,
 )
+from biominer.gbif_final.global_sidecar import (
+    seal_global_keyed_dimension,
+    seal_global_sidecar_window,
+)
 from biominer.gbif_final.materialize import (
     seal_temporal_enriched_window,
 )
 from biominer.gbif_final.spine import validate_source_spine
 from biominer.gbif_final.windowed import (
-    seal_keyed_dimension_window,
     seal_null_safe_composite_dimension_window,
     seal_ordinal_aligned_window,
 )
@@ -190,6 +193,110 @@ def build_bounded_final_from_spine(
         connection.execute("SET temp_directory=?", [str(temporary)])
         connection.execute("SET preserve_insertion_order=false")
 
+        spine_parts = [
+            (
+                spine_directory / str(evidence["part_path"])
+            ).resolve()
+            for evidence in spine_manifest["part_evidence"]
+        ]
+        global_directory = work / "global_sidecars"
+        global_directory.mkdir(exist_ok=True)
+        global_specs = {
+            "occurrence_quality": {
+                "dimension": dimension_paths["occurrence_quality"],
+                "spine_key": "gbifID",
+                "dimension_key": "gbifID",
+                "excluded": {"gbifID"},
+                "required_match": True,
+            },
+            "media_quality": {
+                "dimension": dimension_paths["media_quality"],
+                "spine_key": "media_assertion_id",
+                "dimension_key": "media_assertion_id",
+                "excluded": {
+                    "source_row_id",
+                    "media_assertion_id",
+                    "gbifID",
+                    "source_sort_position",
+                },
+                "required_match": True,
+            },
+            "rights_quality": {
+                "dimension": dimension_paths["rights_quality"],
+                "spine_key": "media_assertion_id",
+                "dimension_key": "media_assertion_id",
+                "excluded": {
+                    "source_row_id",
+                    "media_assertion_id",
+                    "gbifID",
+                    "media_identifier",
+                },
+                "required_match": True,
+            },
+            "duplicate_quality": {
+                "dimension": dimension_paths["duplicate_quality"],
+                "spine_key": "media_assertion_id",
+                "dimension_key": "media_assertion_id",
+                "excluded": {
+                    "source_row_id",
+                    "media_assertion_id",
+                    "gbifID",
+                },
+                "required_match": True,
+            },
+            "ai_readiness": {
+                "dimension": dimension_paths["ai_readiness"],
+                "spine_key": "media_assertion_id",
+                "dimension_key": "media_assertion_id",
+                "excluded": {
+                    "source_row_id",
+                    "media_assertion_id",
+                    "gbifID",
+                },
+                "required_match": True,
+            },
+            "derived_quality": {
+                "dimension": dimension_paths["derived_assertions"],
+                "spine_key": "gbifID",
+                "dimension_key": "gbifID",
+                "excluded": {"dimension_ordinal", "gbifID"},
+                "required_match": False,
+            },
+        }
+        global_sidecars: dict[str, Path] = {}
+        global_receipts: dict[str, dict[str, Any]] = {}
+        for name, spec in global_specs.items():
+            dimension_name = (
+                "derived_assertions"
+                if name == "derived_quality"
+                else name
+            )
+            global_path = global_directory / f"{name}.parquet"
+            receipt = seal_global_keyed_dimension(
+                connection=connection,
+                spine_parts=spine_parts,
+                dimension=spec["dimension"],
+                output_part=global_path,
+                expected_rows=expected_rows,
+                spine_key=str(spec["spine_key"]),
+                dimension_key=str(spec["dimension_key"]),
+                output_column=name,
+                excluded_dimension_columns=spec["excluded"],
+                required_match=bool(spec["required_match"]),
+                dependencies={
+                    **common_dependencies,
+                    "dimension_inventory": inventories[dimension_name],
+                },
+                batch_rows=batch_rows,
+            )
+            global_sidecars[name] = global_path
+            global_receipts[name] = receipt
+            _record_sealed_files(
+                expected_work_files,
+                global_path,
+                receipt,
+            )
+
         for part_index, evidence in enumerate(
             spine_manifest["part_evidence"]
         ):
@@ -210,151 +317,29 @@ def build_bounded_final_from_spine(
             sidecars: dict[str, Path] = {}
             sidecar_receipts: dict[str, dict[str, Any]] = {}
 
-            sidecars["occurrence_quality"] = _seal_keyed_sidecar(
-                connection=connection,
-                spine_part=spine_part,
-                dimension=dimension_paths["occurrence_quality"],
-                output_part=part_directory
-                / "occurrence_quality.parquet",
-                start=start,
-                stop=stop,
-                spine_key="gbifID",
-                dimension_key="gbifID",
-                output_column="occurrence_quality",
-                excluded={"gbifID"},
-                required_match=True,
-                dependencies={
-                    **spine_dependencies,
-                    "dimension_inventory": inventories[
-                        "occurrence_quality"
-                    ],
-                },
-                batch_rows=batch_rows,
-                expected_work_files=expected_work_files,
-                receipt_registry=sidecar_receipts,
-            )
-            sidecars["media_quality"] = _seal_keyed_sidecar(
-                connection=connection,
-                spine_part=spine_part,
-                dimension=dimension_paths["media_quality"],
-                output_part=part_directory / "media_quality.parquet",
-                start=start,
-                stop=stop,
-                spine_key="media_assertion_id",
-                dimension_key="media_assertion_id",
-                output_column="media_quality",
-                excluded={
-                    "source_row_id",
-                    "media_assertion_id",
-                    "gbifID",
-                    "source_sort_position",
-                },
-                required_match=True,
-                dependencies={
-                    **spine_dependencies,
-                    "dimension_inventory": inventories["media_quality"],
-                },
-                batch_rows=batch_rows,
-                expected_work_files=expected_work_files,
-                receipt_registry=sidecar_receipts,
-            )
-            sidecars["rights_quality"] = _seal_keyed_sidecar(
-                connection=connection,
-                spine_part=spine_part,
-                dimension=dimension_paths["rights_quality"],
-                output_part=part_directory / "rights_quality.parquet",
-                start=start,
-                stop=stop,
-                spine_key="media_assertion_id",
-                dimension_key="media_assertion_id",
-                output_column="rights_quality",
-                excluded={
-                    "source_row_id",
-                    "media_assertion_id",
-                    "gbifID",
-                    "media_identifier",
-                },
-                required_match=True,
-                dependencies={
-                    **spine_dependencies,
-                    "dimension_inventory": inventories["rights_quality"],
-                },
-                batch_rows=batch_rows,
-                expected_work_files=expected_work_files,
-                receipt_registry=sidecar_receipts,
-            )
-            sidecars["duplicate_quality"] = _seal_keyed_sidecar(
-                connection=connection,
-                spine_part=spine_part,
-                dimension=dimension_paths["duplicate_quality"],
-                output_part=part_directory / "duplicate_quality.parquet",
-                start=start,
-                stop=stop,
-                spine_key="media_assertion_id",
-                dimension_key="media_assertion_id",
-                output_column="duplicate_quality",
-                excluded={
-                    "source_row_id",
-                    "media_assertion_id",
-                    "gbifID",
-                },
-                required_match=True,
-                dependencies={
-                    **spine_dependencies,
-                    "dimension_inventory": inventories[
-                        "duplicate_quality"
-                    ],
-                },
-                batch_rows=batch_rows,
-                expected_work_files=expected_work_files,
-                receipt_registry=sidecar_receipts,
-            )
-            sidecars["ai_readiness"] = _seal_keyed_sidecar(
-                connection=connection,
-                spine_part=spine_part,
-                dimension=dimension_paths["ai_readiness"],
-                output_part=part_directory / "ai_readiness.parquet",
-                start=start,
-                stop=stop,
-                spine_key="media_assertion_id",
-                dimension_key="media_assertion_id",
-                output_column="ai_readiness",
-                excluded={
-                    "source_row_id",
-                    "media_assertion_id",
-                    "gbifID",
-                },
-                required_match=True,
-                dependencies={
-                    **spine_dependencies,
-                    "dimension_inventory": inventories["ai_readiness"],
-                },
-                batch_rows=batch_rows,
-                expected_work_files=expected_work_files,
-                receipt_registry=sidecar_receipts,
-            )
-            sidecars["derived_quality"] = _seal_keyed_sidecar(
-                connection=connection,
-                spine_part=spine_part,
-                dimension=dimension_paths["derived_assertions"],
-                output_part=part_directory / "derived_quality.parquet",
-                start=start,
-                stop=stop,
-                spine_key="gbifID",
-                dimension_key="gbifID",
-                output_column="derived_quality",
-                excluded={"dimension_ordinal", "gbifID"},
-                required_match=False,
-                dependencies={
-                    **spine_dependencies,
-                    "dimension_inventory": inventories[
-                        "derived_assertions"
-                    ],
-                },
-                batch_rows=batch_rows,
-                expected_work_files=expected_work_files,
-                receipt_registry=sidecar_receipts,
-            )
+            for name, global_path in global_sidecars.items():
+                window_path = part_directory / f"{name}.parquet"
+                receipt = seal_global_sidecar_window(
+                    global_sidecar=global_path,
+                    validated_global_receipt=global_receipts[name],
+                    output_part=window_path,
+                    source_start_ordinal=start,
+                    source_stop_ordinal=stop,
+                    dependencies={
+                        **spine_dependencies,
+                        "global_sidecar_part_id": global_receipts[name][
+                            "part_id"
+                        ],
+                    },
+                    batch_rows=batch_rows,
+                )
+                sidecars[name] = window_path
+                sidecar_receipts[name] = receipt
+                _record_sealed_files(
+                    expected_work_files,
+                    window_path,
+                    receipt,
+                )
 
             species_path = part_directory / "species_enrichment.parquet"
             species_receipt = seal_null_safe_composite_dimension_window(
@@ -476,48 +461,6 @@ def build_bounded_final_from_spine(
     if validated != manifest:
         raise RuntimeError("bounded final validation changed the manifest")
     return manifest
-
-
-def _seal_keyed_sidecar(
-    *,
-    connection: duckdb.DuckDBPyConnection,
-    spine_part: Path,
-    dimension: Path | tuple[Path, ...],
-    output_part: Path,
-    start: int,
-    stop: int,
-    spine_key: str,
-    dimension_key: str,
-    output_column: str,
-    excluded: set[str],
-    required_match: bool,
-    dependencies: Mapping[str, object],
-    batch_rows: int,
-    expected_work_files: set[Path],
-    receipt_registry: dict[str, dict[str, Any]],
-) -> Path:
-    receipt = seal_keyed_dimension_window(
-        connection=connection,
-        spine_part=spine_part,
-        dimension=dimension,
-        output_part=output_part,
-        source_start_ordinal=start,
-        source_stop_ordinal=stop,
-        spine_key=spine_key,
-        dimension_key=dimension_key,
-        output_column=output_column,
-        excluded_dimension_columns=excluded,
-        required_match=required_match,
-        dependencies=dependencies,
-        batch_rows=batch_rows,
-    )
-    _record_sealed_files(
-        expected_work_files,
-        output_part,
-        receipt,
-    )
-    receipt_registry[output_column] = receipt
-    return output_part
 
 
 def _record_sealed_files(

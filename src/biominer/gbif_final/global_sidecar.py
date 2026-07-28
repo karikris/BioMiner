@@ -219,6 +219,7 @@ def seal_global_keyed_dimension(
 def seal_global_sidecar_window(
     *,
     global_sidecar: str | Path,
+    validated_global_receipt: Mapping[str, object] | None = None,
     output_part: str | Path,
     source_start_ordinal: int,
     source_stop_ordinal: int,
@@ -237,7 +238,16 @@ def seal_global_sidecar_window(
     source_receipt_path = source.with_suffix(
         source.suffix + ".receipt.json"
     )
-    source_receipt = validate_part_receipt(source_receipt_path)
+    source_receipt = (
+        dict(validated_global_receipt)
+        if validated_global_receipt is not None
+        else validate_part_receipt(source_receipt_path)
+    )
+    if (
+        source_receipt.get("artifact", {}).get("path") != source.name
+        or not source_receipt_path.is_file()
+    ):
+        raise RuntimeError("validated global sidecar receipt is inconsistent")
     if int(source_receipt["source_start_ordinal"]) != 0:
         raise RuntimeError("global sidecar does not begin at source ordinal zero")
     stop = source_stop_ordinal
