@@ -9,7 +9,10 @@ from biominer.gbif_final.bounded import (
 )
 from biominer.gbif_final.pipeline import build_final_parquet, build_species_enrichments
 from biominer.gbif_final.spine import build_source_spine
-from biominer.gbif_final.windowed import seal_keyed_dimension_window
+from biominer.gbif_final.windowed import (
+    seal_keyed_dimension_window,
+    seal_ordinal_aligned_window,
+)
 
 __all__ = [
     "assemble_parts",
@@ -20,5 +23,6 @@ __all__ = [
     "seal_record_batches",
     "seal_part",
     "seal_keyed_dimension_window",
+    "seal_ordinal_aligned_window",
     "validate_part_receipt",
 ]

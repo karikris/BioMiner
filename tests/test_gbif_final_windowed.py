@@ -7,7 +7,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from biominer.gbif_final.windowed import seal_keyed_dimension_window
+from biominer.gbif_final.windowed import (
+    seal_keyed_dimension_window,
+    seal_ordinal_aligned_window,
+)
 
 
 def _write(path: Path, values: dict[str, list[object]]) -> Path:
@@ -213,3 +216,105 @@ def test_windowed_dimension_join_resumes_verified_part(
 
     assert first == second
     assert output.stat().st_mtime_ns == mtime
+
+
+def test_ordinal_aligned_window_combines_sealed_sidecars(
+    tmp_path: Path,
+) -> None:
+    spine = _write(
+        tmp_path / "spine.parquet",
+        {
+            "source_ordinal": [4, 5, 6],
+            "source_row_id": ["s4", "s5", "s6"],
+            "media_assertion_id": ["m4", "m5", "m6"],
+        },
+    )
+    media = _write(
+        tmp_path / "media.parquet",
+        {
+            "source_ordinal": [4, 5, 6],
+            "media_quality": [{"status": "A"}, {"status": "B"}, {"status": "C"}],
+        },
+    )
+    rights = _write(
+        tmp_path / "rights.parquet",
+        {
+            "source_ordinal": [4, 5, 6],
+            "rights_quality": [{"allowed": True}, {"allowed": False}, None],
+        },
+    )
+    output = tmp_path / "enrichment.parquet"
+    connection = duckdb.connect()
+    try:
+        receipt = seal_ordinal_aligned_window(
+            connection=connection,
+            spine_part=spine,
+            sidecar_parts={
+                "media_quality": media,
+                "rights_quality": rights,
+            },
+            output_part=output,
+            source_start_ordinal=4,
+            source_stop_ordinal=7,
+            spine_columns=("source_row_id", "media_assertion_id"),
+            dependencies={"run": "sha256:run"},
+            batch_rows=2,
+        )
+    finally:
+        connection.close()
+
+    assert receipt["artifact"]["row_group_rows"] == [2, 1]
+    table = pq.read_table(output)
+    assert table.column_names == [
+        "source_ordinal",
+        "source_row_id",
+        "media_assertion_id",
+        "media_quality",
+        "rights_quality",
+    ]
+    assert table["source_ordinal"].to_pylist() == [4, 5, 6]
+    assert table["media_quality"].to_pylist() == [
+        {"status": "A"},
+        {"status": "B"},
+        {"status": "C"},
+    ]
+
+
+def test_ordinal_aligned_window_rejects_sidecar_gap_even_if_count_matches(
+    tmp_path: Path,
+) -> None:
+    spine = _write(
+        tmp_path / "spine.parquet",
+        {
+            "source_ordinal": [0, 1, 2],
+            "source_row_id": ["s0", "s1", "s2"],
+        },
+    )
+    invalid = _write(
+        tmp_path / "invalid.parquet",
+        {
+            "source_ordinal": [0, 0, 2],
+            "quality": ["a", "duplicate", "c"],
+        },
+    )
+    output = tmp_path / "enrichment.parquet"
+    connection = duckdb.connect()
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="sidecar quality source ordinals are incomplete or duplicated",
+        ):
+            seal_ordinal_aligned_window(
+                connection=connection,
+                spine_part=spine,
+                sidecar_parts={"quality": invalid},
+                output_part=output,
+                source_start_ordinal=0,
+                source_stop_ordinal=3,
+                spine_columns=("source_row_id",),
+                dependencies={"run": "sha256:run"},
+            )
+    finally:
+        connection.close()
+
+    assert not output.exists()

@@ -254,6 +254,177 @@ def seal_keyed_dimension_window(
         _drop_temporary_tables(connection)
 
 
+def seal_ordinal_aligned_window(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    spine_part: str | Path,
+    sidecar_parts: Mapping[str, str | Path],
+    output_part: str | Path,
+    source_start_ordinal: int,
+    source_stop_ordinal: int,
+    spine_columns: tuple[str, ...],
+    dependencies: Mapping[str, object],
+    batch_rows: int = 65_536,
+) -> dict[str, Any]:
+    """Stream one exact source-ordinal window from validated sidecar columns."""
+
+    if source_start_ordinal < 0 or source_stop_ordinal <= source_start_ordinal:
+        raise ValueError("source ordinal range must be non-empty and increasing")
+    if batch_rows <= 0:
+        raise ValueError("batch_rows must be positive")
+    if not sidecar_parts:
+        raise ValueError("sidecar_parts must be non-empty")
+    if not dependencies:
+        raise ValueError("dependencies must be non-empty")
+    if "ordinal_alignment_contract" in dependencies:
+        raise ValueError(
+            "dependencies may not override ordinal_alignment_contract"
+        )
+    if len(spine_columns) != len(set(spine_columns)):
+        raise ValueError("spine_columns must be unique")
+    if "source_ordinal" in spine_columns:
+        raise ValueError("source_ordinal is added automatically")
+    if "source_ordinal" in sidecar_parts:
+        raise ValueError("source_ordinal cannot be a sidecar output column")
+
+    start = source_start_ordinal
+    stop = source_stop_ordinal
+    expected_rows = stop - start
+    spine_path = Path(spine_part).resolve()
+    output_path = Path(output_part).resolve()
+    spine_file = _open_parquet(spine_path)
+    _require_columns(
+        spine_file.schema_arrow,
+        ("source_ordinal", *spine_columns),
+        label="source spine",
+    )
+    sidecars: list[tuple[str, Path, pq.ParquetFile]] = []
+    for output_column, raw_path in sidecar_parts.items():
+        if not output_column:
+            raise ValueError("sidecar output columns must be non-empty")
+        path = Path(raw_path).resolve()
+        parquet = _open_parquet(path)
+        _require_columns(
+            parquet.schema_arrow,
+            ("source_ordinal", output_column),
+            label=f"sidecar {output_column}",
+        )
+        sidecars.append((output_column, path, parquet))
+
+    _validate_ordinal_file(
+        connection=connection,
+        path=spine_path,
+        expected_rows=expected_rows,
+        source_start_ordinal=start,
+        source_stop_ordinal=stop,
+        label="source spine",
+    )
+    for output_column, path, _ in sidecars:
+        _validate_ordinal_file(
+            connection=connection,
+            path=path,
+            expected_rows=expected_rows,
+            source_start_ordinal=start,
+            source_stop_ordinal=stop,
+            label=f"sidecar {output_column}",
+        )
+
+    contract = {
+        "schema_version": WINDOWED_DIMENSION_VERSION,
+        "operation": "ordinal_aligned_window",
+        "spine_columns": list(spine_columns),
+        "spine_schema_fingerprint": _schema_fingerprint(
+            spine_file.schema_arrow
+        ),
+        "sidecars": [
+            {
+                "output_column": output_column,
+                "schema_fingerprint": _schema_fingerprint(
+                    parquet.schema_arrow
+                ),
+                "output_type": str(
+                    parquet.schema_arrow.field(output_column).type
+                ),
+            }
+            for output_column, _, parquet in sidecars
+        ],
+    }
+    effective_dependencies = {
+        **dict(dependencies),
+        "ordinal_alignment_contract": {
+            **contract,
+            "contract_fingerprint": canonical_semantic_fingerprint(contract),
+        },
+    }
+
+    receipt_path = output_path.with_suffix(
+        output_path.suffix + ".receipt.json"
+    )
+    if output_path.exists() != receipt_path.exists():
+        raise RuntimeError(
+            f"ordinal-aligned window is only partially sealed: {output_path}"
+        )
+    expected_names = [
+        "source_ordinal",
+        *spine_columns,
+        *(output_column for output_column, _, _ in sidecars),
+    ]
+    if output_path.exists():
+        receipt = validate_part_receipt(
+            receipt_path,
+            expected_dependencies=effective_dependencies,
+        )
+        if (
+            int(receipt["source_start_ordinal"]) != start
+            or int(receipt["source_stop_ordinal"]) != stop
+            or int(receipt["artifact"]["row_count"]) != expected_rows
+        ):
+            raise RuntimeError(
+                f"ordinal-aligned receipt has a stale range: {output_path}"
+            )
+        if pq.ParquetFile(output_path).schema_arrow.names != expected_names:
+            raise RuntimeError(
+                f"ordinal-aligned receipt has a stale schema: {output_path}"
+            )
+        return receipt
+
+    select_values = [
+        "s.source_ordinal",
+        *(
+            f"s.{_quoted(column)}"
+            for column in spine_columns
+        ),
+        *(
+            f"d{index}.{_quoted(output_column)} AS "
+            f"{_quoted(output_column)}"
+            for index, (output_column, _, _) in enumerate(sidecars)
+        ),
+    ]
+    joins = [
+        f"INNER JOIN read_parquet(?) AS d{index} USING (source_ordinal)"
+        for index in range(len(sidecars))
+    ]
+    query = f"""
+        SELECT {", ".join(select_values)}
+        FROM read_parquet(?) AS s
+        {" ".join(joins)}
+        ORDER BY s.source_ordinal
+    """
+    reader = connection.execute(
+        query,
+        [str(spine_path), *(str(path) for _, path, _ in sidecars)],
+    ).to_arrow_reader(batch_size=batch_rows)
+    return seal_record_batches(
+        batches=reader,
+        schema=reader.schema,
+        part_path=output_path,
+        source_start_ordinal=start,
+        source_stop_ordinal=stop,
+        dependencies=effective_dependencies,
+        row_group_size=batch_rows,
+    )
+
+
 def _validate_source_window(
     *,
     connection: duckdb.DuckDBPyConnection,
@@ -291,6 +462,49 @@ def _validate_source_window(
     if not valid:
         raise RuntimeError(
             "source-spine ordinal window is incomplete or duplicated"
+        )
+
+
+def _validate_ordinal_file(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    path: Path,
+    expected_rows: int,
+    source_start_ordinal: int,
+    source_stop_ordinal: int,
+    label: str,
+) -> None:
+    (
+        rows,
+        distinct_ordinals,
+        minimum_ordinal,
+        maximum_ordinal,
+        ordinal_sum,
+    ) = connection.execute(
+        """
+        SELECT
+          count(*),
+          count(DISTINCT source_ordinal),
+          min(source_ordinal),
+          max(source_ordinal),
+          sum(source_ordinal)
+        FROM read_parquet(?)
+        """,
+        [str(path)],
+    ).fetchone()
+    expected_sum = (
+        source_start_ordinal + source_stop_ordinal - 1
+    ) * expected_rows // 2
+    valid = (
+        int(rows) == expected_rows
+        and int(distinct_ordinals) == expected_rows
+        and int(minimum_ordinal) == source_start_ordinal
+        and int(maximum_ordinal) == source_stop_ordinal - 1
+        and int(ordinal_sum) == expected_sum
+    )
+    if not valid:
+        raise RuntimeError(
+            f"{label} source ordinals are incomplete or duplicated"
         )
 
 
@@ -350,4 +564,5 @@ def _schema_fingerprint(schema: pa.Schema) -> str:
 __all__ = [
     "WINDOWED_DIMENSION_VERSION",
     "seal_keyed_dimension_window",
+    "seal_ordinal_aligned_window",
 ]
