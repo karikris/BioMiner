@@ -24,11 +24,12 @@ are wasteful for a bulk computer-to-computer handoff.
 
 ## Direct GBIF handoff from WSL2 to macOS
 
-For a Mac reachable over SSH, transfer only the validated publication and its
-sealed audit. Do not transfer `.current.staging`, DuckDB temp spill, old
-intermediate Parquets, mutable resolver work state, or the 38 GB superseded
-set. Parquet is already compressed; rebuilding it, recompressing it, or
-materializing a second database before transfer only adds I/O.
+For a Mac reachable over SSH, transfer only the validated publication, its
+sealed audit, and the slim locator index. Do not transfer `.current.staging`,
+DuckDB temp spill, old intermediate Parquets, mutable resolver work state, or
+the 38 GB superseded set. Parquet is already compressed; rebuilding it,
+recompressing it, or materializing a second full-width database before
+transfer only adds I/O.
 
 On the Mac, enable Remote Login and prepare the destination:
 
@@ -49,6 +50,10 @@ rsync -ah --partial --append-verify --info=progress2 \
 rsync -ah --partial --append-verify --info=progress2 \
   data/derived/gbif_media_final/audit-v1/ \
   "${MAC_TRANSFER_USER}@${MAC_TRANSFER_HOST}:BioMiner-data/gbif_media_final/audit-v1/"
+
+rsync -ah --partial --append-verify --info=progress2 \
+  data/derived/gbif_media_final/locator-v1/ \
+  "${MAC_TRANSFER_USER}@${MAC_TRANSFER_HOST}:BioMiner-data/gbif_media_final/locator-v1/"
 ```
 
 Rerun the same commands after an interruption. `rsync` resumes the partial
@@ -70,11 +75,18 @@ uv run python scripts/validate_gbif_final_publication.py \
   --primary-publication-directory ~/BioMiner-data/gbif_media_final/current \
   --repository-root . \
   --allow-cleaned-dependencies
+
+uv run python scripts/validate_gbif_final_locator_index.py \
+  --index-directory ~/BioMiner-data/gbif_media_final/locator-v1 \
+  --publication-audit-directory ~/BioMiner-data/gbif_media_final/audit-v1 \
+  --publication-directory ~/BioMiner-data/gbif_media_final/current \
+  --repository-root . \
+  --allow-cleaned-dependencies
 ```
 
 If both machines are not online together, use the content-addressed object
 handoff below. Its source set should still contain only `current/` and
-`audit-v1/`; never package the live staging or spill tree.
+`audit-v1/` plus `locator-v1/`; never package the live staging or spill tree.
 
 ## Producer workflow
 

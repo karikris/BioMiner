@@ -153,6 +153,21 @@ uv run python scripts/audit_gbif_final_enriched.py \
   --threads 4
 ```
 
+Build the slim locator after the audit and before deleting any audited input.
+It retains only stable IDs, direct/reference URLs, and species keys in DuckDB;
+the full enriched rows remain solely in Parquet. URL, GBIF ID, species-key,
+and registry-taxon-key indexes are reopened, benchmarked, and checksum-bound.
+
+```bash
+uv run python scripts/build_gbif_final_locator_index.py \
+  --publication-directory data/derived/gbif_media_final/current \
+  --publication-audit-directory data/derived/gbif_media_final/audit-v1 \
+  --output-directory data/derived/gbif_media_final/locator-v1 \
+  --repository-root . \
+  --memory-limit 8GB \
+  --threads 4
+```
+
 The superseded-artifact cleanup is dry-run by default. It permits only the 13
 named v1/v2 and pre-rights intermediate directories encoded in
 `superseded_cleanup.py`. It explicitly protects v3, v4, the rights-filtered
