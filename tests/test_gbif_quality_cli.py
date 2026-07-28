@@ -106,7 +106,7 @@ def test_quality_provider_registry_is_offline_by_construction() -> None:
 def test_quality_provider_archives_are_pinned_and_bounded() -> None:
     args = build_parser().parse_args([COMMAND, "provider-archives"])
 
-    assert args.output_directory.endswith("provider_enrichment_v3")
+    assert args.output_directory.endswith("provider_enrichment_v4")
     assert args.archive_manifest.endswith(
         "gbif_provider_archives/v1/manifest.json"
     )

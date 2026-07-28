@@ -143,7 +143,7 @@ def add_gbif_quality_parser(
     )
     _add_publication_arguments(provider_archives)
     provider_archives.set_defaults(
-        output_directory=f"{DEFAULT_DATA_ROOT}/provider_enrichment_v3"
+        output_directory=f"{DEFAULT_DATA_ROOT}/provider_enrichment_v4"
     )
     provider_archives.add_argument(
         "--archive-manifest",
@@ -513,7 +513,7 @@ def _default_output_name(stage: str) -> str:
         "review-capsules": "quality_results/review_capsules",
         "incremental": "incremental_state",
         "freshness": "freshness",
-        "provider-archives": "provider_enrichment_v3",
+        "provider-archives": "provider_enrichment_v4",
     }[stage]
 
 
