@@ -357,8 +357,10 @@ def build_final_parquet(
 
     final_path = staging / FINAL_FILENAME
     con = duckdb.connect()
-    con.execute("SET threads=8")
-    con.execute("SET memory_limit='24GB'")
+    con.execute("SET threads=4")
+    con.execute("SET memory_limit='32GB'")
+    con.execute("SET preserve_insertion_order=false")
+    con.execute("SET temp_directory=?", [str(staging / ".duckdb_tmp")])
     media_quality = quality / "media_assertion_quality/media_assertion_quality.parquet"
     occurrence_quality = quality / "occurrence_quality/occurrence_quality.parquet"
     rights = quality / "rights_and_attribution/media_rights.parquet"
@@ -434,7 +436,6 @@ def build_final_parquet(
           LEFT JOIN read_parquet(?) se
             ON coalesce(t.speciesKey, '') = coalesce(se.dataset_species_key, '')
            AND coalesce(t.species, '') = coalesce(se.dataset_species, '')
-          ORDER BY i.source_row_id
         ) TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
     """
     params = [
