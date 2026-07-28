@@ -52,3 +52,27 @@ def test_provider_registry_withholds_unexecuted_enrichment(tmp_path) -> None:
     assert {row["execution_status"] for row in rows} == {"NOT_TESTED"}
     assert manifest["counts"] == {"registered_adapters": 7, "executed_adapters": 0}
     assert manifest["network_requests"] == 0
+
+
+def test_prioritized_adapters_match_source_provider_labels() -> None:
+    source_labels = {
+        "Vermont Center for Ecostudies",
+        "Tiroler Landesmuseum Ferdinandeum",
+        "Fotografía y Biodiversidad",
+        (
+            "Styrelsen for Grøn Arealomlægning og Vandmiljø/"
+            "The Danish Agency for Green Land Use and Aquatic Environment (SGAV)"
+        ),
+        "The International Barcode of Life Consortium",
+        "SwissNatColl",
+        "NatureMapr",
+    }
+
+    assert all(
+        sum(
+            adapter.supports(label)
+            for adapter in DEFAULT_PROVIDER_METADATA_ADAPTERS
+        )
+        == 1
+        for label in source_labels
+    )

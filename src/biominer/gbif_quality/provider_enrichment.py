@@ -124,23 +124,52 @@ class StructuredProviderMetadataAdapter:
         )
 
 
-DEFAULT_PROVIDER_METADATA_ADAPTERS: tuple[StructuredProviderMetadataAdapter, ...] = tuple(
+_PROVIDER_ADAPTER_SPECS = (
+    (
+        "vermont_center_for_ecostudies",
+        "Vermont Center for Ecostudies",
+        (),
+    ),
+    (
+        "tiroler_landesmuseum",
+        "Tiroler Landesmuseum Ferdinandeum",
+        (),
+    ),
+    (
+        "fotografia_y_biodiversidad",
+        "Fotografía y Biodiversidad",
+        (),
+    ),
+    (
+        "danish_sgav",
+        "Danish SGAV",
+        (
+            "Styrelsen for Grøn Arealomlægning og Vandmiljø/"
+            "The Danish Agency for Green Land Use and Aquatic Environment (SGAV)",
+        ),
+    ),
+    (
+        "international_barcode_of_life",
+        "International Barcode of Life",
+        ("The International Barcode of Life Consortium",),
+    ),
+    ("swissnatcoll", "SwissNatColl", ()),
+    ("naturemapr", "NatureMapr", ()),
+)
+
+
+DEFAULT_PROVIDER_METADATA_ADAPTERS: tuple[
+    StructuredProviderMetadataAdapter, ...
+] = tuple(
     StructuredProviderMetadataAdapter(
         adapter_id=adapter_id,
-        version=f"{adapter_id}/v1",
+        version=f"{adapter_id}/v2",
         priority=priority,
         provider_name=provider,
+        aliases=aliases,
     )
-    for priority, (adapter_id, provider) in enumerate(
-        (
-            ("vermont_center_for_ecostudies", "Vermont Center for Ecostudies"),
-            ("tiroler_landesmuseum", "Tiroler Landesmuseum Ferdinandeum"),
-            ("fotografia_y_biodiversidad", "Fotografía y Biodiversidad"),
-            ("danish_sgav", "Danish SGAV"),
-            ("international_barcode_of_life", "International Barcode of Life"),
-            ("swissnatcoll", "SwissNatColl"),
-            ("naturemapr", "NatureMapr"),
-        ),
+    for priority, (adapter_id, provider, aliases) in enumerate(
+        _PROVIDER_ADAPTER_SPECS,
         start=1,
     )
 )
