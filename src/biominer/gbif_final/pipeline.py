@@ -425,12 +425,12 @@ def build_final_parquet(
             ON t.gbifID IS NOT DISTINCT FROM i.gbifID
            AND t.media_identifier IS NOT DISTINCT FROM i.media_identifier
            AND t.media_references IS NOT DISTINCT FROM i.media_references
-          LEFT JOIN read_parquet(?) oq USING (gbifID)
-          LEFT JOIN read_parquet(?) mq USING (media_assertion_id)
-          LEFT JOIN read_parquet(?) rq USING (media_assertion_id)
-          LEFT JOIN read_parquet(?) dq USING (media_assertion_id)
-          LEFT JOIN read_parquet(?) ar USING (media_assertion_id)
-          LEFT JOIN derived_by_occurrence da USING (gbifID)
+          LEFT JOIN read_parquet(?) oq ON t.gbifID = oq.gbifID
+          LEFT JOIN read_parquet(?) mq ON i.media_assertion_id = mq.media_assertion_id
+          LEFT JOIN read_parquet(?) rq ON i.media_assertion_id = rq.media_assertion_id
+          LEFT JOIN read_parquet(?) dq ON i.media_assertion_id = dq.media_assertion_id
+          LEFT JOIN read_parquet(?) ar ON i.media_assertion_id = ar.media_assertion_id
+          LEFT JOIN derived_by_occurrence da ON t.gbifID = da.gbifID
           LEFT JOIN read_parquet(?) se
             ON coalesce(t.speciesKey, '') = coalesce(se.dataset_species_key, '')
            AND coalesce(t.species, '') = coalesce(se.dataset_species, '')
