@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import hashlib
 import json
 from pathlib import Path
 
@@ -90,6 +91,45 @@ def _write_source(path: Path) -> None:
         ),
         path,
     )
+
+
+def _write_pilot_acceptance(directory: Path, source: Path) -> Path:
+    artifact = directory / "pilot-gates.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "gate_id": ["PILOT_001"],
+                "status": ["PASS"],
+            }
+        ),
+        artifact,
+    )
+    artifact_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    manifest = directory / "pilot-acceptance.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "biominer-gbif-media-url-pilot-execution-audit/v1",
+                "source_snapshot_id": "sha256:" + source_sha,
+                "overall_acceptance_status": "PASS",
+                "artifacts": [
+                    {
+                        "path": artifact.name,
+                        "sha256": artifact_sha,
+                    }
+                ],
+                "validation": {
+                    "all_resolved_rows_reviewed": True,
+                    "rights_blocked_zero_attempts": True,
+                    "unresolved_reasons_complete": True,
+                    "manifest_written_last": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def test_source_row_id_is_trimmed_and_source_bound() -> None:
@@ -201,6 +241,13 @@ def test_cli_requires_explicit_network_and_full_queue_opt_in() -> None:
     ])
     with pytest.raises(ValueError, match="--allow-full-queue"):
         run_gbif_media_resolution_command(full)
+    full_without_accepted_pilot = parser.parse_args([
+        COMMAND, "prepare", "--source", "x", "--source-manifest", "m",
+        "--output-root", "o", "--run-id", "r", "--mode", "full",
+        "--allow-full-queue",
+    ])
+    with pytest.raises(ValueError, match="pilot acceptance manifest"):
+        run_gbif_media_resolution_command(full_without_accepted_pilot)
     work = parser.parse_args([
         COMMAND, "work", "--output-root", "o", "--run-id", "r",
         "--worker-id", "w",
@@ -460,6 +507,7 @@ def test_prepare_worker_finalize_and_publish_v4(tmp_path: Path) -> None:
     state = SQLiteWorkStore(tmp_path / "state.sqlite")
     _write_source(source)
     source_manifest.write_text("{}\n", encoding="utf-8")
+    pilot_acceptance = _write_pilot_acceptance(tmp_path, source)
 
     prepared = prepare_resolution(
         source=source,
@@ -469,10 +517,13 @@ def test_prepare_worker_finalize_and_publish_v4(tmp_path: Path) -> None:
         run_id="fixture-run",
         expected_missing_rows=3,
         enqueue_batch_rows=2,
+        mode="full",
+        pilot_acceptance_manifest=pilot_acceptance,
         resolver_config=ResolverConfig(max_attempts=1),
     )
     assert prepared["input_rows"] == 3
     assert prepared["rights_blocked_rows"] == 1
+    assert prepared["pilot_acceptance_manifest_sha256"]
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "api.gbif.org":

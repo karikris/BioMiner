@@ -100,9 +100,10 @@ def prepare_resolution(
     run_id: str,
     expected_missing_rows: int | None = 130_689,
     enqueue_batch_rows: int = 1_000,
-    mode: str = "full",
+    mode: str = "pilot",
     expected_rights_blocked_rows: int | None = None,
     resolver_config: ResolverConfig | None = None,
+    pilot_acceptance_manifest: str | Path | None = None,
 ) -> dict[str, Any]:
     source_path = Path(source).resolve()
     manifest_path = Path(source_manifest).resolve()
@@ -122,6 +123,11 @@ def prepare_resolution(
     source_file = pq.ParquetFile(source_path)
     _require_columns(source_file.schema_arrow, REQUIRED_SOURCE_COLUMNS)
     source_sha = "sha256:" + _sha256(source_path)
+    pilot_acceptance = _validate_pilot_acceptance(
+        pilot_acceptance_manifest,
+        source_sha256=source_sha,
+        required=mode == "full",
+    )
     source_manifest_sha = "sha256:" + _sha256(manifest_path)
     effective_resolver_config = resolver_config or ResolverConfig()
     resolver_fingerprint = canonical_semantic_fingerprint(
@@ -219,6 +225,12 @@ def prepare_resolution(
         ],
         "resolver_fingerprint": resolver_fingerprint,
         "baseline_maturity": "legacy_v3_migration_not_ground_zero_production",
+        "pilot_acceptance_manifest": (
+            str(pilot_acceptance["path"]) if pilot_acceptance is not None else None
+        ),
+        "pilot_acceptance_manifest_sha256": (
+            pilot_acceptance["sha256"] if pilot_acceptance is not None else None
+        ),
     }
     run = workstore.get_or_create_run(
         job_name=JOB_NAME,
@@ -1024,6 +1036,56 @@ def _require_columns(schema: pa.Schema, columns: Iterable[str]) -> None:
     for column in columns:
         if schema.get_field_index(column) < 0:
             raise ValueError(f"source has no {column} column")
+
+
+def _validate_pilot_acceptance(
+    manifest: str | Path | None,
+    *,
+    source_sha256: str,
+    required: bool,
+) -> dict[str, object] | None:
+    if manifest is None:
+        if required:
+            raise ValueError(
+                "full resolution mode requires a PASS pilot acceptance manifest"
+            )
+        return None
+    path = Path(manifest).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        value.get("schema_version")
+        != "biominer-gbif-media-url-pilot-execution-audit/v1"
+    ):
+        raise ValueError("pilot acceptance manifest schema is unsupported")
+    if value.get("overall_acceptance_status") != "PASS":
+        raise ValueError("pilot acceptance manifest is not PASS")
+    if value.get("source_snapshot_id") != source_sha256:
+        raise ValueError("pilot acceptance manifest belongs to another source snapshot")
+    required_validation = (
+        "all_resolved_rows_reviewed",
+        "rights_blocked_zero_attempts",
+        "unresolved_reasons_complete",
+        "manifest_written_last",
+    )
+    validation = value.get("validation") or {}
+    if not all(validation.get(name) is True for name in required_validation):
+        raise ValueError("pilot acceptance manifest validation is incomplete")
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ValueError("pilot acceptance manifest has no artifacts")
+    for artifact in artifacts:
+        artifact_path = path.parent / str(artifact.get("path", ""))
+        expected = str(artifact.get("sha256", ""))
+        if not artifact_path.is_file() or _sha256(artifact_path) != expected:
+            raise ValueError(
+                f"pilot acceptance artifact checksum mismatch: {artifact_path}"
+            )
+    return {
+        "path": path,
+        "sha256": "sha256:" + _sha256(path),
+    }
 
 
 def _trimmed(value: object | None) -> str | None:

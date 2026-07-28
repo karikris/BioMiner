@@ -48,6 +48,10 @@ def add_gbif_media_resolution_parser(
         action="store_true",
         help="explicitly allow enqueueing the full resolver workload",
     )
+    prepare.add_argument(
+        "--pilot-acceptance-manifest",
+        help="required PASS execution-audit manifest before full-queue preparation",
+    )
     _add_resolver_arguments(prepare)
 
     worker = stages.add_parser("work", help="resolve one or more bounded batches")
@@ -110,6 +114,10 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
     if stage == "prepare":
         if args.mode == "full" and not args.allow_full_queue:
             raise ValueError("full queue preparation requires --allow-full-queue")
+        if args.mode == "full" and not args.pilot_acceptance_manifest:
+            raise ValueError(
+                "full queue preparation requires a PASS pilot acceptance manifest"
+            )
         resolver_config = _resolver_config(args)
         result = prepare_resolution(
             source=args.source,
@@ -122,6 +130,7 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             mode=args.mode,
             expected_rights_blocked_rows=args.expected_rights_blocked_rows,
             resolver_config=resolver_config,
+            pilot_acceptance_manifest=args.pilot_acceptance_manifest,
         )
     elif stage == "work":
         if not args.execute_network:
