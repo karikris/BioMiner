@@ -1,6 +1,6 @@
 # GBIF media quality v4 implementation plan
 
-Status: active implementation plan
+Status: implemented; current local acceptance audit is 42/42 PASS
 
 This plan governs the production-grade audit of the immutable rights-filtered
 GBIF media database v3. It is subordinate to the repository scientific and
@@ -16,7 +16,7 @@ ground-zero biological evidence lineage.
 | Rights-filtered v3 Parquet | SHA-256 `c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f`; 16,612,063 rows, 11,569,412 `gbifID` values, 114 columns | Immutable audited population |
 | Intake audit v1 | Archive, members, Parquets, row groups, schemas, and join coverage recorded; producer worktree was dirty | Revalidate with committed v4 code |
 | URL resolver | Source-bound identities, attempt/result sidecars, bounded probes, provider adapters, workstore, create-only publication | Reuse and harden as a v4 substage |
-| Resolver pilot | Deterministically prepared 823 work rows; 95 were rights-blocked; no executed results or manual review artifact exists | Regenerate from pinned inputs, then execute only as an opt-in live phase |
+| Resolver pilot | Executed 823 fixed work rows: 764 network-eligible, 59 rights-blocked, 217 resolved, 547 eligible unresolved/non-image outcomes, and 2,068 stored attempts; all 217 resolutions passed structured-evidence review with zero wrong-occurrence substitutions | Preserve the checksum-bound execution and review audit; do not describe it as human visual inspection |
 | Reference-only tail | 130,689 rows; 126,634 non-rights-blocked and 4,055 explicitly rights-blocked | Record rights status separately from URL/network eligibility |
 | Temporal v1 | Exact candidate counts reproduced, but 2,236 rows were excluded as pre-1960 | Do not consume; v4 retains and flags ancient records |
 
@@ -42,7 +42,7 @@ data/derived/gbif_media_database/v4/
   checkpoints/
   manifest.json
 
-reports/gbif_media_database/v4/
+reports/gbif_media_database/v4_final_20260729/
   source_funnel.md
   ... nineteen other required reports ...
   manifest.json
@@ -125,6 +125,8 @@ Completion is proved from stored evidence rather than report prose:
   decisions, uncertainty intervals, and an explicit record of whether a broad
   network run occurred.
 
-The final audit cannot be declared complete until the 42 global acceptance
-criteria and 20 required reports each point to authoritative current-run
-evidence.
+The current executable audit records all 42 global acceptance criteria as
+`PASS` and the final report manifest binds the 20 required reports (19
+Markdown reports plus the manifest) to current-run evidence. The 126,634-row
+resolver tail and any broad existing-URL run remain separate, explicit, future
+operations.

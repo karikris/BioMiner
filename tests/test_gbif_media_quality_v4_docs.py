@@ -3,6 +3,7 @@ from pathlib import Path
 
 ADR = Path("docs/adr/gbif_media_quality_v4.md")
 PLAN = Path("docs/gbif_media_quality_v4_plan.md")
+OPERATIONS = Path("docs/gbif_media_quality_v4_operations.md")
 
 
 def test_v4_adr_preserves_scope_and_source_assertions() -> None:
@@ -62,11 +63,27 @@ def test_v4_plan_maps_runtime_and_source_control_ownership() -> None:
 
     for required in (
         "data/derived/gbif_media_database/v4/",
-        "reports/gbif_media_database/v4/",
+        "reports/gbif_media_database/v4_final_20260729/",
         "src/biominer/gbif_quality/",
         "src/biominer/gbif_media_resolution/",
         "src/biominer/workstore/",
         "42 global acceptance",
         "20 required reports",
+    ):
+        assert required in text
+
+
+def test_v4_operations_records_current_pilot_and_acceptance_evidence() -> None:
+    text = " ".join(OPERATIONS.read_text(encoding="utf-8").split())
+
+    for required in (
+        "764 network-eligible",
+        "59 explicitly rights-blocked",
+        "2,068 bounded network attempts",
+        "217 resolved rows",
+        "agent structured-evidence review",
+        "126,634-row eligible tail has not been executed",
+        "reports/gbif_media_database/v4_final_20260729/",
+        "quality_results/global_acceptance_v3/",
     ):
         assert required in text

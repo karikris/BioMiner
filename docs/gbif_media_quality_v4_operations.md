@@ -1,6 +1,6 @@
 # GBIF media quality v4 operations and data dictionary
 
-Status: implemented local metadata pipeline; live resolver gate `NOT_TESTED`
+Status: full local metadata pipeline accepted; bounded resolver pilot passed
 
 The authoritative local population is the immutable 114-column v3 Parquet:
 16,612,063 multimedia assertions linked to 11,569,412 GBIF occurrences. v4
@@ -37,6 +37,9 @@ not treated as an ordinary repairable null.
 | `provider_enrichment_v4/provider_conflicts.parquet` | conflicting item field | Current provider item values that disagree with preserved v3 values |
 | `provider_enrichment_v4/provider_media_outcomes.parquet` | prioritized-provider media assertion | One retained outcome for every targeted row, including unmatched, core-only, and unavailable archives |
 | `provider_enrichment_v4/provider_field_summary.parquet` | provider dataset and media field | Before/after missingness, direct item evidence, conflicts, and unresolved counts |
+| `quality_results/phase4_pilot_execution/v1/audit/*` | resolver pilot result, review, gate, provider, and URL pattern | Executed 823-row pilot evidence, including every terminal outcome and reviewed resolution |
+| `quality_results/restart_validation_v3/*` | committed stage | Checksum-bound restart, orphan-staging, and unchanged-row validation |
+| `quality_results/global_acceptance_v3/*` | global criterion | Executable evidence for all 42 global acceptance criteria |
 | `completeness_gates/*.parquet` | gate and reporting dimension | Seven cumulative-use gates with media, occurrence, URL, and status denominators |
 | `quality_results/review_capsules/*.parquet` | deterministic review item | Sealed before/after/evidence capsules for rights, attribution, duplicates, and exclusions |
 | `incremental_state/state/**/*.parquet` | media assertion | Binary domain hashes for future snapshot diffs |
@@ -86,11 +89,21 @@ Preparation is offline by default. Full-queue construction needs
 `--allow-full-queue`; network work additionally needs `--execute-network`.
 Never supply those flags merely to make an audit green.
 
-The current deterministic pilot has 823 assertions: 764 network-eligible and
-59 explicitly rights-blocked. Live resolution, manual adjudication, Wilson
-precision bounds, and wrong-occurrence review are still `NOT_TESTED`. Do not
-start the 126,634-row eligible tail until every pilot acceptance gate passes.
-Unresolved rows remain present with their failure evidence.
+The executed deterministic pilot has 823 assertions: 764 network-eligible and
+59 explicitly rights-blocked. It made 2,068 bounded network attempts and
+produced 217 resolved rows plus 547 eligible unresolved or non-image outcomes.
+All 217 resolved rows passed an independent structured-evidence review, with
+zero wrong-occurrence substitutions and a 95% Wilson precision interval of
+0.982605 to 1.0. The review binds Flickr source photo identifiers to resolved
+CDN identifiers or retains an unchanged direct provider URL, then requires
+matching image MIME, signature, bounded decoder, sampled-byte, and provenance
+evidence. It is explicitly an agent structured-evidence review, not a claim of
+human visual inspection.
+
+All ten pilot acceptance gates pass. This permits a separately authorized,
+checkpointed tail run; it does not start one automatically. The 126,634-row
+eligible tail has not been executed. Every unresolved pilot row remains
+present with a terminal reason.
 
 ## Provider enrichment
 
@@ -145,14 +158,20 @@ meets both conditions.
 
 ## Reports, rollback, and recovery
 
-Reports live in `reports/gbif_media_database/v4/`; `manifest.json` is written
-last and hashes every report. Runtime publications use staging directories and
-atomic rename. On interruption, retain committed destinations, delete only the
-specific incomplete staging directory after inspection, and restart into a
-new destination. Rollback means selecting the previous manifest-bound output;
+The current final reports live in
+`reports/gbif_media_database/v4_final_20260729/`; `manifest.json` is written
+last and hashes all 19 Markdown reports. The executable 42-row acceptance
+audit lives in
+`data/derived/gbif_media_database/v4/quality_results/global_acceptance_v3/`.
+Runtime publications use staging directories and atomic rename. On
+interruption, retain committed destinations, delete only the specific
+incomplete staging directory after inspection, and restart into a new
+destination. Rollback means selecting the previous manifest-bound output;
 never mutate v3 or a committed v4 directory in place.
 
-No broad network run was executed for the recorded local audit. Consequently,
-reachability, redirect-final URLs, MIME truth, decoding, image dimensions,
-content hashes, perceptual duplicates, and model readiness remain explicitly
-`NOT_TESTED` where direct evidence is absent.
+Only the bounded 823-row resolver pilot was executed, with 2,068 stored
+attempts. No 126,634-row reference-tail run or broad existing-URL run was
+executed. Consequently, reachability, redirect-final URLs, MIME truth,
+decoding, image dimensions, content hashes, perceptual duplicates, and model
+readiness remain explicitly `NOT_TESTED` outside their actual tested
+denominators.
