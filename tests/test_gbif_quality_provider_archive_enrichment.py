@@ -193,6 +193,8 @@ def test_provider_archive_enrichment_is_item_scoped_and_retains_outcomes(
     assert result["counts"]["target_media_rows"] == 5
     assert result["counts"]["media_outcomes"] == 5
     assert result["counts"]["exact_identifier_matches"] == 2
+    assert result["counts"]["occurrence_context_matches"] == 2
+    assert result["counts"]["explicit_denied_context_items"] == 0
     assert result["counts"]["new_assertions"] == 3
     assertions = pq.read_table(
         output / "provider_derived_assertions.parquet"
@@ -221,6 +223,12 @@ def test_provider_archive_enrichment_is_item_scoped_and_retains_outcomes(
     assert reasons["source-3"] == "no_exact_occurrence_and_identifier_match"
     assert reasons["source-4"] == "archive_has_no_multimedia_table"
     assert reasons["source-5"].startswith("archive_unavailable:")
+    contexts = pq.read_table(
+        output / "provider_occurrence_context.parquet"
+    ).to_pylist()
+    assert {row["occurrenceID"] for row in contexts} == {"occ-1", "occ-2"}
+    assert all(row["item_binding_status"] == "NOT_ITEM_BOUND" for row in contexts)
+    assert all(not row["automatic_repair_permitted"] for row in contexts)
     assert (output / "manifest.json").is_file()
 
 

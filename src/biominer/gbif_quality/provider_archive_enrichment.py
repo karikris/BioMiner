@@ -21,9 +21,9 @@ from biominer.gbif_quality.provider_enrichment import (
 
 
 PROVIDER_ARCHIVE_ENRICHMENT_VERSION = (
-    "biominer-gbif-provider-archive-enrichment/v1"
+    "biominer-gbif-provider-archive-enrichment/v2"
 )
-PROVIDER_ARCHIVE_RULE_VERSION = "provider-item-exact-url/v1"
+PROVIDER_ARCHIVE_RULE_VERSION = "provider-item-exact-url/v2"
 TARGET_FIELDS = (
     ("media_license", "media_license"),
     ("media_creator", "creator"),
@@ -52,11 +52,42 @@ EXECUTION_SCHEMA = pa.schema(
         ("archive_width_failures", pa.int64()),
         ("exact_identifier_matches", pa.int64()),
         ("ambiguous_archive_item_matches", pa.int64()),
+        ("occurrence_context_matches", pa.int64()),
+        ("explicit_denied_context_items", pa.int64()),
         ("new_assertions", pa.int64()),
         ("conflicts", pa.int64()),
         ("execution_status", pa.string()),
         ("unresolved_reason", pa.string()),
         ("network_requests", pa.int64()),
+    ]
+)
+
+OCCURRENCE_CONTEXT_SCHEMA = pa.schema(
+    [
+        ("provider_archive_enrichment_version", pa.string()),
+        ("source_snapshot_id", pa.string()),
+        ("provider", pa.string()),
+        ("datasetKey", pa.string()),
+        ("occurrenceID", pa.string()),
+        ("target_gbif_ids", pa.list_(pa.string())),
+        ("target_media_rows", pa.int64()),
+        ("archive_media_rows", pa.int64()),
+        ("archive_identifier_count", pa.int64()),
+        ("current_media_license_values", pa.list_(pa.string())),
+        ("archive_media_license_values", pa.list_(pa.string())),
+        ("archive_creator_values", pa.list_(pa.string())),
+        ("archive_rightsHolder_values", pa.list_(pa.string())),
+        ("archive_format_values", pa.list_(pa.string())),
+        ("archive_type_values", pa.list_(pa.string())),
+        ("license_context_status", pa.string()),
+        ("explicit_denied_license_items", pa.int64()),
+        ("evidence_scope", pa.string()),
+        ("item_binding_status", pa.string()),
+        ("automatic_repair_permitted", pa.bool_()),
+        ("source_url", pa.string()),
+        ("archive_sha256", pa.string()),
+        ("archive_member", pa.string()),
+        ("retrieval_timestamp", pa.string()),
     ]
 )
 
@@ -217,6 +248,44 @@ class ArchiveItem:
     media_type: str | None
 
 
+@dataclass(slots=True)
+class OccurrenceContext:
+    media_rows: int
+    identifiers: set[str]
+    licenses: list[str]
+    creators: set[str]
+    rights_holders: set[str]
+    formats: set[str]
+    types: set[str]
+
+    @classmethod
+    def empty(cls) -> OccurrenceContext:
+        return cls(
+            media_rows=0,
+            identifiers=set(),
+            licenses=[],
+            creators=set(),
+            rights_holders=set(),
+            formats=set(),
+            types=set(),
+        )
+
+    def add(self, item: ArchiveItem) -> None:
+        self.media_rows += 1
+        if item.identifier:
+            self.identifiers.add(item.identifier)
+        if item.media_license:
+            self.licenses.append(item.media_license)
+        if item.creator:
+            self.creators.add(item.creator)
+        if item.rights_holder:
+            self.rights_holders.add(item.rights_holder)
+        if item.media_format:
+            self.formats.add(item.media_format)
+        if item.media_type:
+            self.types.add(item.media_type)
+
+
 class _ParquetSink:
     def __init__(self, path: Path, schema: pa.Schema, *, batch_rows: int) -> None:
         self.path = path
@@ -314,6 +383,7 @@ def publish_provider_archive_enrichment(
     assertion_path = staging / "provider_derived_assertions.parquet"
     conflict_path = staging / "provider_conflicts.parquet"
     outcome_path = staging / "provider_media_outcomes.parquet"
+    context_path = staging / "provider_occurrence_context.parquet"
     field_summary_path = staging / "provider_field_summary.parquet"
     report_path = staging / "provider_archive_enrichment.md"
     sinks = {
@@ -325,6 +395,9 @@ def publish_provider_archive_enrichment(
             conflict_path, CONFLICT_SCHEMA, batch_rows=batch_rows
         ),
         "outcome": _ParquetSink(outcome_path, OUTCOME_SCHEMA, batch_rows=batch_rows),
+        "context": _ParquetSink(
+            context_path, OCCURRENCE_CONTEXT_SCHEMA, batch_rows=batch_rows
+        ),
     }
 
     generated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -381,6 +454,7 @@ def publish_provider_archive_enrichment(
             assertion_path,
             conflict_path,
             outcome_path,
+            context_path,
             field_summary_path,
         )
     ]
@@ -402,6 +476,10 @@ def publish_provider_archive_enrichment(
         ),
         "exact_identifier_matches": sum(
             int(row["exact_identifier_matches"]) for row in execution_rows
+        ),
+        "occurrence_context_matches": sinks["context"].row_count,
+        "explicit_denied_context_items": sum(
+            int(row["explicit_denied_context_items"]) for row in execution_rows
         ),
         "new_assertions": sinks["assertion"].row_count,
         "conflicts": sinks["conflict"].row_count,
@@ -509,6 +587,8 @@ def _process_archive(
             "archive_width_failures": 0,
             "exact_identifier_matches": 0,
             "ambiguous_archive_item_matches": 0,
+            "occurrence_context_matches": 0,
+            "explicit_denied_context_items": 0,
             "new_assertions": 0,
             "conflicts": 0,
             "execution_status": "UNRESOLVED",
@@ -535,6 +615,8 @@ def _process_archive(
             "archive_width_failures": 0,
             "exact_identifier_matches": 0,
             "ambiguous_archive_item_matches": 0,
+            "occurrence_context_matches": 0,
+            "explicit_denied_context_items": 0,
             "new_assertions": 0,
             "conflicts": 0,
             "execution_status": "PASS",
@@ -547,12 +629,18 @@ def _process_archive(
 
     media_table = media_tables[0]
     targets_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+    targets_by_occurrence: dict[str, list[dict[str, object]]] = defaultdict(list)
     for target in targets:
         occurrence_id = _text(target.get("occurrenceID"))
         identifier = _text(target.get("media_identifier"))
+        if occurrence_id:
+            targets_by_occurrence[occurrence_id].append(target)
         if occurrence_id and identifier:
             targets_by_key[(occurrence_id, identifier)].append(target)
     matched_items: dict[tuple[str, str], list[ArchiveItem]] = defaultdict(list)
+    occurrence_contexts: dict[str, OccurrenceContext] = defaultdict(
+        OccurrenceContext.empty
+    )
     scanned = 0
     width_failures = 0
     for row in iter_dwca_rows(spec.path, media_table):
@@ -560,8 +648,30 @@ def _process_archive(
         width_failures += row.width_status == "FAIL"
         occurrence_id = _text(row.core_id) or _text(row.values.get("occurrenceID"))
         identifier = _text(row.values.get("identifier"))
+        item = _archive_item(row)
+        if occurrence_id and occurrence_id in targets_by_occurrence:
+            occurrence_contexts[occurrence_id].add(item)
         if occurrence_id and identifier and (occurrence_id, identifier) in targets_by_key:
-            matched_items[(occurrence_id, identifier)].append(_archive_item(row))
+            matched_items[(occurrence_id, identifier)].append(item)
+
+    denied_context_items = 0
+    for occurrence_id, context in sorted(occurrence_contexts.items()):
+        occurrence_targets = targets_by_occurrence[occurrence_id]
+        denied_items = sum(_explicitly_denied(value) for value in context.licenses)
+        denied_context_items += denied_items
+        license_values = sorted(set(context.licenses))
+        _write_occurrence_context(
+            sink=sinks["context"],
+            spec=spec,
+            targets=occurrence_targets,
+            occurrence_id=occurrence_id,
+            context=context,
+            license_values=license_values,
+            denied_items=denied_items,
+            archive_member=media_table.member,
+            source_snapshot_id=source_snapshot_id,
+            generated_at=generated_at,
+        )
 
     matched_source_ids: set[str] = set()
     exact_matches = 0
@@ -688,6 +798,8 @@ def _process_archive(
         "archive_width_failures": width_failures,
         "exact_identifier_matches": exact_matches,
         "ambiguous_archive_item_matches": ambiguous_matches,
+        "occurrence_context_matches": len(occurrence_contexts),
+        "explicit_denied_context_items": denied_context_items,
         "new_assertions": assertion_count,
         "conflicts": conflict_count,
         "execution_status": "PASS",
@@ -881,14 +993,16 @@ def _write_report(
         "",
         (
             "| Provider | Dataset | Target media | Archive media scanned | "
-            "Exact item matches | New assertions | Conflicts | Status |"
+            "Exact item matches | Occurrence contexts | Denied context items | "
+            "New assertions | Conflicts | Status |"
         ),
-        "|---|---|---:|---:|---:|---:|---:|---|",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in execution_rows:
         lines.append(
             "| {provider} | `{dataset_key}` | {target_media_rows:,} | "
             "{archive_media_rows_scanned:,} | {exact_identifier_matches:,} | "
+            "{occurrence_context_matches:,} | {explicit_denied_context_items:,} | "
             "{new_assertions:,} | {conflicts:,} | {execution_status} |".format(
                 **row
             )
@@ -918,6 +1032,12 @@ def _write_report(
             "",
             "All unmatched, unavailable, core-only, conflicting, and "
             "no-new-evidence target rows remain in `provider_media_outcomes.parquet`.",
+            (
+                "Current archive items that can be related only at occurrence "
+                "scope remain in `provider_occurrence_context.parquet`. They "
+                "are evidence for review and change detection, never automatic "
+                "media-field repairs."
+            ),
             "",
         ]
     )
@@ -1163,6 +1283,75 @@ def _write_outcome(
     )
 
 
+def _write_occurrence_context(
+    *,
+    sink: _ParquetSink,
+    spec: ArchiveSpec,
+    targets: list[dict[str, object]],
+    occurrence_id: str,
+    context: OccurrenceContext,
+    license_values: list[str],
+    denied_items: int,
+    archive_member: str,
+    source_snapshot_id: str,
+    generated_at: str,
+) -> None:
+    current_licenses = sorted(
+        {
+            value
+            for target in targets
+            if (value := _text(target.get("media_license"))) is not None
+        }
+    )
+    if not license_values:
+        license_status = "UNKNOWN"
+    elif len(license_values) > 1:
+        license_status = "CONFLICT"
+    elif denied_items:
+        license_status = "FAIL"
+    else:
+        license_status = "PASS"
+    sink.append(
+        {
+            "provider_archive_enrichment_version": PROVIDER_ARCHIVE_ENRICHMENT_VERSION,
+            "source_snapshot_id": source_snapshot_id,
+            "provider": spec.provider,
+            "datasetKey": spec.dataset_key,
+            "occurrenceID": occurrence_id,
+            "target_gbif_ids": sorted(
+                {
+                    str(target["gbifID"])
+                    for target in targets
+                    if target.get("gbifID") is not None
+                }
+            ),
+            "target_media_rows": len(targets),
+            "archive_media_rows": context.media_rows,
+            "archive_identifier_count": len(context.identifiers),
+            "current_media_license_values": current_licenses,
+            "archive_media_license_values": license_values,
+            "archive_creator_values": sorted(context.creators),
+            "archive_rightsHolder_values": sorted(context.rights_holders),
+            "archive_format_values": sorted(context.formats),
+            "archive_type_values": sorted(context.types),
+            "license_context_status": license_status,
+            "explicit_denied_license_items": denied_items,
+            "evidence_scope": "occurrence_media_ensemble",
+            "item_binding_status": "NOT_ITEM_BOUND",
+            "automatic_repair_permitted": False,
+            "source_url": spec.source_url,
+            "archive_sha256": spec.sha256,
+            "archive_member": archive_member,
+            "retrieval_timestamp": generated_at,
+        }
+    )
+
+
+def _explicitly_denied(value: str) -> bool:
+    normalized = " ".join(value.split()).casefold()
+    return normalized == "copyright" or "all rights reserved" in normalized
+
+
 def _is_multimedia(table: DwcaTable) -> bool:
     return table.role == "extension" and table.row_type.rstrip("/").rsplit("/", 1)[-1] == "Multimedia"
 
@@ -1251,6 +1440,7 @@ __all__ = [
     "EXECUTION_SCHEMA",
     "FIELD_SUMMARY_SCHEMA",
     "OUTCOME_SCHEMA",
+    "OCCURRENCE_CONTEXT_SCHEMA",
     "PROVIDER_ARCHIVE_ENRICHMENT_VERSION",
     "PROVIDER_ARCHIVE_RULE_VERSION",
     "publish_provider_archive_enrichment",
