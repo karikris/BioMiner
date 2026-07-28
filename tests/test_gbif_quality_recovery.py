@@ -28,6 +28,7 @@ def test_restart_inventory_covers_all_production_evidence_layers() -> None:
         "provider_enrichment/manifest.json",
         "provider_enrichment_v2/manifest.json",
         "provider_enrichment_v4/manifest.json",
+        "quality_results/provider_archive_review/v1/manifest.json",
         "performance/manifest.json",
     }
 
