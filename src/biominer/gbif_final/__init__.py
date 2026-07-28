@@ -30,6 +30,12 @@ from biominer.gbif_final.spine import (
     build_source_spine,
     validate_source_spine,
 )
+from biominer.gbif_final.superseded_cleanup import (
+    execute_superseded_cleanup,
+    plan_superseded_cleanup,
+    prepare_superseded_cleanup,
+    validate_superseded_cleanup,
+)
 from biominer.gbif_final.windowed import (
     seal_keyed_dimension_window,
     seal_null_safe_composite_dimension_window,
@@ -46,7 +52,10 @@ __all__ = [
     "build_species_enrichment_dimension",
     "build_species_enrichments",
     "cleanup_bounded_state",
+    "execute_superseded_cleanup",
+    "plan_superseded_cleanup",
     "preflight_assembly",
+    "prepare_superseded_cleanup",
     "seal_record_batches",
     "seal_global_keyed_dimension",
     "seal_global_sidecar_window",
@@ -59,4 +68,5 @@ __all__ = [
     "validate_publication_audit",
     "validate_source_spine",
     "validate_part_receipt",
+    "validate_superseded_cleanup",
 ]
