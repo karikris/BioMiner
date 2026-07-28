@@ -11,6 +11,7 @@ import biominer.gbif_final.spine as spine_module
 from biominer.gbif_final.spine import (
     SOURCE_SPINE_VERSION,
     build_source_spine,
+    validate_source_spine,
 )
 
 
@@ -257,4 +258,70 @@ def test_source_spine_refuses_stale_checkpoint(tmp_path: Path) -> None:
             producer_git_sha="deadbeef",
             part_rows=2,
             batch_rows=3,
+        )
+
+
+def test_published_source_spine_revalidates_exact_inputs(
+    tmp_path: Path,
+) -> None:
+    inputs = _fixture(tmp_path / "inputs")
+    output = tmp_path / "source-spine"
+    manifest = build_source_spine(
+        **inputs,
+        output_directory=output,
+        producer_git_sha="deadbeef",
+        part_rows=2,
+        batch_rows=3,
+    )
+
+    validated = validate_source_spine(
+        output,
+        expected_inputs={
+            "temporal": inputs["temporal_parquet"],
+            "pre_temporal": inputs["pre_temporal_parquet"],
+            "media_quality": inputs["media_quality_parquet"],
+            "temporal_audit": inputs["temporal_audit_parquet"],
+        },
+        expected_producer_git_sha="deadbeef",
+    )
+
+    assert validated == manifest
+
+
+def test_published_source_spine_rejects_changed_input(
+    tmp_path: Path,
+) -> None:
+    inputs = _fixture(tmp_path / "inputs")
+    output = tmp_path / "source-spine"
+    build_source_spine(
+        **inputs,
+        output_directory=output,
+        producer_git_sha="deadbeef",
+        part_rows=2,
+        batch_rows=3,
+    )
+    temporal = pq.read_table(inputs["temporal_parquet"])
+    changed = {
+        name: temporal[name].to_pylist()
+        for name in temporal.column_names
+    }
+    changed["derived_year"][0] = 2001
+    _write_parquet(
+        inputs["temporal_parquet"],
+        changed,
+        row_group_size=3,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="input inventory is stale: temporal",
+    ):
+        validate_source_spine(
+            output,
+            expected_inputs={
+                "temporal": inputs["temporal_parquet"],
+                "pre_temporal": inputs["pre_temporal_parquet"],
+                "media_quality": inputs["media_quality_parquet"],
+                "temporal_audit": inputs["temporal_audit_parquet"],
+            },
         )

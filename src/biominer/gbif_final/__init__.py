@@ -10,7 +10,10 @@ from biominer.gbif_final.bounded import (
 from biominer.gbif_final.dimensions import build_derived_assertion_dimension
 from biominer.gbif_final.materialize import seal_temporal_enriched_window
 from biominer.gbif_final.pipeline import build_final_parquet, build_species_enrichments
-from biominer.gbif_final.spine import build_source_spine
+from biominer.gbif_final.spine import (
+    build_source_spine,
+    validate_source_spine,
+)
 from biominer.gbif_final.windowed import (
     seal_keyed_dimension_window,
     seal_null_safe_composite_dimension_window,
@@ -30,5 +33,6 @@ __all__ = [
     "seal_null_safe_composite_dimension_window",
     "seal_ordinal_aligned_window",
     "seal_temporal_enriched_window",
+    "validate_source_spine",
     "validate_part_receipt",
 ]

@@ -468,6 +468,180 @@ def build_source_spine(
     return _load_json(destination / MANIFEST_FILENAME)
 
 
+def validate_source_spine(
+    output_directory: str | Path,
+    *,
+    expected_inputs: Mapping[str, str | Path] | None = None,
+    expected_producer_git_sha: str | None = None,
+) -> dict[str, Any]:
+    """Independently verify a published source spine and its exact inputs."""
+
+    destination = Path(output_directory).resolve()
+    manifest_path = destination / MANIFEST_FILENAME
+    checkpoint_path = destination / CHECKPOINT_FILENAME
+    if not destination.is_dir():
+        raise FileNotFoundError(destination)
+    if not manifest_path.is_file():
+        raise FileNotFoundError(manifest_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(checkpoint_path)
+
+    manifest = _load_json(manifest_path)
+    if manifest.get("schema_version") != SOURCE_SPINE_VERSION:
+        raise RuntimeError(
+            f"unsupported source-spine manifest: {manifest_path}"
+        )
+    if manifest.get("manifest_fingerprint") != _manifest_fingerprint(
+        manifest
+    ):
+        raise RuntimeError(
+            f"source-spine manifest fingerprint mismatch: {manifest_path}"
+        )
+    if expected_producer_git_sha is not None and manifest.get(
+        "producer_git_sha"
+    ) != expected_producer_git_sha:
+        raise RuntimeError(
+            "source-spine producer commit does not match the requested build"
+        )
+    validation = manifest.get("validation")
+    if not isinstance(validation, dict) or not validation or not all(
+        validation.values()
+    ):
+        raise RuntimeError("source-spine manifest validation is not PASS")
+
+    checkpoint = _load_json(checkpoint_path)
+    if (
+        checkpoint.get("schema_version") != CHECKPOINT_VERSION
+        or checkpoint.get("run_fingerprint")
+        != manifest.get("run_fingerprint")
+        or checkpoint.get("checkpoint_fingerprint")
+        != _checkpoint_fingerprint(checkpoint)
+    ):
+        raise RuntimeError("source-spine checkpoint does not bind the manifest")
+
+    recorded_inputs = manifest.get("input_inventory")
+    if not isinstance(recorded_inputs, dict):
+        raise RuntimeError("source-spine input inventory is missing")
+    if expected_inputs is not None:
+        if set(expected_inputs) != set(recorded_inputs):
+            raise RuntimeError(
+                "source-spine expected input names do not match the manifest"
+            )
+        for name, raw_path in expected_inputs.items():
+            path = Path(raw_path).resolve()
+            observed = _input_inventory(path, _open_parquet(path))
+            if observed != recorded_inputs[name]:
+                raise RuntimeError(
+                    f"source-spine input inventory is stale: {name}"
+                )
+
+    raw_evidence = manifest.get("part_evidence")
+    if not isinstance(raw_evidence, list) or not raw_evidence:
+        raise RuntimeError("source-spine part evidence is missing")
+    expected_files = {manifest_path, checkpoint_path}
+    expected_start = 0
+    newest_part_mtime = 0
+    common_dependencies: dict[str, object] | None = None
+    for evidence in raw_evidence:
+        if not isinstance(evidence, dict):
+            raise RuntimeError("source-spine part evidence is invalid")
+        receipt_path = (
+            destination / str(evidence.get("receipt_path") or "")
+        ).resolve()
+        part_path = (
+            destination / str(evidence.get("part_path") or "")
+        ).resolve()
+        if (
+            not receipt_path.is_relative_to(destination)
+            or not part_path.is_relative_to(destination)
+        ):
+            raise RuntimeError("source-spine part evidence escapes publication")
+        expected_files.update((receipt_path, part_path))
+        if _sha256(receipt_path) != evidence.get("receipt_sha256"):
+            raise RuntimeError(
+                f"source-spine receipt checksum mismatch: {receipt_path}"
+            )
+        receipt = validate_part_receipt(receipt_path)
+        if (
+            (receipt_path.parent / receipt["artifact"]["path"]).resolve()
+            != part_path
+        ):
+            raise RuntimeError(
+                f"source-spine receipt points to a different part: {part_path}"
+            )
+        for receipt_field, evidence_field in (
+            ("part_id", "part_id"),
+            ("source_start_ordinal", "source_start_ordinal"),
+            ("source_stop_ordinal", "source_stop_ordinal"),
+        ):
+            if receipt[receipt_field] != evidence[evidence_field]:
+                raise RuntimeError(
+                    f"source-spine evidence mismatch: {receipt_path}"
+                )
+        for artifact_field, evidence_field in (
+            ("physical_sha256", "part_sha256"),
+            ("physical_bytes", "physical_bytes"),
+            ("row_count", "row_count"),
+            ("row_group_count", "row_group_count"),
+        ):
+            if (
+                receipt["artifact"][artifact_field]
+                != evidence[evidence_field]
+            ):
+                raise RuntimeError(
+                    f"source-spine artifact evidence mismatch: {part_path}"
+                )
+        start = int(receipt["source_start_ordinal"])
+        stop = int(receipt["source_stop_ordinal"])
+        if start != expected_start:
+            raise RuntimeError(
+                "source-spine part ranges are not contiguous: "
+                f"expected={expected_start}, observed={start}"
+            )
+        expected_start = stop
+        if pq.ParquetFile(part_path).schema_arrow != SOURCE_SPINE_SCHEMA:
+            raise RuntimeError(
+                f"source-spine part schema is stale: {part_path}"
+            )
+        dependencies = dict(receipt["dependencies"])
+        if common_dependencies is None:
+            common_dependencies = dependencies
+        elif dependencies != common_dependencies:
+            raise RuntimeError("source-spine part dependencies differ")
+        newest_part_mtime = max(
+            newest_part_mtime,
+            receipt_path.stat().st_mtime_ns,
+            part_path.stat().st_mtime_ns,
+        )
+
+    counts = manifest.get("counts") or {}
+    if (
+        expected_start != int(counts.get("post_1960_rows") or -1)
+        or len(raw_evidence) != int(counts.get("parts") or -1)
+    ):
+        raise RuntimeError("source-spine part evidence does not reconcile")
+    if (
+        common_dependencies is None
+        or common_dependencies.get("run_fingerprint")
+        != manifest.get("run_fingerprint")
+        or common_dependencies.get("producer_git_sha")
+        != manifest.get("producer_git_sha")
+    ):
+        raise RuntimeError("source-spine part dependencies are stale")
+    observed_files = {
+        path.resolve()
+        for path in destination.rglob("*")
+        if path.is_file()
+    }
+    if observed_files != expected_files:
+        raise RuntimeError(
+            "source-spine publication file inventory differs from manifest"
+        )
+    if manifest_path.stat().st_mtime_ns < newest_part_mtime:
+        raise RuntimeError("source-spine manifest was not written last")
+    return manifest
+
+
 class _BatchCursor:
     def __init__(
         self,
@@ -1076,4 +1250,5 @@ __all__ = [
     "SOURCE_SPINE_SCHEMA",
     "SOURCE_SPINE_VERSION",
     "build_source_spine",
+    "validate_source_spine",
 ]
