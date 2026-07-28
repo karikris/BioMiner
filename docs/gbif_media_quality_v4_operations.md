@@ -330,6 +330,40 @@ create-only under
 `data/derived/gbif_media_database/v4/quality_results/global_acceptance_v5/`;
 its report suite will publish create-only under
 `reports/gbif_media_database/v4_terminal_20260729/`.
+
+After the full resolver reducer is sealed, generate the required 19 Markdown
+reports plus their checksum manifest, then execute the 42-criterion acceptance
+audit against the fresh full-suite test receipt:
+
+```bash
+CODE_COMMIT="$(git rev-parse HEAD)"
+FULL_RESOLUTION="data/state/gbif-media-url-resolution/full-v1/finalized-v1/manifest.json"
+REPORTS="reports/gbif_media_database/v4_terminal_20260729"
+ACCEPTANCE="data/derived/gbif_media_database/v4/quality_results/global_acceptance_v5"
+TEST_RECEIPT="data/derived/gbif_media_database/v4/quality_results/full_test_receipt_v6.json"
+
+uv run biominer gbif-media-quality reports \
+  --repository-root . \
+  --data-root data/derived/gbif_media_database/v4 \
+  --report-root "$REPORTS" \
+  --full-resolution-manifest "$FULL_RESOLUTION" \
+  --code-commit "$CODE_COMMIT"
+
+uv run biominer gbif-media-quality acceptance \
+  --repository-root . \
+  --data-root data/derived/gbif_media_database/v4 \
+  --report-root "$REPORTS" \
+  --output-directory "$ACCEPTANCE" \
+  --test-receipt "$TEST_RECEIPT" \
+  --expected-v3-sha256 c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f \
+  --full-resolution-manifest "$FULL_RESOLUTION" \
+  --code-commit "$CODE_COMMIT"
+```
+
+Do not replace either destination when it already exists. A failed historical
+attempt remains evidence; correct the dependency and publish to a new
+create-only terminal directory.
+
 Runtime publications use staging directories and atomic rename. On
 interruption, retain committed destinations, delete only the specific
 incomplete staging directory after inspection, and restart into a new
