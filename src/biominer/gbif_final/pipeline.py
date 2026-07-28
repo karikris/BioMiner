@@ -206,7 +206,10 @@ def build_species_enrichments(
     paths = pl.read_parquet(registry / "species_paths.parquet")
     source_species = (
         pl.scan_parquet(source_parquet)
-        .select("speciesKey", "species")
+        .select(
+            pl.col("speciesKey").cast(pl.String).fill_null(""),
+            pl.col("species").cast(pl.String).fill_null(""),
+        )
         .unique()
         .collect()
         .sort(["speciesKey", "species"])

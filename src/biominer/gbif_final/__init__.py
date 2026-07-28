@@ -11,7 +11,10 @@ from biominer.gbif_final.bounded import (
 from biominer.gbif_final.bounded_pipeline import (
     build_bounded_final_from_spine,
 )
-from biominer.gbif_final.dimensions import build_derived_assertion_dimension
+from biominer.gbif_final.dimensions import (
+    build_derived_assertion_dimension,
+    build_species_enrichment_dimension,
+)
 from biominer.gbif_final.materialize import seal_temporal_enriched_window
 from biominer.gbif_final.pipeline import build_final_parquet, build_species_enrichments
 from biominer.gbif_final.spine import (
@@ -30,6 +33,7 @@ __all__ = [
     "build_bounded_final_from_spine",
     "build_derived_assertion_dimension",
     "build_source_spine",
+    "build_species_enrichment_dimension",
     "build_species_enrichments",
     "preflight_assembly",
     "seal_record_batches",

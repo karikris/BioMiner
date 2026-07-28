@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pyarrow.parquet as pq
 
+from biominer.gbif_final.dimensions import (
+    build_species_enrichment_dimension,
+)
 from biominer.gbif_final.pipeline import build_species_enrichments
 
 
@@ -154,8 +158,14 @@ def test_species_enrichments_inherit_owned_queries_without_row_explosion(
     )
     source = pl.DataFrame(
         {
-            "speciesKey": ["s1", "s2", "missing"],
-            "species": ["Papilio one", "Papilio two", "Unknown one"],
+            "speciesKey": ["s1", "s2", "missing", None, ""],
+            "species": [
+                "Papilio one",
+                "Papilio two",
+                "Unknown one",
+                None,
+                "",
+            ],
         }
     )
     for name, frame in {
@@ -173,7 +183,7 @@ def test_species_enrichments_inherit_owned_queries_without_row_explosion(
         source_assertions_path=None,
     )
 
-    assert result.height == 3
+    assert result.height == 4
     by_key = {row["dataset_species_key"]: row for row in result.to_dicts()}
     inherited = by_key["s1"]["flickr_query_terms"]
     swallowtail = [
@@ -183,3 +193,33 @@ def test_species_enrichments_inherit_owned_queries_without_row_explosion(
     assert {term["keyword_owner_rank"] for term in swallowtail} == {"GENUS"}
     assert "butterfly" in {term["normalized_query_term"] for term in inherited}
     assert by_key["missing"]["registry_match_status"] == "unmatched"
+
+    sealed_path = tmp_path / "sealed-species.parquet"
+    receipt = build_species_enrichment_dimension(
+        source_parquet=tmp_path / "source.parquet",
+        registry_dir=tmp_path,
+        output_path=sealed_path,
+        source_assertions_path=None,
+        producer_git_sha="deadbeef",
+        row_group_size=2,
+    )
+    first_mtime = sealed_path.stat().st_mtime_ns
+    resumed = build_species_enrichment_dimension(
+        source_parquet=tmp_path / "source.parquet",
+        registry_dir=tmp_path,
+        output_path=sealed_path,
+        source_assertions_path=None,
+        producer_git_sha="deadbeef",
+        row_group_size=2,
+    )
+
+    assert receipt["artifact"]["row_count"] == 4
+    assert resumed["part_id"] == receipt["part_id"]
+    assert sealed_path.stat().st_mtime_ns == first_mtime
+    sealed = pq.read_table(sealed_path)
+    assert sealed["dataset_species_key"].to_pylist() == [
+        "",
+        "missing",
+        "s1",
+        "s2",
+    ]
