@@ -17,8 +17,8 @@ import pyarrow.parquet as pq
 from biominer.gbif_quality.assertions import assertion_table, build_assertion
 
 
-GEOGRAPHY_VERSION = "biominer-gbif-geographic-enrichment/v1"
-GEOGRAPHY_RULE_VERSION = "pinned-snapshot-country-consensus/v1.0.0"
+GEOGRAPHY_VERSION = "biominer-gbif-geographic-enrichment/v2"
+GEOGRAPHY_RULE_VERSION = "pinned-boundary-and-snapshot-consensus/v2.0.0"
 MIN_MAPPING_CONFIDENCE = 0.99
 COUNTRY_REFERENCE_SCHEMA = pa.schema(
     [
@@ -48,6 +48,7 @@ GEOGRAPHIC_OUTCOME_SCHEMA = pa.schema(
         ("source_continent", pa.string()),
         ("source_gbifRegion", pa.string()),
         ("derived_countryCode", pa.string()),
+        ("derived_country", pa.string()),
         ("derived_continent", pa.string()),
         ("derived_gbifRegion", pa.string()),
         ("country_derivation_status", pa.string()),
@@ -62,6 +63,7 @@ GEOGRAPHIC_OUTCOME_SCHEMA = pa.schema(
         ("boundary_version", pa.string()),
         ("boundary_confidence", pa.string()),
         ("border_ambiguity_status", pa.string()),
+        ("boundary_candidate_countryCodes", pa.list_(pa.string())),
     ]
 )
 
@@ -86,6 +88,7 @@ def publish_geographic_enrichment(
     expected_missing_region_media_rows: int,
     expected_missing_region_occurrences: int,
     code_commit: str,
+    boundary_manifest: str | Path | None = None,
     memory_limit: str = "4GB",
     threads: int = 4,
     minimum_mapping_confidence: float = MIN_MAPPING_CONFIDENCE,
@@ -106,6 +109,11 @@ def publish_geographic_enrichment(
     if missing:
         raise ValueError(f"v3 lacks geographic fields: {sorted(missing)}")
     generated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    boundary = (
+        _load_boundary_reference(Path(boundary_manifest).resolve())
+        if boundary_manifest is not None
+        else None
+    )
     connection = duckdb.connect()
     try:
         connection.execute(f"SET threads={threads}")
@@ -113,8 +121,13 @@ def publish_geographic_enrichment(
         mappings = _build_mappings(connection, source, source_snapshot_id)
         mapping_table = pa.Table.from_pylist(mappings, schema=COUNTRY_REFERENCE_SCHEMA)
         connection.register("country_reference", mapping_table)
+        if boundary is not None:
+            _register_boundary_countries(connection, boundary["boundary_path"])
         candidates = _candidate_rows(
-            connection, source, minimum_mapping_confidence=minimum_mapping_confidence
+            connection,
+            source,
+            minimum_mapping_confidence=minimum_mapping_confidence,
+            boundary_available=boundary is not None,
         )
     finally:
         connection.close()
@@ -137,8 +150,25 @@ def publish_geographic_enrichment(
             row["decimalLatitude"], row["decimalLongitude"]
         )
         missing_country = country_code is None and valid_coordinates
+        boundary_match_count = int(row["boundary_match_count"] or 0)
+        derived_country_code = (
+            _trimmed(row["boundary_country_code"])
+            if missing_country and boundary_match_count == 1
+            else None
+        )
+        derived_country = (
+            _trimmed(row["boundary_country"])
+            if derived_country_code is not None
+            else None
+        )
         missing_continent = row["source_continent"] is None and country_code is not None
         missing_region = row["source_gbifRegion"] is None and country_code is not None
+        derive_continent_needed = row["source_continent"] is None and (
+            country_code is not None or derived_country_code is not None
+        )
+        derive_region_needed = row["source_gbifRegion"] is None and (
+            country_code is not None or derived_country_code is not None
+        )
         conflicts = []
         for field, count_field in (
             ("countryCode", "country_code_value_count"),
@@ -159,19 +189,22 @@ def publish_geographic_enrichment(
             and str(row["source_gbifRegion"]) != mapped_region
         ):
             conflicts.append("gbifRegion")
-        derived_continent = mapped_continent if missing_continent and continent_safe else None
-        derived_region = mapped_region if missing_region and region_safe else None
+        derived_continent = (
+            mapped_continent if derive_continent_needed and continent_safe else None
+        )
+        derived_region = mapped_region if derive_region_needed and region_safe else None
         source_row_id = _source_row_id(source_snapshot_id, str(row["gbifID"]))
-        country_status = "NOT_TESTED" if missing_country else "NOT_APPLICABLE"
-        country_reason = (
-            "pinned_coordinate_boundary_dataset_unavailable"
-            if missing_country
-            else "country_code_present_or_coordinates_not_eligible"
+        country_status, country_reason = _country_boundary_status(
+            missing_country=missing_country,
+            boundary_available=boundary is not None,
+            boundary_match_count=boundary_match_count,
         )
         continent_status, continent_reason = _mapping_status(
-            missing_continent, derived_continent
+            derive_continent_needed, derived_continent
         )
-        region_status, region_reason = _mapping_status(missing_region, derived_region)
+        region_status, region_reason = _mapping_status(
+            derive_region_needed, derived_region
+        )
         outcome = {
             "geography_version": GEOGRAPHY_VERSION,
             "source_snapshot_id": source_snapshot_id,
@@ -180,7 +213,8 @@ def publish_geographic_enrichment(
                 "gbifID", "affected_media_rows", "decimalLatitude", "decimalLongitude",
                 "source_countryCode", "source_continent", "source_gbifRegion",
             )},
-            "derived_countryCode": None,
+            "derived_countryCode": derived_country_code,
+            "derived_country": derived_country,
             "derived_continent": derived_continent,
             "derived_gbifRegion": derived_region,
             "country_derivation_status": country_status,
@@ -191,16 +225,43 @@ def publish_geographic_enrichment(
             "gbif_region_derivation_reason": region_reason,
             "geographic_conflict_status": "CONFLICT" if conflicts else "PASS",
             "geographic_conflict_fields": conflicts,
-            "boundary_dataset": None,
-            "boundary_version": None,
-            "boundary_confidence": None,
-            "border_ambiguity_status": "NOT_TESTED" if missing_country else "NOT_APPLICABLE",
+            "boundary_dataset": (
+                str(boundary["boundary_dataset"])
+                if missing_country and boundary is not None
+                else None
+            ),
+            "boundary_version": (
+                str(boundary["boundary_version"])
+                if missing_country and boundary is not None
+                else None
+            ),
+            "boundary_confidence": _boundary_confidence(
+                missing_country=missing_country,
+                boundary_available=boundary is not None,
+                boundary_match_count=boundary_match_count,
+            ),
+            "border_ambiguity_status": _border_status(
+                missing_country=missing_country,
+                boundary_available=boundary is not None,
+                boundary_match_count=boundary_match_count,
+            ),
+            "boundary_candidate_countryCodes": list(
+                row["boundary_candidate_countryCodes"] or []
+            ),
         }
         outcomes.append(outcome)
         counts["affected_occurrences"] += 1
         counts["affected_media_rows"] += int(row["affected_media_rows"])
         counts["coordinate_country_candidate_occurrences"] += int(missing_country)
         counts["coordinate_country_candidate_media_rows"] += int(missing_country) * int(row["affected_media_rows"])
+        counts["derived_country_occurrences"] += int(derived_country_code is not None)
+        counts["derived_country_media_rows"] += int(derived_country_code is not None) * int(row["affected_media_rows"])
+        counts["ambiguous_border_occurrences"] += int(
+            missing_country and boundary_match_count > 1
+        )
+        counts["outside_or_unmapped_occurrences"] += int(
+            missing_country and boundary is not None and boundary_match_count == 0
+        )
         counts["missing_continent_occurrences"] += int(missing_continent)
         counts["missing_continent_media_rows"] += int(missing_continent) * int(row["affected_media_rows"])
         counts["missing_region_occurrences"] += int(missing_region)
@@ -210,9 +271,31 @@ def publish_geographic_enrichment(
         counts["derived_region_occurrences"] += int(derived_region is not None)
         counts["derived_region_media_rows"] += int(derived_region is not None) * int(row["affected_media_rows"])
         counts["conflict_occurrences"] += int(bool(conflicts))
-        for target, value, evidence in (
-            ("derived_continent", derived_continent, "countryCode"),
-            ("derived_gbifRegion", derived_region, "countryCode"),
+        for target, value, evidence, method in (
+            (
+                "derived_countryCode",
+                derived_country_code,
+                str(boundary["boundary_dataset"]) if boundary is not None else "",
+                "unique_point_polygon_intersection",
+            ),
+            (
+                "derived_country",
+                derived_country,
+                str(boundary["boundary_dataset"]) if boundary is not None else "",
+                "unique_point_polygon_intersection",
+            ),
+            (
+                "derived_continent",
+                derived_continent,
+                derived_country_code or "countryCode",
+                "pinned_snapshot_country_code_consensus",
+            ),
+            (
+                "derived_gbifRegion",
+                derived_region,
+                derived_country_code or "countryCode",
+                "pinned_snapshot_country_code_consensus",
+            ),
         ):
             if value is None:
                 continue
@@ -226,7 +309,7 @@ def publish_geographic_enrichment(
                 evidence_source=evidence,
                 source_url_or_record_identifier=f"gbifID:{row['gbifID']}",
                 retrieval_timestamp=generated_at,
-                derivation_method="pinned_snapshot_country_code_consensus",
+                derivation_method=method,
                 derivation_rule_version=GEOGRAPHY_RULE_VERSION,
                 confidence_class="DETERMINISTIC_DERIVATION",
                 validation_status="PASS",
@@ -254,8 +337,18 @@ def publish_geographic_enrichment(
         validation = {f"{name}_match": counts[name] == value for name, value in expected.items()}
         validation.update({
             "all_coordinate_country_candidates_retained": counts["coordinate_country_candidate_occurrences"] <= len(outcomes),
-            "coordinate_country_not_fabricated": counts["coordinate_country_candidate_occurrences"] > 0 and all(row["derived_countryCode"] is None for row in outcomes),
-            "assertions_reconcile": len(assertions) == counts["derived_continent_occurrences"] + counts["derived_region_occurrences"],
+            "coordinate_country_resolved_or_retained": counts["coordinate_country_candidate_occurrences"] == counts["derived_country_occurrences"] + counts["ambiguous_border_occurrences"] + counts["outside_or_unmapped_occurrences"] if boundary is not None else counts["derived_country_occurrences"] == 0,
+            "boundary_reference_checksum_valid": boundary is None or bool(boundary["all_checksums_valid"]),
+            "assertions_reconcile": len(assertions) == sum(
+                int(row[name] is not None)
+                for row in outcomes
+                for name in (
+                    "derived_countryCode",
+                    "derived_country",
+                    "derived_continent",
+                    "derived_gbifRegion",
+                )
+            ),
             "outcome_schema_matches": pq.ParquetFile(outcome_path).schema_arrow.equals(GEOGRAPHIC_OUTCOME_SCHEMA),
         })
         if not all(validation.values()):
@@ -268,13 +361,29 @@ def publish_geographic_enrichment(
             "code_commit": code_commit,
             "source_snapshot_id": source_snapshot_id,
             "input": str(source),
+            "boundary_reference": (
+                {
+                    "manifest": str(boundary["manifest_path"]),
+                    "manifest_sha256": boundary["manifest_sha256"],
+                    "boundary_path": str(boundary["boundary_path"]),
+                    "boundary_sha256": boundary["boundary_sha256"],
+                    "dataset": boundary["boundary_dataset"],
+                    "version": boundary["boundary_version"],
+                }
+                if boundary is not None
+                else None
+            ),
             "minimum_mapping_confidence": minimum_mapping_confidence,
             "counts": dict(sorted(counts.items())),
             "validation": validation,
             "artifacts": artifacts,
             "policy": {
                 "source_fields_unchanged": True,
-                "coordinate_to_country": "NOT_TESTED_NO_PINNED_BOUNDARY",
+                "coordinate_to_country": (
+                    "PINNED_BOUNDARY_UNIQUE_INTERSECTION_ONLY"
+                    if boundary is not None
+                    else "NOT_TESTED_NO_PINNED_BOUNDARY"
+                ),
                 "country_code_mapping": "PINNED_SOURCE_SNAPSHOT_CONSENSUS",
                 "unsafe_mappings_retained_unresolved": True,
             },
@@ -293,7 +402,7 @@ def publish_geographic_enrichment(
 
 def _build_mappings(connection: duckdb.DuckDBPyConnection, source: Path, snapshot: str) -> list[dict[str, object]]:
     cursor = connection.execute(f"""
-        SELECT trim(countryCode) countryCode, continent, gbifRegion, count(*)::BIGINT n
+        SELECT upper(trim(countryCode)) countryCode, continent, gbifRegion, count(*)::BIGINT n
         FROM read_parquet({_literal(str(source))})
         WHERE countryCode IS NOT NULL
         GROUP BY ALL ORDER BY countryCode, n DESC, continent, gbifRegion
@@ -338,22 +447,78 @@ def _candidate_rows(
     source: Path,
     *,
     minimum_mapping_confidence: float,
+    boundary_available: bool,
 ) -> list[dict[str, object]]:
+    boundary_match_cte = (
+        """
+        , coordinate_country_matches AS (
+          SELECT
+            o.gbifID,
+            count(DISTINCT c.country_code)::BIGINT AS boundary_match_count,
+            min(c.country_code) AS boundary_country_code,
+            min(c.country_name) AS boundary_country,
+            list(DISTINCT c.country_code ORDER BY c.country_code)
+              FILTER (WHERE c.country_code IS NOT NULL)
+              AS boundary_candidate_countryCodes
+          FROM occurrence o
+          LEFT JOIN boundary_countries c
+            ON o.source_countryCode IS NULL
+           AND try_cast(o.decimalLatitude AS DOUBLE) BETWEEN -90 AND 90
+           AND try_cast(o.decimalLongitude AS DOUBLE) BETWEEN -180 AND 180
+           AND NOT (
+             try_cast(o.decimalLatitude AS DOUBLE) = 0
+             AND try_cast(o.decimalLongitude AS DOUBLE) = 0
+           )
+           AND ST_Intersects(
+             c.geom,
+             ST_Point(
+               try_cast(o.decimalLongitude AS DOUBLE),
+               try_cast(o.decimalLatitude AS DOUBLE)
+             )
+           )
+          GROUP BY o.gbifID
+        )
+        """
+        if boundary_available
+        else """
+        , coordinate_country_matches AS (
+          SELECT
+            gbifID,
+            0::BIGINT AS boundary_match_count,
+            NULL::VARCHAR AS boundary_country_code,
+            NULL::VARCHAR AS boundary_country,
+            []::VARCHAR[] AS boundary_candidate_countryCodes
+          FROM occurrence
+        )
+        """
+    )
     cursor = connection.execute(f"""
         WITH occurrence AS (
           SELECT trim(cast(gbifID AS VARCHAR)) gbifID, count(*)::BIGINT affected_media_rows,
                  min(cast(decimalLatitude AS VARCHAR)) decimalLatitude,
                  min(cast(decimalLongitude AS VARCHAR)) decimalLongitude,
-                 min(countryCode) source_countryCode, min(continent) source_continent,
+                 min(upper(trim(countryCode))) source_countryCode,
+                 min(continent) source_continent,
                  min(gbifRegion) source_gbifRegion,
                  count(distinct coalesce(countryCode, '<NULL>')) country_code_value_count,
                  count(distinct coalesce(continent, '<NULL>')) continent_value_count,
                  count(distinct coalesce(gbifRegion, '<NULL>')) gbif_region_value_count
           FROM read_parquet({_literal(str(source))}) GROUP BY gbifID
-        ), enriched AS (
-          SELECT o.*, r.mapped_continent, r.continent_confidence,
+        )
+        {boundary_match_cte}
+        , enriched AS (
+          SELECT
+                 o.*,
+                 b.boundary_match_count,
+                 b.boundary_country_code,
+                 b.boundary_country,
+                 b.boundary_candidate_countryCodes,
+                 r.mapped_continent, r.continent_confidence,
                  r.mapped_gbifRegion, r.gbif_region_confidence
-          FROM occurrence o LEFT JOIN country_reference r ON o.source_countryCode=r.countryCode
+          FROM occurrence o
+          JOIN coordinate_country_matches b USING (gbifID)
+          LEFT JOIN country_reference r
+            ON coalesce(o.source_countryCode, b.boundary_country_code)=r.countryCode
         )
         SELECT * FROM enriched
         WHERE (source_countryCode IS NULL AND try_cast(decimalLatitude AS DOUBLE) BETWEEN -90 AND 90
@@ -377,12 +542,143 @@ def _mapping_status(missing: bool, derived: str | None) -> tuple[str, str]:
     return "UNKNOWN", "country_code_mapping_below_confidence_threshold"
 
 
+def _country_boundary_status(
+    *,
+    missing_country: bool,
+    boundary_available: bool,
+    boundary_match_count: int,
+) -> tuple[str, str]:
+    if not missing_country:
+        return "NOT_APPLICABLE", "country_code_present_or_coordinates_not_eligible"
+    if not boundary_available:
+        return "NOT_TESTED", "pinned_coordinate_boundary_dataset_unavailable"
+    if boundary_match_count == 1:
+        return "PASS", "unique_pinned_boundary_intersection"
+    if boundary_match_count > 1:
+        return "UNKNOWN", "ambiguous_country_border_intersection"
+    return "UNKNOWN", "coordinate_outside_or_unmapped_by_boundary"
+
+
+def _boundary_confidence(
+    *,
+    missing_country: bool,
+    boundary_available: bool,
+    boundary_match_count: int,
+) -> str | None:
+    if not missing_country or not boundary_available:
+        return None
+    if boundary_match_count == 1:
+        return "UNIQUE_POLYGON_INTERSECTION"
+    if boundary_match_count > 1:
+        return "AMBIGUOUS_MULTIPLE_INTERSECTIONS"
+    return "NO_POLYGON_INTERSECTION"
+
+
+def _border_status(
+    *,
+    missing_country: bool,
+    boundary_available: bool,
+    boundary_match_count: int,
+) -> str:
+    if not missing_country:
+        return "NOT_APPLICABLE"
+    if not boundary_available:
+        return "NOT_TESTED"
+    if boundary_match_count > 1:
+        return "AMBIGUOUS"
+    return "PASS" if boundary_match_count == 1 else "OUTSIDE_OR_UNMAPPED"
+
+
 def _valid_coordinates(latitude: object | None, longitude: object | None) -> bool:
     try:
         lat, lon = float(str(latitude)), float(str(longitude))
     except (TypeError, ValueError):
         return False
-    return -90 <= lat <= 90 and -180 <= lon <= 180
+    return -90 <= lat <= 90 and -180 <= lon <= 180 and (lat != 0 or lon != 0)
+
+
+def _load_boundary_reference(manifest_path: Path) -> dict[str, object]:
+    if not manifest_path.is_file():
+        raise FileNotFoundError(manifest_path)
+    value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = value.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ValueError("boundary manifest has no file inventory")
+    verified: dict[str, str] = {}
+    for raw_name, raw_checksum in files.items():
+        name = str(raw_name)
+        expected = str(raw_checksum).removeprefix("sha256:")
+        path = (manifest_path.parent / name).resolve()
+        if not path.is_relative_to(manifest_path.parent.resolve()):
+            raise ValueError(f"boundary member escapes manifest directory: {name}")
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        actual = _sha256(path)
+        if actual != expected:
+            raise ValueError(f"boundary checksum mismatch: {name}")
+        verified[name] = actual
+    boundary_names = [
+        name for name in verified if Path(name).suffix.casefold() in {".shp", ".geojson"}
+    ]
+    if len(boundary_names) != 1:
+        raise ValueError(
+            "boundary manifest must inventory exactly one .shp or .geojson geometry file"
+        )
+    boundary_path = (manifest_path.parent / boundary_names[0]).resolve()
+    dataset = _trimmed(value.get("boundary_dataset"))
+    version = _trimmed(value.get("boundary_version"))
+    if dataset is None or version is None:
+        raise ValueError("boundary manifest must name its dataset and version")
+    return {
+        "manifest_path": manifest_path,
+        "manifest_sha256": _sha256(manifest_path),
+        "boundary_path": boundary_path,
+        "boundary_sha256": verified[boundary_names[0]],
+        "boundary_dataset": dataset,
+        "boundary_version": version,
+        "all_checksums_valid": True,
+    }
+
+
+def _register_boundary_countries(
+    connection: duckdb.DuckDBPyConnection,
+    boundary_path: object,
+) -> None:
+    try:
+        connection.execute("LOAD spatial")
+    except duckdb.Error as exc:
+        raise RuntimeError(
+            "DuckDB spatial extension must be installed before pinned boundary enrichment"
+        ) from exc
+    path = str(boundary_path)
+    columns = {
+        str(row[0])
+        for row in connection.execute(
+            "DESCRIBE SELECT * FROM ST_Read(?)", [path]
+        ).fetchall()
+    }
+    required = {"ISO_A2", "ISO_A2_EH", "ADMIN", "geom"}
+    missing = required - columns
+    if missing:
+        raise ValueError(f"boundary dataset lacks required fields: {sorted(missing)}")
+    connection.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE boundary_countries AS
+        SELECT
+          coalesce(
+            nullif(upper(trim(cast(ISO_A2 AS VARCHAR))), '-99'),
+            nullif(upper(trim(cast(ISO_A2_EH AS VARCHAR))), '-99')
+          ) AS country_code,
+          nullif(trim(cast(ADMIN AS VARCHAR)), '') AS country_name,
+          geom
+        FROM ST_Read(?)
+        WHERE coalesce(
+            nullif(upper(trim(cast(ISO_A2 AS VARCHAR))), '-99'),
+            nullif(upper(trim(cast(ISO_A2_EH AS VARCHAR))), '-99')
+          ) IS NOT NULL
+        """,
+        [path],
+    )
 
 
 def _source_row_id(snapshot: str, gbif_id: str) -> str:

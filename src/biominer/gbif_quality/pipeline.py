@@ -46,6 +46,9 @@ NORMALIZED_PARQUET = Path(
     "occurrence_multimedia_year_ge_1960_completeness_ge_5pct_"
     "verification_normalized.parquet"
 )
+BOUNDARY_MANIFEST = Path(
+    "data/reference/gbif_boundaries/natural_earth/v5.1.1/manifest.json"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +272,7 @@ def run_phase3_enrichment(config: Phase3Config) -> dict[str, Any]:
             code_commit=commit,
             batch_rows=cfg.batch_rows,
         )
-    geography_root = derived_root / "geography"
+    geography_root = derived_root / "geography_v2"
     if not _validated_stage_ready(geography_root):
         publish_geographic_enrichment(
             v3_parquet=_resolve(root, V3_PARQUET),
@@ -282,6 +285,7 @@ def run_phase3_enrichment(config: Phase3Config) -> dict[str, Any]:
             expected_missing_region_media_rows=679,
             expected_missing_region_occurrences=375,
             code_commit=commit,
+            boundary_manifest=_resolve(root, BOUNDARY_MANIFEST),
             memory_limit=cfg.memory_limit,
             threads=cfg.threads,
         )
@@ -309,7 +313,7 @@ def run_phase3_enrichment(config: Phase3Config) -> dict[str, Any]:
             memory_limit=cfg.memory_limit,
             threads=cfg.threads,
         )
-    summary_root = data_root / "quality_results" / "phase3"
+    summary_root = data_root / "quality_results" / "phase3_v2"
     if not _validated_stage_ready(summary_root):
         publish_phase3_summary(
             temporal_directory=temporal_root,

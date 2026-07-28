@@ -151,7 +151,14 @@ def _coverage(manifests: dict[str, dict[str, object]]) -> pa.Table:
     def add(domain,metric,status,occ,media,note): rows.append({"phase3_version":PHASE3_VERSION,"domain":domain,"metric":metric,"status":status,"occurrence_count":int(occ),"media_row_count":int(media),"note":note})
     for part in ("year","month","day"): add("temporal",f"derived_{part}","PASS",t[f"derived_{part}_occurrences"],t[f"derived_{part}_media_rows"],"explicitly encoded in eventDate")
     add("temporal","pre_1960_retained","GENERALIZED",t["ancient_occurrences"],t["ancient_media_rows"],"retained and flagged")
-    add("geography","country_code_coordinate_candidate","NOT_TESTED",g["coordinate_country_candidate_occurrences"],g["coordinate_country_candidate_media_rows"],"no pinned boundary asset")
+    add(
+        "geography",
+        "derived_country_code",
+        "PASS" if g["derived_country_occurrences"] else "UNKNOWN",
+        g["derived_country_occurrences"],
+        g["derived_country_media_rows"],
+        "unique intersection against checksum-pinned boundary polygons",
+    )
     add("geography","derived_continent","PASS",g["derived_continent_occurrences"],g["derived_continent_media_rows"],"pinned snapshot consensus")
     add("geography","derived_gbif_region","PASS" if g["derived_region_occurrences"] else "UNKNOWN",g["derived_region_occurrences"],g["derived_region_media_rows"],"pinned snapshot consensus")
     add("geography","conflicts","CONFLICT",g["conflict_occurrences"],0,"retained for review")
@@ -163,7 +170,7 @@ def _coverage(manifests: dict[str, dict[str, object]]) -> pa.Table:
 
 def _report(manifests, assertion_rows, review_rows, fingerprint):
     t=manifests["temporal"]["counts"]; g=manifests["geography"]["counts"]; x=manifests["taxonomy"]["counts"]; b=manifests["biology"]["counts"]
-    return f"""# GBIF media v4 Phase 3 deterministic enrichment\n\n- Combined derived assertions: {assertion_rows:,}\n- Manual-review sample rows: {review_rows:,}\n- Semantic assertion fingerprint: `{fingerprint}`\n- Temporal media derivations: year {t['derived_year_media_rows']:,}; month {t['derived_month_media_rows']:,}; day {t['derived_day_media_rows']:,}.\n- Pre-1960 media rows retained and flagged: {t['ancient_media_rows']:,}.\n- Coordinate-to-country candidates retained NOT_TESTED: {g['coordinate_country_candidate_media_rows']:,}.\n- Continent media rows derived safely: {g['derived_continent_media_rows']:,}.\n- Geographic conflict occurrences retained: {g['conflict_occurrences']:,}.\n- Species-rank media rows repaired from same-record evidence: {x['repaired_media_rows']:,}.\n- Life-stage candidate media rows: {b['life_stage_candidate_media_rows']:,}.\n- Sex candidate media rows: {b['sex_candidate_media_rows']:,}.\n\nAll source fields remain unchanged. Biological candidates require human review. No network requests were made.\n"""
+    return f"""# GBIF media v4 Phase 3 deterministic enrichment\n\n- Combined derived assertions: {assertion_rows:,}\n- Manual-review sample rows: {review_rows:,}\n- Semantic assertion fingerprint: `{fingerprint}`\n- Temporal media derivations: year {t['derived_year_media_rows']:,}; month {t['derived_month_media_rows']:,}; day {t['derived_day_media_rows']:,}.\n- Pre-1960 media rows retained and flagged: {t['ancient_media_rows']:,}.\n- Coordinate-to-country candidates: {g['coordinate_country_candidate_media_rows']:,}; safely derived: {g['derived_country_media_rows']:,}; ambiguous borders: {g['ambiguous_border_occurrences']:,}; outside or unmapped: {g['outside_or_unmapped_occurrences']:,}.\n- Continent media rows derived safely: {g['derived_continent_media_rows']:,}.\n- Geographic conflict occurrences retained: {g['conflict_occurrences']:,}.\n- Species-rank media rows repaired from same-record evidence: {x['repaired_media_rows']:,}.\n- Life-stage candidate media rows: {b['life_stage_candidate_media_rows']:,}.\n- Sex candidate media rows: {b['sex_candidate_media_rows']:,}.\n\nAll source fields remain unchanged. Biological candidates require human review. No network requests were made.\n"""
 
 
 def _read_valid_manifest(root: Path) -> dict[str, object]:
