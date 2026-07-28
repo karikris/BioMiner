@@ -6,7 +6,8 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import Any, Mapping, Sequence
+import time
+from typing import Any, Callable, Mapping, Sequence
 from uuid import uuid4
 
 import duckdb
@@ -65,6 +66,7 @@ def build_bounded_final_from_spine(
     final_row_group_size: int = 100_000,
     free_space_multiplier: float = 1.25,
     minimum_headroom_bytes: int = 2 * 1024**3,
+    progress: Callable[[Mapping[str, object]], None] | None = None,
 ) -> dict[str, Any]:
     """Build and publish the final enriched dataset in restartable windows."""
 
@@ -94,6 +96,21 @@ def build_bounded_final_from_spine(
 
     spine_manifest = validate_source_spine(spine_directory)
     expected_rows = int(spine_manifest["counts"]["post_1960_rows"])
+    pipeline_started = time.monotonic()
+    _emit_progress(
+        progress,
+        event="pipeline_started",
+        stage="bounded_final",
+        partition=None,
+        rows_read=0,
+        rows_written=0,
+        rows_passed=0,
+        rows_failed=0,
+        rows_unresolved=0,
+        rows_skipped_from_cache=0,
+        estimated_work_remaining=expected_rows,
+        checkpoint_path=str(work / CHECKPOINT_FILENAME),
+    )
     source_scope = {
         "publication_role": (
             "user_authorized_legacy_consolidation_source_of_truth"
@@ -174,12 +191,30 @@ def build_bounded_final_from_spine(
         semantic_config=semantic_config,
     )
     if output.exists():
-        return validate_assembled_output(
+        manifest = validate_assembled_output(
             output,
             expected_rows=expected_rows,
             expected_code_commit=producer_git_sha,
             expected_source_scope=source_scope,
         )
+        elapsed = time.monotonic() - pipeline_started
+        _emit_progress(
+            progress,
+            event="pipeline_reused",
+            stage="bounded_final",
+            partition=None,
+            rows_read=expected_rows,
+            rows_written=0,
+            rows_passed=expected_rows,
+            rows_failed=0,
+            rows_unresolved=0,
+            rows_skipped_from_cache=expected_rows,
+            estimated_work_remaining=0,
+            elapsed_stage_time_seconds=elapsed,
+            rows_per_second=expected_rows / max(elapsed, 1e-9),
+            checkpoint_path=str(output / "manifest.json"),
+        )
+        return manifest
 
     temporary = work / ".duckdb_tmp"
     shutil.rmtree(temporary, ignore_errors=True)
@@ -266,12 +301,32 @@ def build_bounded_final_from_spine(
         global_sidecars: dict[str, Path] = {}
         global_receipts: dict[str, dict[str, Any]] = {}
         for name, spec in global_specs.items():
+            stage_started = time.monotonic()
             dimension_name = (
                 "derived_assertions"
                 if name == "derived_quality"
                 else name
             )
             global_path = global_directory / f"{name}.parquet"
+            resumed = global_path.is_file()
+            _emit_progress(
+                progress,
+                event="partition_started",
+                stage="global_sidecar",
+                partition=name,
+                rows_read=0,
+                rows_written=0,
+                rows_passed=0,
+                rows_failed=0,
+                rows_unresolved=0,
+                rows_skipped_from_cache=0,
+                estimated_work_remaining=expected_rows,
+                checkpoint_path=str(
+                    global_path.with_suffix(
+                        global_path.suffix + ".receipt.json"
+                    )
+                ),
+            )
             receipt = seal_global_keyed_dimension(
                 connection=connection,
                 spine_parts=spine_parts,
@@ -296,12 +351,35 @@ def build_bounded_final_from_spine(
                 global_path,
                 receipt,
             )
+            elapsed = time.monotonic() - stage_started
+            _emit_progress(
+                progress,
+                event="partition_completed",
+                stage="global_sidecar",
+                partition=name,
+                rows_read=expected_rows,
+                rows_written=0 if resumed else expected_rows,
+                rows_passed=expected_rows,
+                rows_failed=0,
+                rows_unresolved=0,
+                rows_skipped_from_cache=expected_rows if resumed else 0,
+                estimated_work_remaining=0,
+                elapsed_stage_time_seconds=elapsed,
+                rows_per_second=expected_rows / max(elapsed, 1e-9),
+                checkpoint_path=str(
+                    global_path.with_suffix(
+                        global_path.suffix + ".receipt.json"
+                    )
+                ),
+            )
 
         for part_index, evidence in enumerate(
             spine_manifest["part_evidence"]
         ):
+            stage_started = time.monotonic()
             start = int(evidence["source_start_ordinal"])
             stop = int(evidence["source_stop_ordinal"])
+            part_rows = stop - start
             spine_part = (
                 spine_directory / str(evidence["part_path"])
             ).resolve()
@@ -309,6 +387,28 @@ def build_bounded_final_from_spine(
                 work / "windows" / f"part-{part_index:05d}"
             )
             part_directory.mkdir(parents=True, exist_ok=True)
+            final_part = part_directory / "final.parquet"
+            resumed_window = final_part.is_file()
+            _emit_progress(
+                progress,
+                event="partition_started",
+                stage="final_window",
+                partition=part_index,
+                source_start_ordinal=start,
+                source_stop_ordinal=stop,
+                rows_read=0,
+                rows_written=0,
+                rows_passed=0,
+                rows_failed=0,
+                rows_unresolved=0,
+                rows_skipped_from_cache=0,
+                estimated_work_remaining=expected_rows - start,
+                checkpoint_path=str(
+                    final_part.with_suffix(
+                        final_part.suffix + ".receipt.json"
+                    )
+                ),
+            )
             spine_dependencies = {
                 **common_dependencies,
                 "source_spine_part_id": evidence["part_id"],
@@ -402,7 +502,6 @@ def build_bounded_final_from_spine(
                 aligned_receipt,
             )
 
-            final_part = part_directory / "final.parquet"
             final_receipt = seal_temporal_enriched_window(
                 connection=connection,
                 temporal_parquet=temporal_path,
@@ -434,6 +533,29 @@ def build_bounded_final_from_spine(
             final_receipts.append(
                 final_part.with_suffix(".parquet.receipt.json")
             )
+            elapsed = time.monotonic() - stage_started
+            _emit_progress(
+                progress,
+                event="partition_completed",
+                stage="final_window",
+                partition=part_index,
+                source_start_ordinal=start,
+                source_stop_ordinal=stop,
+                rows_read=part_rows,
+                rows_written=0 if resumed_window else part_rows,
+                rows_passed=part_rows,
+                rows_failed=0,
+                rows_unresolved=0,
+                rows_skipped_from_cache=part_rows if resumed_window else 0,
+                estimated_work_remaining=expected_rows - stop,
+                elapsed_stage_time_seconds=elapsed,
+                rows_per_second=part_rows / max(elapsed, 1e-9),
+                checkpoint_path=str(
+                    final_part.with_suffix(
+                        final_part.suffix + ".receipt.json"
+                    )
+                ),
+            )
     finally:
         connection.close()
         shutil.rmtree(temporary, ignore_errors=True)
@@ -441,6 +563,21 @@ def build_bounded_final_from_spine(
     _reject_unexpected_work_files(
         work=work,
         expected=expected_work_files,
+    )
+    assembly_started = time.monotonic()
+    _emit_progress(
+        progress,
+        event="stage_started",
+        stage="final_assembly",
+        partition=None,
+        rows_read=0,
+        rows_written=0,
+        rows_passed=0,
+        rows_failed=0,
+        rows_unresolved=0,
+        rows_skipped_from_cache=0,
+        estimated_work_remaining=expected_rows,
+        checkpoint_path=str(output / "manifest.json"),
     )
     manifest = assemble_parts(
         part_receipts=final_receipts,
@@ -460,7 +597,68 @@ def build_bounded_final_from_spine(
     )
     if validated != manifest:
         raise RuntimeError("bounded final validation changed the manifest")
+    assembly_elapsed = time.monotonic() - assembly_started
+    _emit_progress(
+        progress,
+        event="stage_completed",
+        stage="final_assembly",
+        partition=None,
+        rows_read=expected_rows,
+        rows_written=expected_rows,
+        rows_passed=expected_rows,
+        rows_failed=0,
+        rows_unresolved=0,
+        rows_skipped_from_cache=0,
+        estimated_work_remaining=0,
+        elapsed_stage_time_seconds=assembly_elapsed,
+        rows_per_second=expected_rows / max(assembly_elapsed, 1e-9),
+        checkpoint_path=str(output / "manifest.json"),
+    )
+    pipeline_elapsed = time.monotonic() - pipeline_started
+    _emit_progress(
+        progress,
+        event="pipeline_completed",
+        stage="bounded_final",
+        partition=None,
+        rows_read=expected_rows,
+        rows_written=expected_rows,
+        rows_passed=expected_rows,
+        rows_failed=0,
+        rows_unresolved=0,
+        rows_skipped_from_cache=0,
+        estimated_work_remaining=0,
+        elapsed_stage_time_seconds=pipeline_elapsed,
+        rows_per_second=expected_rows / max(pipeline_elapsed, 1e-9),
+        checkpoint_path=str(output / "manifest.json"),
+    )
     return manifest
+
+
+def _emit_progress(
+    progress: Callable[[Mapping[str, object]], None] | None,
+    *,
+    event: str,
+    stage: str,
+    partition: object,
+    **fields: object,
+) -> None:
+    if progress is None:
+        return
+    progress(
+        {
+            "event": event,
+            "stage": stage,
+            "partition": partition,
+            "current_provider": None,
+            "current_host": None,
+            "requests_completed": 0,
+            "retries": 0,
+            "rate_limit_events": 0,
+            "bytes_downloaded": 0,
+            "network_scope": "NOT_APPLICABLE",
+            **fields,
+        }
+    )
 
 
 def _record_sealed_files(

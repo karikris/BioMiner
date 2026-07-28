@@ -177,6 +177,10 @@ def test_bounded_pipeline_builds_and_resumes_exact_final_dataset(
         "free_space_multiplier": 1.0,
         "minimum_headroom_bytes": 0,
     }
+    progress_events: list[dict[str, object]] = []
+    arguments["progress"] = lambda event: progress_events.append(
+        dict(event)
+    )
     actual_materialize = (
         bounded_pipeline_module.seal_temporal_enriched_window
     )
@@ -237,3 +241,19 @@ def test_bounded_pipeline_builds_and_resumes_exact_final_dataset(
     resumed = build_bounded_final_from_spine(**arguments)
     assert resumed == manifest
     assert final_path.stat().st_mtime_ns == first_mtime
+    assert any(
+        event["event"] == "partition_completed"
+        and event["stage"] == "global_sidecar"
+        and event["rows_passed"] == 2
+        for event in progress_events
+    )
+    assert any(
+        event["event"] == "partition_completed"
+        and event["stage"] == "final_window"
+        and event["checkpoint_path"].endswith(
+            "final.parquet.receipt.json"
+        )
+        for event in progress_events
+    )
+    assert progress_events[-1]["event"] == "pipeline_reused"
+    assert progress_events[-1]["rows_skipped_from_cache"] == 2

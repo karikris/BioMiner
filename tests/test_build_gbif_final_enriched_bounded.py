@@ -34,6 +34,9 @@ def test_bounded_builder_script_imports_and_exposes_required_cli() -> None:
         "state_dir",
         "output_dir",
         "producer_git_sha",
+        "run_id",
+        "telemetry_dir",
+        "peak_rss_target_bytes",
     }.issubset(destinations)
 
 
