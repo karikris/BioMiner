@@ -215,6 +215,11 @@ uv run python scripts/build_gbif_final_locator_index.py \
   --threads 4
 ```
 
+If the final dataset will be transferred to another machine, complete and
+verify the LAN/object handoff before cleanup. The strict producer-side handoff
+validation intentionally rereads the base, resolver, temporal, registry, and
+quality dependencies.
+
 The superseded-artifact cleanup is dry-run by default. It permits only the 14
 named targets encoded in `superseded_cleanup.py`: the terminally superseded
 `base-v1`, the v1/v2 layers, and the pre-rights intermediate directories. It

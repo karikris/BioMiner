@@ -36,7 +36,8 @@ Do this only after the terminal resolver, resolver-integrated publication,
 publication audit, and locator index have all completed. These commands fail
 before creating the handoff when any validator fails. `cp -al` creates
 same-filesystem hard links, so the staged 25–35 GB handoff consumes almost no
-additional data blocks.
+additional data blocks. Run this strict staging sequence before the guarded
+superseded-artifact cleanup removes checksum-bound build dependencies.
 
 ```bash
 cd /home/toffe/github/karikris/BioMiner
