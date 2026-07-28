@@ -94,6 +94,7 @@ PILOT_SELECTION_SCHEMA = pa.schema(
 PILOT_CACHE_IMPORT_SCHEMA_VERSION = (
     "biominer-gbif-media-url-pilot-cache-import/v1"
 )
+HOST_FAIR_SCHEDULER_VERSION = "gbif-media-url-host-fair-scheduler/v1"
 PREEXISTING_COMPLETION_SCHEMA = pa.schema(
     [
         ("source_row_id", pa.string()),
@@ -102,6 +103,15 @@ PREEXISTING_COMPLETION_SCHEMA = pa.schema(
         ("row_count", pa.int64()),
         ("attempt_count", pa.int64()),
         ("completed_at", pa.string()),
+    ]
+)
+SCHEDULE_ASSIGNMENT_SCHEMA = pa.schema(
+    [
+        ("work_key", pa.string()),
+        ("origin_host", pa.string()),
+        ("schedule_rank", pa.int64()),
+        ("schedule_chunk", pa.int64()),
+        ("previous_schedule_rank", pa.int64()),
     ]
 )
 
@@ -119,6 +129,7 @@ def prepare_resolution(
     expected_rights_blocked_rows: int | None = None,
     resolver_config: ResolverConfig | None = None,
     pilot_acceptance_manifest: str | Path | None = None,
+    scheduling_chunk_rows: int = 25,
 ) -> dict[str, Any]:
     source_path = Path(source).resolve()
     manifest_path = Path(source_manifest).resolve()
@@ -129,6 +140,8 @@ def prepare_resolution(
         raise FileNotFoundError(manifest_path)
     if enqueue_batch_rows <= 0:
         raise ValueError("enqueue_batch_rows must be positive")
+    if scheduling_chunk_rows <= 0:
+        raise ValueError("scheduling_chunk_rows must be positive")
     if mode not in {"pilot", "full"}:
         raise ValueError("mode must be pilot or full")
     run_id = str(run_id).strip()
@@ -218,6 +231,10 @@ def prepare_resolution(
             f"expected {expected_rights_blocked_rows}, found {rights_blocked}"
         )
     work_inputs = select_pilot_inputs(all_inputs) if mode == "pilot" else all_inputs
+    scheduled_work_inputs = host_fair_schedule(
+        work_inputs,
+        chunk_rows=scheduling_chunk_rows,
+    )
     work_rights_blocked = sum(item.rights_blocked for item in work_inputs)
     config = {
         "schema_version": SCHEMA_VERSION,
@@ -239,6 +256,8 @@ def prepare_resolution(
             for adapter_id, version in DEFAULT_PROVIDER_ADAPTER_VERSIONS
         ],
         "resolver_fingerprint": resolver_fingerprint,
+        "scheduler_version": HOST_FAIR_SCHEDULER_VERSION,
+        "scheduling_chunk_rows": scheduling_chunk_rows,
         "baseline_maturity": "legacy_v3_migration_not_ground_zero_production",
         "pilot_acceptance_manifest": (
             str(pilot_acceptance["path"]) if pilot_acceptance is not None else None
@@ -257,11 +276,15 @@ def prepare_resolution(
     if run["config"] != config:
         raise ValueError("run_id already exists with incompatible configuration")
     inserted = 0
-    for offset in range(0, len(work_inputs), enqueue_batch_rows):
+    for offset in range(0, len(scheduled_work_inputs), enqueue_batch_rows):
         payloads: list[dict[str, Any]] = []
-        for item in work_inputs[offset : offset + enqueue_batch_rows]:
+        for schedule_rank, item in enumerate(
+            scheduled_work_inputs[offset : offset + enqueue_batch_rows],
+            start=offset,
+        ):
             payload = item.to_payload()
             payload["work_key"] = item.source_row_id
+            payload["_work_schedule_rank"] = schedule_rank
             payloads.append(payload)
         inserted += workstore.enqueue_work(
             JOB_NAME,
@@ -295,6 +318,192 @@ def prepare_resolution(
     }
     _write_json_idempotent(root / f"prepare-{run_id}.json", receipt)
     return receipt
+
+
+def rebalance_resolution_queue(
+    *,
+    workstore: WorkStore,
+    run_id: str,
+    output_root: str | Path,
+    chunk_rows: int = 25,
+) -> dict[str, Any]:
+    if chunk_rows <= 0:
+        raise ValueError("chunk_rows must be positive")
+    run = workstore.get_run(run_id=run_id)
+    if run is None or run["job_name"] != JOB_NAME or run["stage"] != STAGE:
+        raise ValueError(f"unknown GBIF URL resolution run: {run_id}")
+    root = Path(output_root).resolve()
+    configured_root = Path(str(run["config"].get("output_root", ""))).resolve()
+    if root != configured_root:
+        raise ValueError("rebalance output root does not match the prepared run")
+    registry_version = str(run["registry_version"])
+    work_items = workstore.list_work_items(
+        job_name=JOB_NAME,
+        stage=STAGE,
+        registry_version=registry_version,
+    )
+    claimed = [item for item in work_items if item["status"] == "claimed"]
+    if claimed:
+        raise RuntimeError(
+            "resolver queue rebalancing requires zero active claims; "
+            f"found {len(claimed)}"
+        )
+    pending = [item for item in work_items if item["status"] == "pending"]
+    inputs = [
+        ResolutionInput.from_payload(dict(item["payload"]))
+        for item in pending
+    ]
+    by_key = {str(item["work_key"]): item for item in pending}
+    if len(by_key) != len(pending):
+        raise RuntimeError("pending resolver work keys are not unique")
+    scheduled = host_fair_schedule(inputs, chunk_rows=chunk_rows)
+    if {item.source_row_id for item in scheduled} != set(by_key):
+        raise RuntimeError("host-fair schedule does not preserve pending work")
+    schedule_fingerprint = canonical_semantic_fingerprint(
+        {
+            "scheduler_version": HOST_FAIR_SCHEDULER_VERSION,
+            "run_id": run_id,
+            "registry_version": registry_version,
+            "chunk_rows": chunk_rows,
+            "pending_work": sorted(
+                [item.source_row_id, item.host] for item in inputs
+            ),
+        }
+    )
+    token = schedule_fingerprint.split(":", 1)[1]
+    destination = root / "scheduling" / f"host-fair-{token}"
+    assignment_path = destination / "schedule_assignments.parquet"
+    manifest_path = destination / "manifest.json"
+    if destination.exists():
+        if not manifest_path.is_file() or not assignment_path.is_file():
+            raise FileExistsError(
+                f"existing scheduling publication is incomplete: {destination}"
+            )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        _validate_rebalance_receipt(
+            manifest,
+            assignment_path=assignment_path,
+            schedule_fingerprint=schedule_fingerprint,
+            run_id=run_id,
+            work_items=work_items,
+        )
+        return manifest
+
+    schedule_rows = []
+    per_host_offsets: Counter[str] = Counter()
+    for schedule_rank, item in enumerate(scheduled):
+        previous = by_key[item.source_row_id].get("schedule_rank")
+        schedule_rows.append(
+            {
+                "work_key": item.source_row_id,
+                "origin_host": item.host,
+                "schedule_rank": schedule_rank,
+                "schedule_chunk": per_host_offsets[item.host] // chunk_rows,
+                "previous_schedule_rank": previous,
+            }
+        )
+        per_host_offsets[item.host] += 1
+    assignment_table = pa.Table.from_pylist(
+        schedule_rows,
+        schema=SCHEDULE_ASSIGNMENT_SCHEMA,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.parent / f".{destination.name}.{uuid4().hex}.staging"
+    staging.mkdir()
+    try:
+        staging_assignment = staging / assignment_path.name
+        pq.write_table(
+            assignment_table,
+            staging_assignment,
+            compression="zstd",
+            use_dictionary=True,
+            write_statistics=True,
+            row_group_size=50_000,
+        )
+        updated = workstore.set_pending_schedule_ranks(
+            [
+                (str(row["work_key"]), int(row["schedule_rank"]))
+                for row in schedule_rows
+            ],
+            job_name=JOB_NAME,
+            stage=STAGE,
+            registry_version=registry_version,
+        )
+        if updated != len(schedule_rows):
+            raise RuntimeError(
+                "pending resolver queue changed during rebalancing: "
+                f"expected {len(schedule_rows)} updates, applied {updated}"
+            )
+        refreshed = workstore.list_work_items(
+            job_name=JOB_NAME,
+            stage=STAGE,
+            registry_version=registry_version,
+            statuses=["pending"],
+        )
+        refreshed_ranks = {
+            str(item["work_key"]): item.get("schedule_rank")
+            for item in refreshed
+        }
+        if refreshed_ranks != {
+            str(row["work_key"]): int(row["schedule_rank"])
+            for row in schedule_rows
+        }:
+            raise RuntimeError("persisted schedule ranks differ from the plan")
+        assignment_inventory = _parquet_inventory(staging_assignment)
+        schedule_chunks = sum(
+            (count + chunk_rows - 1) // chunk_rows
+            for count in Counter(item.host for item in scheduled).values()
+        )
+        manifest = {
+            "schema_version": HOST_FAIR_SCHEDULER_VERSION,
+            "generated_at": _timestamp(),
+            "git_commit": _git_revision(),
+            "run_id": run_id,
+            "registry_version": registry_version,
+            "schedule_fingerprint": schedule_fingerprint,
+            "algorithm": {
+                "name": "full_origin_chunks_round_robin_then_remainders",
+                "chunk_rows": chunk_rows,
+            },
+            "network_requests": 0,
+            "counts": {
+                "pending_rows": len(schedule_rows),
+                "origin_hosts": len(per_host_offsets),
+                "schedule_chunks": schedule_chunks,
+            },
+            "artifacts": {
+                "schedule_assignments": {
+                    **assignment_inventory,
+                    "path": str(assignment_path),
+                }
+            },
+            "validation": {
+                "zero_active_claims": True,
+                "pending_identity_set_preserved": True,
+                "schedule_ranks_unique": len(schedule_rows)
+                == len({row["schedule_rank"] for row in schedule_rows}),
+                "schedule_ranks_dense": sorted(
+                    row["schedule_rank"] for row in schedule_rows
+                )
+                == list(range(len(schedule_rows))),
+                "all_pending_rows_updated": updated == len(schedule_rows),
+                "assignment_row_groups_complete": assignment_inventory[
+                    "row_groups_complete"
+                ],
+                "network_requests_zero": True,
+            },
+            "manifest_policy": {"written_last": True, "create_only": True},
+        }
+        if not all(manifest["validation"].values()):
+            raise RuntimeError(
+                f"resolver schedule validation failed: {manifest['validation']}"
+            )
+        _write_json(staging / "manifest.json", manifest)
+        staging.replace(destination)
+        return manifest
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def import_pilot_cache(
@@ -1326,6 +1535,40 @@ def select_pilot_inputs(inputs: list[ResolutionInput]) -> list[ResolutionInput]:
     return sorted(selected, key=lambda item: item.source_row_id)
 
 
+def host_fair_schedule(
+    inputs: list[ResolutionInput],
+    *,
+    chunk_rows: int,
+) -> list[ResolutionInput]:
+    if chunk_rows <= 0:
+        raise ValueError("chunk_rows must be positive")
+    by_host: dict[str, list[ResolutionInput]] = {}
+    for item in inputs:
+        by_host.setdefault(item.host, []).append(item)
+    for rows in by_host.values():
+        rows.sort(key=lambda item: item.source_row_id)
+    offsets = {host: 0 for host in by_host}
+    scheduled: list[ResolutionInput] = []
+    while True:
+        full_chunk_hosts = [
+            host
+            for host in sorted(by_host)
+            if len(by_host[host]) - offsets[host] >= chunk_rows
+        ]
+        if not full_chunk_hosts:
+            break
+        for host in full_chunk_hosts:
+            start = offsets[host]
+            end = start + chunk_rows
+            scheduled.extend(by_host[host][start:end])
+            offsets[host] = end
+    for host in sorted(by_host):
+        scheduled.extend(by_host[host][offsets[host] :])
+    if len(scheduled) != len(inputs):
+        raise RuntimeError("host-fair scheduler did not preserve input rows")
+    return scheduled
+
+
 def pilot_selection_table(
     selected: list[ResolutionInput], *, population: list[ResolutionInput]
 ) -> pa.Table:
@@ -1470,6 +1713,47 @@ def _validate_cacheable_pilot_resolution(
         raise ValueError("pilot acceptance result count differs")
     if attempt_rows != int(acceptance_counts.get("attempt_rows", -1)):
         raise ValueError("pilot acceptance attempt count differs")
+
+
+def _validate_rebalance_receipt(
+    manifest: dict[str, Any],
+    *,
+    assignment_path: Path,
+    schedule_fingerprint: str,
+    run_id: str,
+    work_items: list[dict[str, Any]],
+) -> None:
+    if manifest.get("schema_version") != HOST_FAIR_SCHEDULER_VERSION:
+        raise ValueError("existing resolver schedule schema is unsupported")
+    if manifest.get("run_id") != run_id:
+        raise ValueError("existing resolver schedule belongs to another run")
+    if manifest.get("schedule_fingerprint") != schedule_fingerprint:
+        raise ValueError("existing resolver schedule fingerprint differs")
+    if manifest.get("network_requests") != 0:
+        raise ValueError("existing resolver schedule reports network requests")
+    if manifest.get("manifest_policy", {}).get("written_last") is not True:
+        raise ValueError("existing resolver schedule manifest was not written last")
+    if not all((manifest.get("validation") or {}).values()):
+        raise ValueError("existing resolver schedule validation is incomplete")
+    artifact = (manifest.get("artifacts") or {}).get("schedule_assignments") or {}
+    if (
+        artifact.get("path") != str(assignment_path)
+        or artifact.get("physical_sha256") != "sha256:" + _sha256(assignment_path)
+    ):
+        raise ValueError("existing resolver schedule assignment checksum differs")
+    assignments = pq.read_table(
+        assignment_path,
+        schema=SCHEDULE_ASSIGNMENT_SCHEMA,
+    )
+    if assignments.num_rows != int(artifact.get("row_count", -1)):
+        raise ValueError("existing resolver schedule assignment count differs")
+    by_key = {str(item["work_key"]): item for item in work_items}
+    for row in assignments.select(["work_key", "schedule_rank"]).to_pylist():
+        item = by_key.get(str(row["work_key"]))
+        if item is None or item.get("schedule_rank") != row["schedule_rank"]:
+            raise ValueError(
+                "existing resolver schedule no longer matches work state"
+            )
 
 
 def _validated_pilot_artifact(

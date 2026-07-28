@@ -11,6 +11,7 @@ from biominer.gbif_media_resolution.pipeline import (
     import_pilot_cache,
     prepare_resolution,
     publish_v4,
+    rebalance_resolution_queue,
     run_worker,
 )
 from biominer.gbif_media_resolution.pilot_audit import (
@@ -43,6 +44,7 @@ def add_gbif_media_resolution_parser(
     prepare.add_argument("--expected-missing-rows", type=int, default=130_689)
     prepare.add_argument("--expected-rights-blocked-rows", type=int, default=4_055)
     prepare.add_argument("--enqueue-batch-rows", type=int, default=1_000)
+    prepare.add_argument("--scheduling-chunk-rows", type=int, default=25)
     prepare.add_argument("--mode", choices=("pilot", "full"), default="pilot")
     prepare.add_argument(
         "--allow-full-queue",
@@ -54,6 +56,15 @@ def add_gbif_media_resolution_parser(
         help="required PASS execution-audit manifest before full-queue preparation",
     )
     _add_resolver_arguments(prepare)
+
+    rebalance = stages.add_parser(
+        "rebalance",
+        help="persist a deterministic host-fair order for pending resolver work",
+    )
+    _add_workstore_arguments(rebalance)
+    rebalance.add_argument("--output-root", required=True)
+    rebalance.add_argument("--run-id", required=True)
+    rebalance.add_argument("--chunk-rows", type=int, default=25)
 
     import_cache = stages.add_parser(
         "import-pilot-cache",
@@ -144,6 +155,14 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             expected_rights_blocked_rows=args.expected_rights_blocked_rows,
             resolver_config=resolver_config,
             pilot_acceptance_manifest=args.pilot_acceptance_manifest,
+            scheduling_chunk_rows=args.scheduling_chunk_rows,
+        )
+    elif stage == "rebalance":
+        result = rebalance_resolution_queue(
+            workstore=_workstore(args),
+            run_id=args.run_id,
+            output_root=args.output_root,
+            chunk_rows=args.chunk_rows,
         )
     elif stage == "import-pilot-cache":
         result = import_pilot_cache(

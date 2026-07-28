@@ -28,9 +28,11 @@ from biominer.gbif_media_resolution.models import (
 )
 from biominer.gbif_media_resolution.pipeline import (
     finalize_resolution,
+    host_fair_schedule,
     import_pilot_cache,
     prepare_resolution,
     publish_v4,
+    rebalance_resolution_queue,
     pilot_selection_table,
     run_worker,
     select_pilot_inputs,
@@ -422,6 +424,19 @@ def test_cli_requires_explicit_network_and_full_queue_opt_in() -> None:
         ]
     )
     assert import_cache.gbif_media_url_command == "import-pilot-cache"
+    rebalance = parser.parse_args(
+        [
+            COMMAND,
+            "rebalance",
+            "--output-root",
+            "runtime",
+            "--run-id",
+            "full-run",
+            "--chunk-rows",
+            "25",
+        ]
+    )
+    assert rebalance.gbif_media_url_command == "rebalance"
 
 
 def test_structured_html_extraction_does_not_scrape_generic_images() -> None:
@@ -930,6 +945,124 @@ def test_import_pilot_cache_rejects_resolution_checksum_mismatch(
             output_root=runtime,
         )
     assert not (runtime / "shards").exists()
+
+
+def test_host_fair_schedule_emits_full_origin_chunks_before_remainders() -> None:
+    inputs = [
+        _input(
+            source_row_id=f"{host}-{offset}",
+            media_references=f"https://{host}.example/record/{offset}",
+        )
+        for host, count in (("a", 5), ("b", 4), ("c", 2))
+        for offset in range(count)
+    ]
+
+    scheduled = host_fair_schedule(inputs, chunk_rows=2)
+    hosts = [item.host for item in scheduled]
+
+    assert hosts == [
+        "a.example",
+        "a.example",
+        "b.example",
+        "b.example",
+        "c.example",
+        "c.example",
+        "a.example",
+        "a.example",
+        "b.example",
+        "b.example",
+        "a.example",
+    ]
+    assert [item.source_row_id for item in scheduled] == [
+        "a-0",
+        "a-1",
+        "b-0",
+        "b-1",
+        "c-0",
+        "c-1",
+        "a-2",
+        "a-3",
+        "b-2",
+        "b-3",
+        "a-4",
+    ]
+
+
+def test_rebalance_resolution_queue_is_idempotent_and_auditable(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.parquet"
+    source_manifest = tmp_path / "source_manifest.json"
+    runtime = tmp_path / "runtime"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    _write_source(source)
+    source_manifest.write_text("{}\n", encoding="utf-8")
+    pilot_acceptance = _write_pilot_acceptance(tmp_path, source)
+    prepared = prepare_resolution(
+        source=source,
+        source_manifest=source_manifest,
+        output_root=runtime,
+        workstore=state,
+        run_id="rebalance-run",
+        expected_missing_rows=3,
+        mode="full",
+        pilot_acceptance_manifest=pilot_acceptance,
+        resolver_config=ResolverConfig(max_attempts=1),
+    )
+
+    receipt = rebalance_resolution_queue(
+        workstore=state,
+        run_id="rebalance-run",
+        output_root=runtime,
+        chunk_rows=1,
+    )
+    assert receipt["network_requests"] == 0
+    assert receipt["counts"] == {
+        "origin_hosts": 2,
+        "pending_rows": 3,
+        "schedule_chunks": 3,
+    }
+    assignments = pq.read_table(
+        receipt["artifacts"]["schedule_assignments"]["path"]
+    ).sort_by("schedule_rank")
+    assert assignments["origin_host"].to_pylist() == [
+        "example.org",
+        "youtube.com",
+        "example.org",
+    ]
+    assert (
+        rebalance_resolution_queue(
+            workstore=state,
+            run_id="rebalance-run",
+            output_root=runtime,
+            chunk_rows=1,
+        )
+        == receipt
+    )
+
+    first = state.claim_next_batch(
+        "worker-1",
+        1,
+        job_name=JOB_NAME,
+        stage=STAGE,
+        registry_version=prepared["source_artifact_sha256"],
+    )
+    second = state.claim_next_batch(
+        "worker-2",
+        1,
+        job_name=JOB_NAME,
+        stage=STAGE,
+        registry_version=prepared["source_artifact_sha256"],
+    )
+    assert ResolutionInput.from_payload(first[0]["payload"]).host == "example.org"
+    assert ResolutionInput.from_payload(second[0]["payload"]).host == "youtube.com"
+    with pytest.raises(RuntimeError, match="zero active claims"):
+        rebalance_resolution_queue(
+            workstore=state,
+            run_id="rebalance-run",
+            output_root=runtime,
+            chunk_rows=1,
+        )
 
 
 def test_worker_renews_every_claim_before_shard_publication(
