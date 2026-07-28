@@ -1,4 +1,14 @@
-from biominer.gbif_quality.final_reports import REPORT_NAMES, _report
+from pathlib import Path
+
+import pytest
+
+from biominer.gbif_quality.final_reports import (
+    LATEST_EVIDENCE_MANIFESTS,
+    REPORT_NAMES,
+    REPORT_VERSION,
+    _report,
+    publish_final_reports,
+)
 
 
 def test_final_report_contract_is_complete_and_status_explicit() -> None:
@@ -10,3 +20,26 @@ def test_final_report_contract_is_complete_and_status_explicit() -> None:
     assert text.startswith("# Example")
     assert "UNKNOWN" in text
     assert "NOT_TESTED" in text
+    assert REPORT_VERSION.endswith("/v2")
+
+
+def test_final_reports_require_current_execution_evidence() -> None:
+    assert {
+        "quality_results/restart_validation_v3/manifest.json",
+        "provider_enrichment_v4/manifest.json",
+        "quality_results/provider_archive_review/v1/manifest.json",
+        "derived_assertions/geography_v3/manifest.json",
+        "quality_results/phase3_v3/manifest.json",
+        "quality_results/phase4_pilot_execution/v1/audit/manifest.json",
+    } <= set(LATEST_EVIDENCE_MANIFESTS)
+
+
+def test_final_reports_are_create_only(tmp_path: Path) -> None:
+    report_root = tmp_path / "reports"
+    report_root.mkdir()
+    with pytest.raises(FileExistsError):
+        publish_final_reports(
+            data_root=tmp_path / "missing-data",
+            report_root=report_root,
+            code_commit="commit",
+        )
