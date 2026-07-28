@@ -24,6 +24,7 @@ from biominer.workstore.keys import publication_lock_digest, scoped_work_item_ke
 from biominer.storage.sqlite_connection import connect_closing
 
 DEFAULT_STAGE = "default"
+SQLITE_BUSY_TIMEOUT_MS = 60_000
 
 
 class SQLiteWorkStore:
@@ -728,12 +729,24 @@ class SQLiteWorkStore:
             conn.execute("COMMIT")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = connect_closing(self.path)
+        conn = connect_closing(
+            self.path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         return conn
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            journal_mode = str(
+                conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            ).casefold()
+            if journal_mode != "wal":
+                raise RuntimeError(
+                    "SQLite WorkStore requires WAL journal mode for concurrent workers"
+                )
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS biominer_runs (

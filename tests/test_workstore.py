@@ -4,8 +4,11 @@ import builtins
 from datetime import UTC, datetime, timedelta
 import hashlib
 import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from typing import Any
 import sqlite3
+import time
 
 import pytest
 
@@ -65,6 +68,90 @@ def test_sqlite_workstore_enqueue_claim_and_complete(tmp_path) -> None:
     with sqlite3.connect(store.path) as conn:
         row = conn.execute("SELECT status, output_uri, checksum, row_count FROM biominer_work_items WHERE work_key = 'a'").fetchone()
     assert row == ("completed", "staging/a.parquet", "sha256:a", 10)
+
+
+def test_sqlite_workstore_enables_wal_and_bounded_busy_wait(tmp_path) -> None:
+    store = SQLiteWorkStore(tmp_path / "work.sqlite")
+
+    with store._connect() as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert journal_mode == "wal"
+    assert busy_timeout >= 30_000
+
+
+def test_sqlite_workstore_waits_for_a_transient_writer_lock(tmp_path) -> None:
+    store = SQLiteWorkStore(tmp_path / "work.sqlite")
+    store.enqueue_work(
+        "resolver",
+        "registry-v1",
+        [{"work_key": "lease"}],
+        stage="network",
+    )
+    claimed = store.claim_next_batch(
+        "worker-1",
+        1,
+        job_name="resolver",
+        stage="network",
+        registry_version="registry-v1",
+    )
+    assert len(claimed) == 1
+
+    blocker = sqlite3.connect(store.path, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            renewal = executor.submit(
+                store.renew_claim,
+                "lease",
+                worker_id="worker-1",
+                attempt_count=1,
+                stale_after_seconds=60,
+            )
+            time.sleep(0.1)
+            assert not renewal.done()
+            blocker.execute("COMMIT")
+            assert renewal.result(timeout=5)
+    finally:
+        if blocker.in_transaction:
+            blocker.execute("ROLLBACK")
+        blocker.close()
+
+
+def test_sqlite_workstore_serializes_concurrent_lease_renewals(
+    tmp_path,
+) -> None:
+    store = SQLiteWorkStore(tmp_path / "work.sqlite")
+    store.enqueue_work(
+        "resolver",
+        "registry-v1",
+        [{"work_key": f"lease-{index}"} for index in range(8)],
+        stage="network",
+    )
+    claimed = [
+        store.claim_next_batch(
+            f"worker-{index}",
+            1,
+            job_name="resolver",
+            stage="network",
+            registry_version="registry-v1",
+        )[0]
+        for index in range(8)
+    ]
+    gate = Barrier(len(claimed))
+
+    def renew(item: dict[str, Any]) -> bool:
+        gate.wait(timeout=5)
+        return store.renew_claim(
+            str(item["work_key"]),
+            worker_id=str(item["claimed_by"]),
+            attempt_count=int(item["attempt_count"]),
+            stale_after_seconds=60,
+        )
+
+    with ThreadPoolExecutor(max_workers=len(claimed)) as executor:
+        assert all(executor.map(renew, claimed))
 
 
 def test_sqlite_workstore_completed_keys_are_filtered(tmp_path) -> None:
