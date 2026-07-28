@@ -262,6 +262,40 @@ class PostgresWorkStore:
                 ),
             )
 
+    def complete_pending(
+        self,
+        work_key: str,
+        *,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET status = %s,
+                    completed_at = now(),
+                    output_uri = %s,
+                    checksum = %s,
+                    row_count = %s,
+                    error = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL
+                WHERE work_key = %s
+                  AND status = %s
+                """,
+                (
+                    COMPLETED,
+                    output_uri,
+                    checksum,
+                    row_count,
+                    work_key,
+                    PENDING,
+                ),
+            )
+        return int(getattr(result, "rowcount", 0)) == 1
+
     def mark_failed(self, work_key: str, error: str) -> None:
         with self._connect() as conn:
             conn.execute(

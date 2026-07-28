@@ -80,6 +80,70 @@ def test_sqlite_workstore_completed_keys_are_filtered(tmp_path) -> None:
     assert store.completed_keys("poll_once", None) == set()
 
 
+def test_sqlite_complete_pending_is_atomic_and_does_not_clobber_claims(
+    tmp_path,
+) -> None:
+    store = SQLiteWorkStore(tmp_path / "work.sqlite")
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [{"work_key": "claimed"}],
+    )
+    claimed = store.claim_next_batch(
+        "worker-1",
+        1,
+        job_name="cache_import",
+        stage="default",
+        registry_version="registry-v1",
+    )
+    assert claimed[0]["work_key"] == "claimed"
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [{"work_key": "pending"}, {"work_key": "completed"}],
+    )
+    assert store.complete_pending(
+        "completed",
+        output_uri="cache/original.parquet",
+        checksum="sha256:original",
+        row_count=1,
+    )
+
+    assert store.complete_pending(
+        "pending",
+        output_uri="cache/results.parquet",
+        checksum="sha256:cache",
+        row_count=1,
+    )
+    assert not store.complete_pending(
+        "claimed",
+        output_uri="cache/results.parquet",
+        checksum="sha256:cache",
+        row_count=1,
+    )
+    assert not store.complete_pending(
+        "completed",
+        output_uri="cache/replacement.parquet",
+        checksum="sha256:replacement",
+        row_count=1,
+    )
+
+    by_key = {
+        item["work_key"]: item
+        for item in store.list_work_items(
+            job_name="cache_import",
+            stage="default",
+            registry_version="registry-v1",
+        )
+    }
+    assert by_key["pending"]["status"] == "completed"
+    assert by_key["pending"]["output_uri"] == "cache/results.parquet"
+    assert by_key["claimed"]["status"] == "claimed"
+    assert by_key["claimed"]["output_uri"] is None
+    assert by_key["completed"]["output_uri"] == "cache/original.parquet"
+    assert by_key["completed"]["checksum"] == "sha256:original"
+
+
 def test_sqlite_workstore_records_failures_and_requeues_stale_claims(tmp_path) -> None:
     store = SQLiteWorkStore(tmp_path / "work.sqlite")
     store.enqueue_work("poll_once", None, [{"work_key": "a"}, {"work_key": "b"}])
@@ -336,6 +400,59 @@ def test_postgres_workstore_contract_with_injected_connection() -> None:
     ]
 
 
+def test_postgres_complete_pending_is_atomic_and_does_not_clobber_claims() -> None:
+    fake = _FakePostgres()
+    store = PostgresWorkStore(
+        "postgresql://user:pass@example.test/db",
+        connect=fake.connect,
+    )
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [{"work_key": "claimed"}],
+    )
+    claimed = store.claim_next_batch(
+        "worker-1",
+        1,
+        job_name="cache_import",
+        stage="default",
+        registry_version="registry-v1",
+    )
+    assert claimed[0]["work_key"] == "claimed"
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [{"work_key": "pending"}, {"work_key": "completed"}],
+    )
+    assert store.complete_pending(
+        "completed",
+        output_uri="cache/original.parquet",
+        checksum="sha256:original",
+        row_count=1,
+    )
+    assert store.complete_pending(
+        "pending",
+        output_uri="cache/results.parquet",
+        checksum="sha256:cache",
+        row_count=1,
+    )
+    assert not store.complete_pending(
+        "claimed",
+        output_uri="cache/results.parquet",
+        checksum="sha256:cache",
+        row_count=1,
+    )
+    assert not store.complete_pending(
+        "completed",
+        output_uri="cache/replacement.parquet",
+        checksum="sha256:replacement",
+        row_count=1,
+    )
+    assert fake.work_items["claimed"]["status"] == "claimed"
+    assert fake.work_items["completed"]["output_uri"] == "cache/original.parquet"
+    assert fake.work_items["pending"]["output_uri"] == "cache/results.parquet"
+
+
 def test_postgres_workstore_failure_listing_and_requeue_contract() -> None:
     fake = _FakePostgres()
     store = PostgresWorkStore("postgresql://user:pass@example.test/db", connect=fake.connect)
@@ -535,6 +652,29 @@ class _FakePostgresConnection:
                     "status": status,
                     "completed_at": str(completed_at),
                     "error": error,
+                }
+            )
+            return _FakeResult(rowcount=1)
+        if (
+            normalized.startswith(
+                "UPDATE biominer_work_items SET status = %s, completed_at = now()"
+            )
+            and "AND status = %s" in normalized
+        ):
+            status, output_uri, checksum, row_count, work_key, required_status = params
+            row = self.db.work_items[work_key]
+            if row["status"] != required_status:
+                return _FakeResult(rowcount=0)
+            row.update(
+                {
+                    "status": status,
+                    "completed_at": "2026-07-04T00:00:00+00:00",
+                    "output_uri": output_uri,
+                    "checksum": checksum,
+                    "row_count": row_count,
+                    "error": None,
+                    "claimed_by": None,
+                    "claimed_at": None,
                 }
             )
             return _FakeResult(rowcount=1)

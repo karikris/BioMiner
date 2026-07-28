@@ -276,6 +276,41 @@ class SQLiteWorkStore:
                 (COMPLETED, _timestamp(), output_uri, checksum, row_count, work_key),
             )
 
+    def complete_pending(
+        self,
+        work_key: str,
+        *,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE biominer_work_items
+                SET status = ?,
+                    completed_at = ?,
+                    output_uri = ?,
+                    checksum = ?,
+                    row_count = ?,
+                    error = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL
+                WHERE work_key = ?
+                  AND status = ?
+                """,
+                (
+                    COMPLETED,
+                    _timestamp(),
+                    output_uri,
+                    checksum,
+                    row_count,
+                    work_key,
+                    PENDING,
+                ),
+            )
+        return int(result.rowcount) == 1
+
     def mark_failed(self, work_key: str, error: str) -> None:
         with self._connect() as conn:
             conn.execute(
