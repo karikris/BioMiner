@@ -766,6 +766,71 @@ def test_prepare_worker_finalize_and_publish_v4(tmp_path: Path) -> None:
         "written_last"
     ]
 
+    result_shard = Path(str(worker["result_shard"]))
+    original_result_bytes = result_shard.read_bytes()
+    with result_shard.open("ab") as handle:
+        handle.write(b"tampered")
+    with pytest.raises(
+        RuntimeError,
+        match="result shard checksum mismatch",
+    ):
+        finalize_resolution(
+            workstore=state,
+            run_id="fixture-run",
+            output_root=runtime,
+            output_directory=tmp_path / "tampered-resolution",
+            expected_rows=3,
+        )
+    result_shard.write_bytes(original_result_bytes)
+
+    attempt_shard = Path(str(worker["attempt_shard"]))
+    original_attempt_bytes = attempt_shard.read_bytes()
+    with attempt_shard.open("ab") as handle:
+        handle.write(b"tampered")
+    with pytest.raises(
+        RuntimeError,
+        match="attempt shard checksum mismatch",
+    ):
+        finalize_resolution(
+            workstore=state,
+            run_id="fixture-run",
+            output_root=runtime,
+            output_directory=tmp_path / "tampered-attempt-resolution",
+            expected_rows=3,
+        )
+    attempt_shard.write_bytes(original_attempt_bytes)
+
+    orphan_shard = runtime / "shards" / "results" / "orphan.parquet"
+    orphan_shard.write_bytes(original_result_bytes)
+    state.register_shard(
+        shard_id="orphan",
+        job_name=JOB_NAME,
+        registry_version=prepared["source_artifact_sha256"],
+        stage=STAGE,
+        run_id="fixture-run",
+        worker_id="expired-worker",
+        uri=str(orphan_shard),
+        checksum=str(worker["result_sha256"]),
+        row_count=3,
+        byte_count=orphan_shard.stat().st_size,
+        metadata={
+            "attempt_uri": str(attempt_shard),
+            "attempt_sha256": str(worker["attempt_sha256"]),
+            "attempt_rows": pq.ParquetFile(attempt_shard).metadata.num_rows,
+        },
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="unreferenced or unregistered result shards",
+    ):
+        finalize_resolution(
+            workstore=state,
+            run_id="fixture-run",
+            output_root=runtime,
+            output_directory=tmp_path / "unreferenced-resolution",
+            expected_rows=3,
+        )
+
 
 def test_import_pilot_cache_is_checksum_bound_idempotent_and_mixes_prior_results(
     tmp_path: Path,
@@ -874,6 +939,12 @@ def test_import_pilot_cache_is_checksum_bound_idempotent_and_mixes_prior_results
     )
     assert manifest["counts"]["result_rows"] == 3
     assert manifest["counts"]["attempt_rows"] == 2
+    assert manifest["counts"]["registered_result_rows"] == 4
+    assert manifest["counts"]["selected_result_rows"] == 3
+    assert manifest["counts"]["unselected_registered_result_rows"] == 1
+    assert manifest["counts"]["registered_attempt_rows"] == 3
+    assert manifest["counts"]["selected_attempt_rows"] == 2
+    assert manifest["counts"]["unselected_registered_attempt_rows"] == 1
 
 
 def test_import_pilot_cache_rejects_active_claims_before_publication(

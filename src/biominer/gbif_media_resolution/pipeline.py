@@ -1110,9 +1110,11 @@ def finalize_resolution(
         raise RuntimeError(f"resolution run is incomplete: {dict(non_completed)}")
 
     source_ids_by_result_uri: dict[str, set[str]] = {}
+    work_items_by_result_uri: dict[str, list[dict[str, Any]]] = {}
     for item in work_items:
-        uri = str(item["output_uri"])
+        uri = str(Path(str(item["output_uri"])).resolve())
         source_ids_by_result_uri.setdefault(uri, set()).add(str(item["work_key"]))
+        work_items_by_result_uri.setdefault(uri, []).append(item)
     result_paths = sorted(Path(uri) for uri in source_ids_by_result_uri)
     shard_root = (Path(output_root).resolve() / "shards").resolve()
     if not result_paths and work_items:
@@ -1123,17 +1125,73 @@ def finalize_resolution(
         registry_version=registry_version,
         run_id=run_id,
     )
-    metadata_by_uri = {str(item["uri"]): item["metadata"] for item in committed}
+    committed_by_uri = {
+        str(Path(str(item["uri"])).resolve()): item
+        for item in committed
+    }
+    if len(committed_by_uri) != len(committed):
+        raise RuntimeError("resolution run has duplicate registered shard URIs")
+    selected_uris = set(source_ids_by_result_uri)
+    registered_uris = set(committed_by_uri)
+    if selected_uris != registered_uris:
+        raise RuntimeError(
+            "resolution run has unreferenced or unregistered result shards: "
+            f"unreferenced={len(registered_uris - selected_uris)}, "
+            f"unregistered={len(selected_uris - registered_uris)}"
+        )
+    all_work_ids = {str(item["work_key"]) for item in work_items}
+    registered_result_rows = 0
+    unselected_registered_result_rows = 0
+    registered_attempt_rows = 0
+    unselected_registered_attempt_rows = 0
     attempt_selections: list[tuple[Path, set[str]]] = []
     for result_path in result_paths:
         resolved_result_path = result_path.resolve()
+        result_uri = str(resolved_result_path)
         if not resolved_result_path.is_relative_to(shard_root):
             raise RuntimeError(f"result shard escapes the run output root: {result_path}")
         if not result_path.is_file():
             raise FileNotFoundError(result_path)
-        metadata = metadata_by_uri.get(str(result_path))
-        if metadata is None:
+        registered = committed_by_uri.get(result_uri)
+        if registered is None:
             raise RuntimeError(f"result shard is not registered: {result_path}")
+        metadata = registered["metadata"]
+        result_sha256 = "sha256:" + _sha256(result_path)
+        if result_sha256 != registered["checksum"]:
+            raise RuntimeError(f"result shard checksum mismatch: {result_path}")
+        if int(registered["byte_count"]) != result_path.stat().st_size:
+            raise RuntimeError(f"result shard byte count mismatch: {result_path}")
+        result_file = pq.ParquetFile(result_path)
+        if result_file.schema_arrow != RESULT_SCHEMA:
+            raise RuntimeError(f"result shard schema mismatch: {result_path}")
+        result_ids = [
+            str(value)
+            for value in pq.read_table(
+                result_path,
+                columns=["source_row_id"],
+            )["source_row_id"].to_pylist()
+        ]
+        expected_ids = source_ids_by_result_uri[result_uri]
+        physical_ids = set(result_ids)
+        if (
+            len(result_ids) != len(set(result_ids))
+            or not expected_ids.issubset(physical_ids)
+            or not physical_ids.issubset(all_work_ids)
+            or int(registered["row_count"]) != len(result_ids)
+        ):
+            raise RuntimeError(
+                f"result shard source membership mismatch: {result_path}"
+            )
+        registered_result_rows += len(result_ids)
+        unselected_registered_result_rows += len(physical_ids - expected_ids)
+        for item in work_items_by_result_uri[result_uri]:
+            if (
+                str(item.get("checksum")) != result_sha256
+                or int(item.get("row_count") or -1) != 1
+            ):
+                raise RuntimeError(
+                    f"work item result evidence mismatch: {item['work_key']}"
+                )
         attempt_path = Path(str(metadata["attempt_uri"]))
         if not attempt_path.resolve().is_relative_to(shard_root):
             raise RuntimeError(f"attempt shard escapes the run output root: {attempt_path}")
@@ -1141,8 +1199,34 @@ def finalize_resolution(
             raise FileNotFoundError(attempt_path)
         if "sha256:" + _sha256(attempt_path) != metadata["attempt_sha256"]:
             raise RuntimeError(f"attempt shard checksum mismatch: {attempt_path}")
+        attempt_file = pq.ParquetFile(attempt_path)
+        if attempt_file.schema_arrow != ATTEMPT_SCHEMA:
+            raise RuntimeError(f"attempt shard schema mismatch: {attempt_path}")
+        if attempt_file.metadata.num_rows != int(metadata["attempt_rows"]):
+            raise RuntimeError(f"attempt shard row count mismatch: {attempt_path}")
+        attempt_identity = pq.read_table(
+            attempt_path,
+            columns=["source_row_id", "sequence"],
+        )
+        attempt_pairs = list(
+            zip(
+                attempt_identity["source_row_id"].to_pylist(),
+                attempt_identity["sequence"].to_pylist(),
+            )
+        )
+        if (
+            any(str(source_id) not in physical_ids for source_id, _ in attempt_pairs)
+            or len(attempt_pairs) != len(set(attempt_pairs))
+        ):
+            raise RuntimeError(
+                f"attempt shard source membership mismatch: {attempt_path}"
+            )
+        registered_attempt_rows += len(attempt_pairs)
+        unselected_registered_attempt_rows += sum(
+            str(source_id) not in expected_ids for source_id, _ in attempt_pairs
+        )
         attempt_selections.append(
-            (attempt_path, source_ids_by_result_uri[str(result_path)])
+            (attempt_path, expected_ids)
         )
 
     result_table = _read_selected_tables(
@@ -1223,6 +1307,18 @@ def finalize_resolution(
                 "rights_blocked_rows": rights_blocked,
                 "eligible_resolution_rows": result_table.num_rows - rights_blocked,
                 "status_counts": dict(sorted(status_counts.items())),
+                "registered_result_shards": len(committed),
+                "selected_result_shards": len(result_paths),
+                "registered_result_rows": registered_result_rows,
+                "selected_result_rows": result_table.num_rows,
+                "unselected_registered_result_rows": (
+                    unselected_registered_result_rows
+                ),
+                "registered_attempt_rows": registered_attempt_rows,
+                "selected_attempt_rows": attempt_table.num_rows,
+                "unselected_registered_attempt_rows": (
+                    unselected_registered_attempt_rows
+                ),
             },
             "artifacts": entries,
             "validation": {
@@ -1230,6 +1326,20 @@ def finalize_resolution(
                 "unique_source_row_ids": len(set(source_ids)) == len(source_ids),
                 "every_work_item_completed": not non_completed,
                 "rights_blocked_zero_attempts": blocked_attempts == 0,
+                "result_shard_checksums_match_registry": True,
+                "registered_result_membership_bounded_to_queue": True,
+                "selected_result_membership_exact": (
+                    set(source_ids) == all_work_ids
+                ),
+                "attempt_shard_checksums_match_registry": True,
+                "registered_attempt_membership_bounded_to_result_shards": True,
+                "selected_attempt_membership_bounded_to_queue": (
+                    set(attempt_table["source_row_id"].to_pylist())
+                    .issubset(all_work_ids)
+                ),
+                "no_unreferenced_registered_shards": (
+                    registered_uris == selected_uris
+                ),
                 "all_parquet_row_groups_complete": all(
                     value["row_groups_complete"] for value in entries.values()
                 ),
