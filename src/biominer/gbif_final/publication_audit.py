@@ -70,6 +70,8 @@ def audit_final_publication(
     output_directory: str | Path,
     repository_root: str | Path,
     expected_producer_git_sha: str,
+    base_publication_directory: str | Path | None = None,
+    resolution_directory: str | Path | None = None,
     memory_limit: str = "8GB",
     threads: int = 4,
 ) -> dict[str, Any]:
@@ -159,6 +161,14 @@ def audit_final_publication(
         registry=registry,
         source_assertions=source_assertions,
         quality=quality,
+        base_publication_directory=base_publication_directory,
+        resolution_directory=resolution_directory,
+    )
+    manifest_dependencies = _manifest_dependencies(
+        base_publication_directory=base_publication_directory,
+        resolution_directory=resolution_directory,
+        final_mtime_ns=final_path.stat().st_mtime_ns,
+        primary_manifest=primary_manifest,
     )
     final_mtime_ns = final_path.stat().st_mtime_ns
     input_rows: list[dict[str, object]] = []
@@ -203,6 +213,11 @@ def audit_final_publication(
         "keyword_evidence",
         "keyword_source_assertions",
         "flickr_query_terms",
+        "resolved_media_identifier",
+        "effective_media_identifier",
+        "media_identifier_resolution_status",
+        "media_identifier_resolution_id",
+        "media_identifier_license_basis",
     }
     final_schema = pq.ParquetFile(final_path).schema_arrow
     missing_columns = sorted(required_columns - set(final_schema.names))
@@ -281,6 +296,20 @@ def audit_final_publication(
             final_inventory["row_groups_complete"]
         ),
         "all_dependencies_checksummed": len(input_rows) == len(inputs),
+        "all_manifest_dependencies_checksummed": (
+            len(manifest_dependencies)
+            == int(base_publication_directory is not None)
+            + int(resolution_directory is not None)
+        ),
+        "recorded_manifest_dependency_bindings_match": all(
+            row["primary_manifest_binding_status"]
+            == "PRIMARY_MANIFEST_MATCH"
+            for row in manifest_dependencies
+        ),
+        "all_manifest_dependencies_not_newer_than_final": all(
+            bool(row["not_newer_than_final_artifact"])
+            for row in manifest_dependencies
+        ),
         "recorded_dependency_bindings_match": not any(
             row["primary_manifest_binding_status"]
             == "PRIMARY_MANIFEST_MISMATCH"
@@ -351,6 +380,10 @@ def audit_final_publication(
                 "memory_limit": memory_limit,
                 "threads": threads,
                 "dependency_roles": [role for role, _ in inputs],
+                "manifest_dependency_roles": [
+                    item["input_role"]
+                    for item in manifest_dependencies
+                ],
             },
             "primary_publication": {
                 "directory": str(publication),
@@ -363,8 +396,10 @@ def audit_final_publication(
                 "rows": expected_rows,
                 "columns": int(final_inventory["column_count"]),
                 "input_artifacts": len(input_rows),
+                "manifest_dependencies": len(manifest_dependencies),
             },
             "identity_audit": identity_values,
+            "manifest_dependencies": manifest_dependencies,
             "artifacts": artifacts,
             "validation": validation,
             "manifest_policy": {
@@ -514,6 +549,34 @@ def validate_publication_audit(
                 context=f"audited dependency {row['input_role']}",
             )
 
+    manifest_dependencies = manifest.get("manifest_dependencies", [])
+    if not isinstance(manifest_dependencies, list):
+        raise RuntimeError(
+            "publication audit manifest dependencies are malformed"
+        )
+    if len(manifest_dependencies) != int(
+        (manifest.get("counts") or {}).get(
+            "manifest_dependencies",
+            0,
+        )
+    ):
+        raise RuntimeError(
+            "publication audit manifest dependency count differs"
+        )
+    if require_dependencies:
+        for item in manifest_dependencies:
+            dependency_path = Path(str(item.get("path") or "")).resolve()
+            if not dependency_path.is_file():
+                raise FileNotFoundError(dependency_path)
+            if dependency_path.stat().st_size != item.get("physical_bytes"):
+                raise RuntimeError(
+                    "publication audit manifest dependency byte count differs"
+                )
+            if _sha256(dependency_path) != item.get("physical_sha256"):
+                raise RuntimeError(
+                    "publication audit manifest dependency checksum differs"
+                )
+
     identity_table = pq.read_table(identity_path)
     if identity_table.schema != IDENTITY_AUDIT_SCHEMA:
         raise RuntimeError("publication audit identity schema differs")
@@ -553,6 +616,8 @@ def _input_paths(
     registry: Path,
     source_assertions: str | Path | None,
     quality: Path,
+    base_publication_directory: str | Path | None,
+    resolution_directory: str | Path | None,
 ) -> list[tuple[str, Path]]:
     paths = [
         ("temporal", temporal),
@@ -601,11 +666,85 @@ def _input_paths(
         paths.append(
             ("keyword_source_assertions", Path(source_assertions).resolve())
         )
+    if base_publication_directory is not None:
+        paths.append(
+            (
+                "base_final_artifact",
+                Path(base_publication_directory).resolve() / FINAL_FILENAME,
+            )
+        )
+    if resolution_directory is not None:
+        paths.append(
+            (
+                "resolution_results",
+                Path(resolution_directory).resolve()
+                / "resolution_results.parquet",
+            )
+        )
     resolved = [(role, path.resolve()) for role, path in paths]
     for _, path in resolved:
         if not path.is_file():
             raise FileNotFoundError(path)
     return resolved
+
+
+def _manifest_dependencies(
+    *,
+    base_publication_directory: str | Path | None,
+    resolution_directory: str | Path | None,
+    final_mtime_ns: int,
+    primary_manifest: Mapping[str, object],
+) -> list[dict[str, object]]:
+    paths: list[tuple[str, Path, str]] = []
+    if base_publication_directory is not None:
+        paths.append(
+            (
+                "base_publication_manifest",
+                Path(base_publication_directory).resolve()
+                / MANIFEST_FILENAME,
+                "base_publication_manifest",
+            )
+        )
+    if resolution_directory is not None:
+        paths.append(
+            (
+                "resolution_manifest",
+                Path(resolution_directory).resolve()
+                / MANIFEST_FILENAME,
+                "resolution_manifest",
+            )
+        )
+    recorded_inputs = primary_manifest.get("inputs") or {}
+    rows: list[dict[str, object]] = []
+    for role, path, input_key in paths:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        recorded = recorded_inputs.get(input_key) or {}
+        observed_sha = _sha256(path)
+        row = {
+            "input_role": role,
+            "path": str(path),
+            "physical_bytes": path.stat().st_size,
+            "physical_sha256": observed_sha,
+            "not_newer_than_final_artifact": (
+                path.stat().st_mtime_ns <= final_mtime_ns
+            ),
+            "primary_manifest_binding_status": (
+                "PRIMARY_MANIFEST_MATCH"
+                if recorded.get("sha256") == observed_sha
+                else "PRIMARY_MANIFEST_MISMATCH"
+            ),
+        }
+        if (
+            not row["not_newer_than_final_artifact"]
+            or row["primary_manifest_binding_status"]
+            != "PRIMARY_MANIFEST_MATCH"
+        ):
+            raise RuntimeError(
+                f"final publication manifest dependency differs: {role}"
+            )
+        rows.append(row)
+    return rows
 
 
 def _primary_binding_status(
@@ -619,6 +758,8 @@ def _primary_binding_status(
         key = {
             "temporal": "temporal_parquet",
             "pre_temporal": "pre_temporal_parquet",
+            "base_final_artifact": "base_final_artifact",
+            "resolution_results": "resolution_results",
         }.get(role)
         if key is None:
             return "INDEPENDENT_AUDIT_BINDING"

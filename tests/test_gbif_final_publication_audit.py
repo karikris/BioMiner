@@ -104,6 +104,17 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
                 "https://example.test/a",
                 "https://example.test/b",
             ],
+            "resolved_media_identifier": [None, None],
+            "effective_media_identifier": [
+                "https://example.test/a.jpg",
+                "https://example.test/b.jpg",
+            ],
+            "media_identifier_resolution_status": [
+                "source_identifier",
+                "source_identifier",
+            ],
+            "media_identifier_resolution_id": [None, None],
+            "media_identifier_license_basis": ["unknown", "unknown"],
             "occurrence_quality": ["pass", "pass"],
             "media_quality": ["pass", "pass"],
             "rights_quality": ["pass", "pass"],
@@ -355,7 +366,7 @@ def test_final_locator_indexes_validated_publication_without_full_copy(
     try:
         assert connection.execute(
             """
-            SELECT media_identifier
+            SELECT effective_media_identifier
             FROM media_locator
             WHERE speciesKey = ?
             """,

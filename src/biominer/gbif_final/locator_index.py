@@ -30,12 +30,18 @@ LOCATOR_COLUMNS = (
     "gbifID",
     "media_identifier",
     "media_references",
+    "resolved_media_identifier",
+    "effective_media_identifier",
+    "media_identifier_resolution_status",
+    "media_identifier_resolution_id",
+    "media_identifier_license_basis",
     "speciesKey",
     "species",
     "registry_taxon_key",
 )
 EXPECTED_INDEXES = {
     "idx_media_locator_gbif_id",
+    "idx_media_locator_effective_media_identifier",
     "idx_media_locator_media_identifier",
     "idx_media_locator_registry_taxon_key",
     "idx_media_locator_species_key",
@@ -116,6 +122,12 @@ def build_final_locator_index(
                 f"""
                 CREATE INDEX idx_media_locator_media_identifier
                 ON {TABLE_NAME}(media_identifier)
+                """
+            )
+            connection.execute(
+                f"""
+                CREATE INDEX idx_media_locator_effective_media_identifier
+                ON {TABLE_NAME}(effective_media_identifier)
                 """
             )
             connection.execute(
@@ -219,14 +231,19 @@ def build_final_locator_index(
                 "all_expected_indexes_present": (
                     set(evidence["index_names"]) == EXPECTED_INDEXES
                 ),
-                "sample_url_lookup_returns_rows": (
-                    evidence["benchmarks"]["url_lookup"]["result_rows"] > 0
+                "sample_effective_url_lookup_returns_rows": (
+                    evidence["benchmarks"]["effective_url_lookup"][
+                        "result_rows"
+                    ]
+                    > 0
                 ),
                 "sample_gbif_lookup_returns_rows": (
                     evidence["benchmarks"]["gbif_lookup"]["result_rows"] > 0
                 ),
-                "warm_url_lookup_below_100ms": (
-                    evidence["benchmarks"]["url_lookup"]["median_ms"]
+                "warm_effective_url_lookup_below_100ms": (
+                    evidence["benchmarks"]["effective_url_lookup"][
+                        "median_ms"
+                    ]
                     < 100.0
                 ),
                 "database_reopened_unchanged": True,
@@ -235,14 +252,14 @@ def build_final_locator_index(
             "query_examples": {
                 "gbif_ids_for_url": (
                     "SELECT gbifID FROM media_locator "
-                    "WHERE media_identifier = ?"
+                    "WHERE effective_media_identifier = ?"
                 ),
                 "urls_for_occurrence": (
-                    "SELECT media_identifier FROM media_locator "
+                    "SELECT effective_media_identifier FROM media_locator "
                     "WHERE gbifID = ?"
                 ),
                 "urls_for_species_key": (
-                    "SELECT media_identifier FROM media_locator "
+                    "SELECT effective_media_identifier FROM media_locator "
                     "WHERE speciesKey = ?"
                 ),
             },
@@ -348,8 +365,8 @@ def validate_final_locator_index(
         "null_media_assertion_ids",
         "distinct_source_row_ids",
         "distinct_media_assertion_ids",
-        "nonblank_image_url_rows",
-        "distinct_image_urls",
+        "nonblank_effective_url_rows",
+        "distinct_effective_image_urls",
         "distinct_gbif_ids",
         "index_names",
     ):
@@ -373,8 +390,8 @@ def _database_evidence(
           count(*) FILTER (WHERE media_assertion_id IS NULL),
           count(DISTINCT source_row_id),
           count(DISTINCT media_assertion_id),
-          count(NULLIF(trim(CAST(media_identifier AS VARCHAR)), '')),
-          count(DISTINCT NULLIF(trim(CAST(media_identifier AS VARCHAR)), '')),
+          count(NULLIF(trim(CAST(effective_media_identifier AS VARCHAR)), '')),
+          count(DISTINCT NULLIF(trim(CAST(effective_media_identifier AS VARCHAR)), '')),
           count(DISTINCT gbifID)
         FROM {TABLE_NAME}
         """
@@ -401,9 +418,9 @@ def _database_evidence(
     )
     sample = connection.execute(
         f"""
-        SELECT media_identifier, gbifID
+        SELECT effective_media_identifier, gbifID
         FROM {TABLE_NAME}
-        WHERE NULLIF(trim(CAST(media_identifier AS VARCHAR)), '') IS NOT NULL
+        WHERE NULLIF(trim(CAST(effective_media_identifier AS VARCHAR)), '') IS NOT NULL
           AND gbifID IS NOT NULL
         LIMIT 1
         """
@@ -411,19 +428,19 @@ def _database_evidence(
     if sample is None:
         raise RuntimeError("locator database has no benchmarkable URL")
     benchmarks = {
-        "url_lookup": _benchmark(
+        "effective_url_lookup": _benchmark(
             connection,
             f"""
             SELECT gbifID
             FROM {TABLE_NAME}
-            WHERE media_identifier = ?
+            WHERE effective_media_identifier = ?
             """,
             str(sample[0]),
         ),
         "gbif_lookup": _benchmark(
             connection,
             f"""
-            SELECT media_identifier
+            SELECT effective_media_identifier
             FROM {TABLE_NAME}
             WHERE gbifID = ?
             """,
@@ -437,8 +454,8 @@ def _database_evidence(
         "null_media_assertion_ids": int(counts[2]),
         "distinct_source_row_ids": int(counts[3]),
         "distinct_media_assertion_ids": int(counts[4]),
-        "nonblank_image_url_rows": int(counts[5]),
-        "distinct_image_urls": int(counts[6]),
+        "nonblank_effective_url_rows": int(counts[5]),
+        "distinct_effective_image_urls": int(counts[6]),
         "distinct_gbif_ids": int(counts[7]),
         "index_names": indexes,
         "benchmarks": benchmarks,

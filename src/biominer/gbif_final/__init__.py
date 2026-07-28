@@ -30,6 +30,10 @@ from biominer.gbif_final.publication_audit import (
     audit_final_publication,
     validate_publication_audit,
 )
+from biominer.gbif_final.resolution_enrichment import (
+    enrich_final_with_resolutions,
+    validate_resolution_enriched_publication,
+)
 from biominer.gbif_final.spine import (
     build_source_spine,
     validate_source_spine,
@@ -57,6 +61,7 @@ __all__ = [
     "build_species_enrichment_dimension",
     "build_species_enrichments",
     "cleanup_bounded_state",
+    "enrich_final_with_resolutions",
     "execute_superseded_cleanup",
     "plan_superseded_cleanup",
     "preflight_assembly",
@@ -72,6 +77,7 @@ __all__ = [
     "validate_assembled_output",
     "validate_final_locator_index",
     "validate_publication_audit",
+    "validate_resolution_enriched_publication",
     "validate_source_spine",
     "validate_part_receipt",
     "validate_superseded_cleanup",

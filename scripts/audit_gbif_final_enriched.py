@@ -21,6 +21,8 @@ def main() -> int:
         output_directory=args.output_directory,
         repository_root=args.repository_root,
         expected_producer_git_sha=args.expected_producer_git_sha,
+        base_publication_directory=args.base_publication_directory,
+        resolution_directory=args.resolution_directory,
         memory_limit=args.memory_limit,
         threads=args.threads,
     )
@@ -66,6 +68,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--expected-producer-git-sha",
         required=True,
+    )
+    parser.add_argument(
+        "--base-publication-directory",
+        type=Path,
+    )
+    parser.add_argument(
+        "--resolution-directory",
+        type=Path,
     )
     parser.add_argument("--memory-limit", default="8GB")
     parser.add_argument("--threads", type=int, default=4)
