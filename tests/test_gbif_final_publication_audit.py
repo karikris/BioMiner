@@ -17,6 +17,7 @@ from biominer.gbif_final.pipeline import (
 from biominer.gbif_final.publication_audit import (
     PUBLICATION_AUDIT_VERSION,
     audit_final_publication,
+    validate_publication_audit,
 )
 
 
@@ -177,6 +178,13 @@ def test_publication_audit_binds_legacy_dependencies_and_identities(
     }
     disk = json.loads((audit / "manifest.json").read_text())
     assert disk == manifest
+    assert (
+        validate_publication_audit(
+            audit,
+            repository_root=arguments["repository_root"],
+        )
+        == manifest
+    )
     assert {
         artifact["path"]
         for artifact in manifest["artifacts"].values()
@@ -206,3 +214,53 @@ def test_publication_audit_rejects_changed_input_after_build(
         match="final publication audit failed",
     ):
         audit_final_publication(**arguments)
+
+
+def test_publication_audit_validator_rejects_changed_dependency(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    audit_final_publication(**arguments)
+    temporal = Path(str(arguments["temporal_parquet"]))
+    pq.write_table(
+        pa.table(
+            {"gbifID": ["A", "B"], "species": ["Changed", "Beta"]}
+        ),
+        temporal,
+        compression="zstd",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="audited dependency temporal inventory mismatch",
+    ):
+        validate_publication_audit(
+            arguments["output_directory"],
+            repository_root=arguments["repository_root"],
+        )
+    validate_publication_audit(
+        arguments["output_directory"],
+        repository_root=arguments["repository_root"],
+        require_dependencies=False,
+    )
+
+
+def test_publication_audit_validator_rejects_changed_audit_artifact(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    audit_final_publication(**arguments)
+    identity_path = (
+        Path(str(arguments["output_directory"]))
+        / "identity_audit.parquet"
+    )
+    identity_path.write_bytes(identity_path.read_bytes() + b"tampered")
+
+    with pytest.raises(
+        RuntimeError,
+        match="cannot inspect Parquet artifact",
+    ):
+        validate_publication_audit(
+            arguments["output_directory"],
+            repository_root=arguments["repository_root"],
+        )

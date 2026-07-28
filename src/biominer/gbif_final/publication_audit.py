@@ -390,6 +390,150 @@ def audit_final_publication(
         raise
 
 
+def validate_publication_audit(
+    output_directory: str | Path,
+    *,
+    repository_root: str | Path | None = None,
+    require_dependencies: bool = True,
+) -> dict[str, Any]:
+    """Revalidate a sealed final-publication audit without trusting PASS flags."""
+
+    output = Path(output_directory).resolve()
+    manifest_path = output / MANIFEST_FILENAME
+    input_path = output / "input_inventory.parquet"
+    identity_path = output / "identity_audit.parquet"
+    expected_files = {manifest_path, input_path, identity_path}
+    observed_files = {
+        path.resolve() for path in output.rglob("*") if path.is_file()
+    }
+    if observed_files != expected_files:
+        raise RuntimeError(
+            "publication audit file inventory is not exact"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != PUBLICATION_AUDIT_VERSION:
+        raise RuntimeError("publication audit schema version differs")
+    recorded_fingerprint = manifest.get("manifest_fingerprint")
+    fingerprint_body = {
+        key: value
+        for key, value in manifest.items()
+        if key != "manifest_fingerprint"
+    }
+    if recorded_fingerprint != canonical_semantic_fingerprint(
+        fingerprint_body
+    ):
+        raise RuntimeError("publication audit fingerprint mismatch")
+    validation = manifest.get("validation")
+    if not isinstance(validation, dict) or not validation:
+        raise RuntimeError("publication audit validation map is absent")
+    if not all(value is True for value in validation.values()):
+        raise RuntimeError("publication audit validation is not PASS")
+
+    recorded_artifacts = manifest.get("artifacts")
+    if not isinstance(recorded_artifacts, dict) or set(
+        recorded_artifacts
+    ) != {"input_inventory.parquet", "identity_audit.parquet"}:
+        raise RuntimeError("publication audit artifact inventory differs")
+    for path in (input_path, identity_path):
+        recorded = recorded_artifacts[path.name]
+        observed = _parquet_inventory(path)
+        _require_inventory_match(
+            recorded,
+            observed,
+            context=f"publication audit artifact {path.name}",
+            recorded_path=path.name,
+        )
+    if manifest_path.stat().st_mtime_ns < max(
+        input_path.stat().st_mtime_ns,
+        identity_path.stat().st_mtime_ns,
+    ):
+        raise RuntimeError("publication audit manifest was not written last")
+
+    primary = manifest.get("primary_publication")
+    if not isinstance(primary, dict):
+        raise RuntimeError("publication audit primary binding is absent")
+    primary_manifest_path = Path(
+        str(primary.get("manifest_path") or "")
+    ).resolve()
+    recorded_final = primary.get("final_artifact")
+    if not isinstance(recorded_final, dict):
+        raise RuntimeError("publication audit final-artifact binding is absent")
+    final_path = Path(str(recorded_final.get("path") or "")).resolve()
+    if not primary_manifest_path.is_file() or not final_path.is_file():
+        raise FileNotFoundError(
+            "audited final publication is no longer complete"
+        )
+    if _sha256(primary_manifest_path) != primary.get("manifest_sha256"):
+        raise RuntimeError("audited primary manifest checksum mismatch")
+    observed_final = _parquet_inventory(final_path)
+    _require_inventory_match(
+        recorded_final,
+        observed_final,
+        context="audited final artifact",
+    )
+    if primary_manifest_path.stat().st_mtime_ns < final_path.stat().st_mtime_ns:
+        raise RuntimeError("audited primary manifest was not written last")
+    primary_files = {
+        path.resolve()
+        for path in primary_manifest_path.parent.rglob("*")
+        if path.is_file()
+    }
+    if primary_files != {primary_manifest_path, final_path}:
+        raise RuntimeError(
+            "audited primary publication file inventory is not exact"
+        )
+
+    input_table = pq.read_table(input_path)
+    if input_table.schema != INPUT_INVENTORY_SCHEMA:
+        raise RuntimeError("publication audit input schema differs")
+    if input_table.num_rows != int(
+        (manifest.get("counts") or {}).get("input_artifacts", -1)
+    ):
+        raise RuntimeError("publication audit input count differs")
+    if require_dependencies:
+        for row in input_table.to_pylist():
+            dependency_path = Path(str(row["path"])).resolve()
+            if not dependency_path.is_file():
+                raise FileNotFoundError(dependency_path)
+            observed = _parquet_inventory(dependency_path)
+            _require_inventory_match(
+                row,
+                observed,
+                context=f"audited dependency {row['input_role']}",
+            )
+
+    identity_table = pq.read_table(identity_path)
+    if identity_table.schema != IDENTITY_AUDIT_SCHEMA:
+        raise RuntimeError("publication audit identity schema differs")
+    identity_rows = identity_table.to_pylist()
+    if not identity_rows or any(
+        row["status"] != "PASS" for row in identity_rows
+    ):
+        raise RuntimeError("publication audit identity evidence is not PASS")
+    recorded_identity = manifest.get("identity_audit")
+    if not isinstance(recorded_identity, dict):
+        raise RuntimeError("publication audit identity binding is absent")
+    if {
+        str(row["metric"]): int(row["value"]) for row in identity_rows
+    } != {
+        str(metric): int(value)
+        for metric, value in recorded_identity.items()
+    }:
+        raise RuntimeError("publication audit identity values differ")
+
+    if repository_root is not None:
+        repository = Path(repository_root).resolve()
+        _require_git_commit(
+            repository,
+            str(manifest.get("producer_git_sha") or ""),
+        )
+        _require_git_commit(
+            repository,
+            str(manifest.get("audit_git_commit") or ""),
+        )
+    return manifest
+
+
 def _input_paths(
     *,
     temporal: Path,
@@ -532,10 +676,40 @@ def _validate_recorded_artifact(
         )
 
 
+def _require_inventory_match(
+    recorded: Mapping[str, object],
+    observed: Mapping[str, object],
+    *,
+    context: str,
+    recorded_path: str | None = None,
+) -> None:
+    fields = (
+        "physical_bytes",
+        "physical_sha256",
+        "row_count",
+        "column_count",
+        "row_group_count",
+        "schema_fingerprint",
+        "row_groups_complete",
+    )
+    mismatches = [
+        field for field in fields if recorded.get(field) != observed.get(field)
+    ]
+    if recorded_path is not None and recorded.get("path") != recorded_path:
+        mismatches.append("path")
+    if mismatches:
+        raise RuntimeError(
+            f"{context} inventory mismatch: " + ", ".join(mismatches)
+        )
+
+
 def _parquet_inventory(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise FileNotFoundError(path)
-    parquet = pq.ParquetFile(path)
+    try:
+        parquet = pq.ParquetFile(path)
+    except Exception as exc:
+        raise RuntimeError(f"cannot inspect Parquet artifact: {path}") from exc
     row_group_rows = [
         parquet.metadata.row_group(index).num_rows
         for index in range(parquet.metadata.num_row_groups)
@@ -625,4 +799,5 @@ __all__ = [
     "INPUT_INVENTORY_SCHEMA",
     "PUBLICATION_AUDIT_VERSION",
     "audit_final_publication",
+    "validate_publication_audit",
 ]
