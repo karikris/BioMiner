@@ -81,14 +81,18 @@ git rev-parse HEAD > "$HANDOFF/SOURCE_GIT_COMMIT"
   sha256sum -c SHA256SUMS
 )
 
-chmod -R a-w "$HANDOFF"
+find "$HANDOFF" -type d -exec chmod a-w {} +
+find "$HANDOFF" -type f -links +1 -printf '%n %p\n'
 du -sh --apparent-size "$HANDOFF"
-du -sh "$HANDOFF"
 ```
 
-The apparent size is the number of bytes transferred. The allocated size
-should be small because the large files are hard-linked. Do not remove the
-original publication or the handoff until the Mac verification succeeds.
+The apparent size is the number of bytes transferred. `du` cannot report the
+incremental allocation of hard links accurately because it attributes the
+linked inode's blocks to whichever tree it scans. Link counts greater than one
+prove that the large staged files share their original inodes. Only directory
+permissions are changed: changing a hard-linked file's mode would also change
+the original publication. Do not remove the original publication or the
+handoff until the Mac verification succeeds.
 
 Start the SSH server inside WSL2:
 
@@ -191,8 +195,9 @@ After all checksum and semantic validators pass on the Mac, the WSL staging
 hard links can be removed without touching the original publication:
 
 ```bash
-chmod -R u+w \
-  /home/toffe/github/karikris/BioMiner/data/transfer/gbif-media-final-20260729
+find \
+  /home/toffe/github/karikris/BioMiner/data/transfer/gbif-media-final-20260729 \
+  -type d -exec chmod u+w {} +
 rm -r \
   /home/toffe/github/karikris/BioMiner/data/transfer/gbif-media-final-20260729
 ```
