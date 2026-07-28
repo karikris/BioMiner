@@ -19,6 +19,9 @@ from biominer.gbif_quality.media_resources import publish_media_resources
 from biominer.gbif_quality.provider_enrichment import (
     publish_provider_enrichment_registry,
 )
+from biominer.gbif_quality.provider_archive_enrichment import (
+    publish_provider_archive_enrichment,
+)
 from biominer.gbif_quality.representativeness import publish_representativeness
 from biominer.gbif_quality.recovery import publish_restart_validation
 from biominer.gbif_quality.review_capsules import publish_review_capsules
@@ -134,6 +137,20 @@ def add_gbif_quality_parser(
     provider_registry.add_argument("--source-snapshot-id")
     provider_registry.add_argument("--code-commit")
 
+    provider_archives = stages.add_parser(
+        "provider-archives",
+        help="publish exact item-scoped evidence from pinned provider archives",
+    )
+    _add_publication_arguments(provider_archives)
+    provider_archives.set_defaults(
+        output_directory=f"{DEFAULT_DATA_ROOT}/provider_enrichment_v3"
+    )
+    provider_archives.add_argument(
+        "--archive-manifest",
+        default="data/reference/gbif_provider_archives/v1/manifest.json",
+    )
+    provider_archives.add_argument("--batch-rows", type=int, default=50_000)
+
     recovery = stages.add_parser(
         "restart-validation", help="verify committed-stage and unchanged-row restart state"
     )
@@ -183,6 +200,7 @@ def run_gbif_quality_command(args: argparse.Namespace) -> int:
         "freshness",
         "source-lineage",
         "provider-registry",
+        "provider-archives",
         "restart-validation",
         "reports",
         "acceptance",
@@ -260,6 +278,32 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
             output_directory=_resolve_from_repository(repository, args.output_directory),
             source_snapshot_id=args.source_snapshot_id or _source_snapshot_id(data),
             code_commit=commit,
+        )
+    if stage == "provider-archives":
+        v3 = (
+            _resolve_from_repository(repository, args.v3)
+            if args.v3
+            else _v3_from_inventory(repository, data)
+        )
+        return publish_provider_archive_enrichment(
+            v3_parquet=v3,
+            media_quality_parquet=(
+                data / "media_assertion_quality/media_assertion_quality.parquet"
+            ),
+            archive_manifest=_resolve_from_repository(
+                repository, args.archive_manifest
+            ),
+            output_directory=_resolve_from_repository(
+                repository, args.output_directory
+            ),
+            source_snapshot_id=(
+                args.source_snapshot_id or _source_snapshot_id(data)
+            ),
+            expected_media_rows=args.expected_rows,
+            code_commit=commit,
+            memory_limit=args.memory_limit,
+            threads=args.threads,
+            batch_rows=args.batch_rows,
         )
     if stage == "source-lineage":
         multimedia = (
@@ -469,6 +513,7 @@ def _default_output_name(stage: str) -> str:
         "review-capsules": "quality_results/review_capsules",
         "incremental": "incremental_state",
         "freshness": "freshness",
+        "provider-archives": "provider_enrichment_v3",
     }[stage]
 
 

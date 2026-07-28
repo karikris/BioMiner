@@ -103,6 +103,19 @@ def test_quality_provider_registry_is_offline_by_construction() -> None:
     assert not hasattr(args, "execute_network")
 
 
+def test_quality_provider_archives_are_pinned_and_bounded() -> None:
+    args = build_parser().parse_args([COMMAND, "provider-archives"])
+
+    assert args.output_directory.endswith("provider_enrichment_v3")
+    assert args.archive_manifest.endswith(
+        "gbif_provider_archives/v1/manifest.json"
+    )
+    assert args.expected_rows == 16_612_063
+    assert args.batch_rows == 50_000
+    assert args.memory_limit == "6GB"
+    assert not hasattr(args, "execute_network")
+
+
 def test_quality_restart_validation_has_no_mutating_recovery_flag() -> None:
     args = build_parser().parse_args([COMMAND, "restart-validation"])
 
