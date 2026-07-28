@@ -9,6 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import biominer.gbif_final.resolution_enrichment as enrichment_module
 from biominer.gbif_final.pipeline import (
     FINAL_FILENAME,
     FINAL_SCHEMA_VERSION,
@@ -172,6 +173,33 @@ def test_validator_rejects_changed_final_parquet(
         match="cannot inspect Parquet artifact",
     ):
         validate_resolution_enriched_publication(output)
+
+
+def test_enrichment_removes_unique_staging_after_post_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = _fixture(tmp_path)
+
+    def fail_seal(**_: object) -> dict[str, object]:
+        raise RuntimeError("synthetic post-write validation failure")
+
+    monkeypatch.setattr(
+        enrichment_module,
+        "_seal_enriched_publication",
+        fail_seal,
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic post-write validation failure",
+    ):
+        enrich_final_with_resolutions(**values)
+
+    output = Path(str(values["output_directory"]))
+    assert not output.exists()
+    assert list(
+        output.parent.glob(f".{output.name}.*.staging")
+    ) == []
 
 
 def _fixture(tmp_path: Path) -> dict[str, object]:

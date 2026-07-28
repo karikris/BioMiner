@@ -179,7 +179,63 @@ def enrich_final_with_resolutions(
         shutil.rmtree(staging, ignore_errors=True)
         raise
     writer.close()
+    try:
+        return _seal_enriched_publication(
+            staging=staging,
+            destination=destination,
+            output_path=output_path,
+            output_schema=output_schema,
+            source_schema=source_schema,
+            source_rows=source_rows,
+            expected_source_rows=source.metadata.num_rows,
+            result_table=result_table,
+            results=results,
+            matched_result_ids=matched_result_ids,
+            output_status_counts=output_status_counts,
+            resolved_urls_added=resolved_urls_added,
+            missing_reference_rows=missing_reference_rows,
+            resolution_source_sha256=resolution_source_sha256,
+            base_manifest=base_manifest,
+            base_path=base_path,
+            base_manifest_path=base_manifest_path,
+            resolution_manifest=resolution_manifest,
+            result_path=result_path,
+            resolution_manifest_path=resolution_manifest_path,
+            producer_git_sha=producer_git_sha,
+            batch_rows=batch_rows,
+            row_group_rows=row_group_rows,
+        )
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
+
+def _seal_enriched_publication(
+    *,
+    staging: Path,
+    destination: Path,
+    output_path: Path,
+    output_schema: pa.Schema,
+    source_schema: pa.Schema,
+    source_rows: int,
+    expected_source_rows: int,
+    result_table: pa.Table,
+    results: Mapping[str, Mapping[str, object]],
+    matched_result_ids: set[str],
+    output_status_counts: Counter[str],
+    resolved_urls_added: int,
+    missing_reference_rows: int,
+    resolution_source_sha256: str,
+    base_manifest: Mapping[str, object],
+    base_path: Path,
+    base_manifest_path: Path,
+    resolution_manifest: Mapping[str, object],
+    result_path: Path,
+    resolution_manifest_path: Path,
+    producer_git_sha: str,
+    batch_rows: int,
+    row_group_rows: int,
+) -> dict[str, Any]:
     with output_path.open("rb") as stream:
         os.fsync(stream.fileno())
     output_inventory = _parquet_inventory(output_path)
@@ -196,7 +252,7 @@ def enrich_final_with_resolutions(
     )
     acceptance_gate = {
         "row_count_preserved": (
-            source_rows == source.metadata.num_rows
+            source_rows == expected_source_rows
             and output_inventory["rows"] == source_rows
         ),
         "source_schema_preserved_as_output_prefix": (
@@ -224,7 +280,7 @@ def enrich_final_with_resolutions(
             == resolution_rows
         ),
         "all_source_rows_retained_including_unresolved": (
-            output_inventory["rows"] == source.metadata.num_rows
+            output_inventory["rows"] == expected_source_rows
         ),
         "original_media_fields_retained": all(
             name in output_file.schema_arrow.names
@@ -242,7 +298,6 @@ def enrich_final_with_resolutions(
         "manifest_written_last": True,
     }
     if not all(acceptance_gate.values()):
-        shutil.rmtree(staging, ignore_errors=True)
         raise RuntimeError(
             f"resolution enrichment validation failed: {acceptance_gate}"
         )
@@ -349,7 +404,6 @@ def enrich_final_with_resolutions(
     if (staging / MANIFEST_FILENAME).stat().st_mtime_ns < (
         output_path.stat().st_mtime_ns
     ):
-        shutil.rmtree(staging, ignore_errors=True)
         raise RuntimeError("final manifest was not written last")
     os.replace(staging, destination)
     _fsync_directory(destination.parent)
