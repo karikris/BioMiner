@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import hashlib
 from pathlib import Path
 from typing import Any, Mapping
@@ -24,7 +25,7 @@ def seal_keyed_dimension_window(
     *,
     connection: duckdb.DuckDBPyConnection,
     spine_part: str | Path,
-    dimension: str | Path,
+    dimension: str | Path | Sequence[str | Path],
     output_part: str | Path,
     source_start_ordinal: int,
     source_stop_ordinal: int,
@@ -56,10 +57,21 @@ def seal_keyed_dimension_window(
         )
 
     spine_path = Path(spine_part).resolve()
-    dimension_path = Path(dimension).resolve()
+    dimension_paths = _resolve_dimension_paths(dimension)
+    dimension_source: str | list[str] = (
+        str(dimension_paths[0])
+        if len(dimension_paths) == 1
+        else [str(path) for path in dimension_paths]
+    )
     output_path = Path(output_part).resolve()
     spine_file = _open_parquet(spine_path)
-    dimension_file = _open_parquet(dimension_path)
+    dimension_files = [_open_parquet(path) for path in dimension_paths]
+    dimension_file = dimension_files[0]
+    for path, parquet in zip(dimension_paths[1:], dimension_files[1:]):
+        if parquet.schema_arrow != dimension_file.schema_arrow:
+            raise RuntimeError(
+                f"windowed dimension schemas differ: {path}"
+            )
     _require_columns(
         spine_file.schema_arrow,
         ("source_ordinal", spine_key),
@@ -105,6 +117,7 @@ def seal_keyed_dimension_window(
         "dimension_schema_fingerprint": _schema_fingerprint(
             dimension_file.schema_arrow
         ),
+        "dimension_part_count": len(dimension_paths),
         "dimension_output_fields": [
             {
                 "name": field.name,
@@ -191,7 +204,7 @@ def seal_keyed_dimension_window(
             ) AS k
               ON d.{_quoted(dimension_key)} = k.join_key
             """,
-            [str(dimension_path)],
+            [dimension_source],
         )
         duplicate = connection.execute(
             f"""
@@ -537,6 +550,22 @@ def _open_parquet(path: Path) -> pq.ParquetFile:
         if isinstance(error, RuntimeError):
             raise
         raise RuntimeError(f"cannot reopen Parquet input: {path}") from error
+
+
+def _resolve_dimension_paths(
+    value: str | Path | Sequence[str | Path],
+) -> tuple[Path, ...]:
+    raw_values: Sequence[str | Path]
+    if isinstance(value, (str, Path)):
+        raw_values = [value]
+    else:
+        raw_values = value
+    paths = tuple(Path(item).resolve() for item in raw_values)
+    if not paths:
+        raise ValueError("dimension must contain at least one Parquet path")
+    if len(paths) != len(set(paths)):
+        raise ValueError("dimension contains duplicate Parquet paths")
+    return paths
 
 
 def _require_columns(

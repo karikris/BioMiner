@@ -218,6 +218,51 @@ def test_windowed_dimension_join_resumes_verified_part(
     assert output.stat().st_mtime_ns == mtime
 
 
+def test_windowed_dimension_join_reads_multiple_parquet_parts(
+    tmp_path: Path,
+) -> None:
+    spine = _spine(tmp_path)
+    first = _write(
+        tmp_path / "dimension" / "part-0.parquet",
+        {
+            "media_assertion_id": ["m4", "m1"],
+            "status": ["D", "A"],
+        },
+    )
+    second = _write(
+        tmp_path / "dimension" / "part-1.parquet",
+        {
+            "media_assertion_id": ["m3", "m2"],
+            "status": ["C", "B"],
+        },
+    )
+    output = tmp_path / "quality.parquet"
+    connection = duckdb.connect()
+    try:
+        seal_keyed_dimension_window(
+            connection=connection,
+            spine_part=spine,
+            dimension=[second, first],
+            output_part=output,
+            source_start_ordinal=0,
+            source_stop_ordinal=4,
+            spine_key="media_assertion_id",
+            dimension_key="media_assertion_id",
+            output_column="media_quality",
+            excluded_dimension_columns={"media_assertion_id"},
+            required_match=True,
+            dependencies={"dimension_sha256": ["sha256:second", "sha256:first"]},
+            batch_rows=2,
+        )
+    finally:
+        connection.close()
+
+    assert [
+        value["status"]
+        for value in pq.read_table(output)["media_quality"].to_pylist()
+    ] == ["A", "B", "C", "D"]
+
+
 def test_ordinal_aligned_window_combines_sealed_sidecars(
     tmp_path: Path,
 ) -> None:
