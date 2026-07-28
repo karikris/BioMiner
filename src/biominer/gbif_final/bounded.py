@@ -375,6 +375,7 @@ def assemble_parts(
                 "source_stop_ordinal": receipt["source_stop_ordinal"],
                 "part_sha256": receipt["artifact"]["physical_sha256"],
                 "row_count": receipt["artifact"]["row_count"],
+                "embedded_receipt": _public_receipt(receipt),
             }
             for receipt in receipts
         ]
@@ -413,6 +414,8 @@ def assemble_parts(
             "manifest_policy": {
                 "create_only": True,
                 "manifest_written_last": True,
+                "part_receipts_embedded": True,
+                "external_parts_required_after_publication": False,
             },
         }
         if not all(manifest["validation"].values()):
@@ -532,20 +535,45 @@ def validate_assembled_output(
     ]
     if len(receipt_paths) != len(part_evidence):
         raise RuntimeError("bounded assembly part evidence is invalid")
-    receipts = _validated_receipts(receipt_paths, expected_rows=rows)
+    external_presence = [path.is_file() for path in receipt_paths]
+    if any(external_presence) and not all(external_presence):
+        raise RuntimeError(
+            "bounded assembly external part receipts are only partially retained"
+        )
+    if all(external_presence):
+        receipts = _validated_receipts(receipt_paths, expected_rows=rows)
+        external_parts_retained = True
+    else:
+        policy = manifest.get("manifest_policy") or {}
+        if (
+            not policy.get("part_receipts_embedded")
+            or policy.get("external_parts_required_after_publication")
+            is not False
+        ):
+            raise RuntimeError(
+                "bounded assembly external part receipts are missing"
+            )
+        receipts = _validated_embedded_receipts(
+            part_evidence,
+            expected_rows=rows,
+        )
+        external_parts_retained = False
     if len(receipts) != int(counts.get("input_parts") or -1):
         raise RuntimeError("bounded assembly input part count is stale")
     for evidence, receipt in zip(part_evidence, receipts):
-        receipt_path = Path(receipt["_receipt_path"])
+        receipt_path = Path(str(evidence["receipt_path"])).resolve()
         expected = {
             "receipt_path": str(receipt_path),
-            "receipt_sha256": _prefixed_sha256(receipt_path),
+            "receipt_sha256": evidence["receipt_sha256"],
             "part_id": receipt["part_id"],
             "source_start_ordinal": receipt["source_start_ordinal"],
             "source_stop_ordinal": receipt["source_stop_ordinal"],
             "part_sha256": receipt["artifact"]["physical_sha256"],
             "row_count": receipt["artifact"]["row_count"],
+            "embedded_receipt": _public_receipt(receipt),
         }
+        if external_parts_retained:
+            expected["receipt_sha256"] = _prefixed_sha256(receipt_path)
         if evidence != expected:
             raise RuntimeError(
                 f"bounded assembly part evidence mismatch: {receipt_path}"
@@ -565,16 +593,85 @@ def validate_assembled_output(
         raise RuntimeError(
             "bounded assembly publication file inventory is invalid"
         )
-    newest_input_mtime = max(
-        final_path.stat().st_mtime_ns,
-        *(
+    newest_input_mtime = final_path.stat().st_mtime_ns
+    if external_parts_retained:
+        newest_input_mtime = max(
+            newest_input_mtime,
+            *(
             Path(receipt["_receipt_path"]).stat().st_mtime_ns
             for receipt in receipts
-        ),
-    )
+            ),
+        )
     if manifest_path.stat().st_mtime_ns < newest_input_mtime:
         raise RuntimeError("bounded assembly manifest was not written last")
     return manifest
+
+
+def _validated_embedded_receipts(
+    part_evidence: list[object],
+    *,
+    expected_rows: int,
+) -> list[dict[str, Any]]:
+    receipts: list[dict[str, Any]] = []
+    for evidence in part_evidence:
+        if not isinstance(evidence, dict):
+            raise RuntimeError("bounded assembly part evidence is invalid")
+        embedded = evidence.get("embedded_receipt")
+        if not isinstance(embedded, dict):
+            raise RuntimeError("bounded assembly embedded receipt is missing")
+        receipt = _normalized_dependencies(embedded)
+        if receipt.get("schema_version") != PART_RECEIPT_VERSION:
+            raise RuntimeError("bounded assembly embedded receipt is invalid")
+        if receipt.get("receipt_fingerprint") != _receipt_fingerprint(
+            receipt
+        ):
+            raise RuntimeError(
+                "bounded assembly embedded receipt fingerprint mismatch"
+            )
+        dependencies = _normalized_dependencies(
+            receipt.get("dependencies") or {}
+        )
+        if receipt.get(
+            "dependency_fingerprint"
+        ) != canonical_semantic_fingerprint(dependencies):
+            raise RuntimeError(
+                "bounded assembly embedded receipt dependencies are invalid"
+            )
+        artifact = receipt.get("artifact") or {}
+        start = int(receipt["source_start_ordinal"])
+        stop = int(receipt["source_stop_ordinal"])
+        if (
+            start < 0
+            or stop <= start
+            or stop - start != int(artifact.get("row_count") or -1)
+            or not artifact.get("row_groups_complete")
+            or not receipt.get("validation")
+            or not all(receipt["validation"].values())
+        ):
+            raise RuntimeError(
+                "bounded assembly embedded receipt does not reconcile"
+            )
+        receipts.append(receipt)
+    receipts.sort(key=lambda item: int(item["source_start_ordinal"]))
+    expected_start = 0
+    schema_fingerprint = receipts[0]["artifact"]["schema_fingerprint"]
+    for receipt in receipts:
+        start = int(receipt["source_start_ordinal"])
+        stop = int(receipt["source_stop_ordinal"])
+        if start != expected_start:
+            raise RuntimeError(
+                "embedded bounded-part source ranges are not contiguous"
+            )
+        if receipt["artifact"]["schema_fingerprint"] != schema_fingerprint:
+            raise RuntimeError(
+                "embedded bounded-part schemas are inconsistent"
+            )
+        expected_start = stop
+    if expected_start != expected_rows:
+        raise RuntimeError(
+            "embedded bounded parts do not cover the expected source scope"
+        )
+    return receipts
 
 
 def _validated_receipts(
@@ -709,6 +806,18 @@ def _receipt_fingerprint(payload: Mapping[str, object]) -> str:
         if key not in {"receipt_fingerprint", "_receipt_path", "_part_path"}
     }
     return canonical_semantic_fingerprint(body)
+
+
+def _public_receipt(
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    return _normalized_dependencies(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key not in {"_receipt_path", "_part_path"}
+        }
+    )
 
 
 def _assembly_manifest_fingerprint(

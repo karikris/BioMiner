@@ -300,6 +300,22 @@ def test_assembly_is_sequential_verified_and_manifest_last(tmp_path: Path) -> No
             "excluded_pre_1960_rows": 2,
         },
     ) == manifest
+    first_part = Path(str(first).removesuffix(".receipt.json"))
+    second_part = Path(str(second).removesuffix(".receipt.json"))
+    first.unlink()
+    second.unlink()
+    first_part.unlink()
+    second_part.unlink()
+    assert validate_assembled_output(
+        output,
+        expected_rows=4,
+        expected_code_commit="deadbeef",
+        expected_source_scope={
+            "row_scope": "post_1960",
+            "rows": 4,
+            "excluded_pre_1960_rows": 2,
+        },
+    ) == manifest
 
     with pytest.raises(FileExistsError):
         assemble_parts(
