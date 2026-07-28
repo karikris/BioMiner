@@ -176,6 +176,11 @@ def build_bounded_final_from_spine(
     }
     run_fingerprint = canonical_semantic_fingerprint(semantic_config)
     source_scope["bounded_pipeline_run_fingerprint"] = run_fingerprint
+    source_scope["bounded_pipeline_version"] = BOUNDED_PIPELINE_VERSION
+    source_scope["input_inventory"] = inventories
+    source_scope["semantic_config_fingerprint"] = (
+        canonical_semantic_fingerprint(semantic_config)
+    )
     common_dependencies = {
         "bounded_pipeline_version": BOUNDED_PIPELINE_VERSION,
         "run_fingerprint": run_fingerprint,

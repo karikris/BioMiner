@@ -219,6 +219,16 @@ def test_bounded_pipeline_builds_and_resumes_exact_final_dataset(
     table = pq.read_table(final_path)
 
     assert manifest["counts"]["rows"] == 2
+    assert manifest["source_scope"]["input_inventory"]["temporal"][
+        "physical_sha256"
+    ]
+    assert manifest["source_scope"]["input_inventory"]["ai_readiness"][
+        0
+    ]["physical_sha256"]
+    assert manifest["source_scope"]["bounded_pipeline_version"] == (
+        bounded_pipeline_module.BOUNDED_PIPELINE_VERSION
+    )
+    assert manifest["source_scope"]["semantic_config_fingerprint"]
     assert first_window.stat().st_mtime_ns == first_window_mtime
     assert table["gbifID"].to_pylist() == ["A", "B"]
     assert table["source_row_id"].to_pylist() == [
