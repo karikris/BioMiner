@@ -207,6 +207,40 @@ def test_cli_requires_explicit_network_and_full_queue_opt_in() -> None:
     ])
     with pytest.raises(ValueError, match="--execute-network"):
         run_gbif_media_resolution_command(work)
+    review = parser.parse_args(
+        [
+            COMMAND,
+            "prepare-review",
+            "--pilot-selection",
+            "selection.parquet",
+            "--resolution-directory",
+            "resolution",
+            "--output",
+            "review.parquet",
+        ]
+    )
+    assert review.gbif_media_url_command == "prepare-review"
+    audit = parser.parse_args(
+        [
+            COMMAND,
+            "audit-pilot",
+            "--prepare-receipt",
+            "prepare.json",
+            "--pilot-selection",
+            "selection.parquet",
+            "--resolution-directory",
+            "resolution",
+            "--reviewed-pilot",
+            "reviewed.parquet",
+            "--output-directory",
+            "audit",
+            "--code-commit",
+            "deadbeef",
+            "--adapter-test-receipt",
+            "tests.json",
+        ]
+    )
+    assert audit.gbif_media_url_command == "audit-pilot"
 
 
 def test_structured_html_extraction_does_not_scrape_generic_images() -> None:

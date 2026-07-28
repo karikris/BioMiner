@@ -12,6 +12,10 @@ from biominer.gbif_media_resolution.pipeline import (
     publish_v4,
     run_worker,
 )
+from biominer.gbif_media_resolution.pilot_audit import (
+    publish_pilot_execution_audit,
+    write_pilot_execution_review,
+)
 from biominer.gbif_media_resolution.resolver import MediaURLResolver, ResolverConfig
 from biominer.workstore.base import WorkStore
 from biominer.workstore.sqlite import SQLiteWorkStore
@@ -67,6 +71,27 @@ def add_gbif_media_resolution_parser(
     finalize.add_argument("--output-directory", required=True)
     finalize.add_argument("--run-id", required=True)
     finalize.add_argument("--expected-rows", type=int)
+
+    review = stages.add_parser(
+        "prepare-review",
+        help="write a create-only manual review table from finalized pilot results",
+    )
+    review.add_argument("--pilot-selection", required=True)
+    review.add_argument("--resolution-directory", required=True)
+    review.add_argument("--output", required=True)
+
+    audit_pilot = stages.add_parser(
+        "audit-pilot",
+        help="publish the checksum-bound post-execution pilot audit",
+    )
+    audit_pilot.add_argument("--prepare-receipt", required=True)
+    audit_pilot.add_argument("--pilot-selection", required=True)
+    audit_pilot.add_argument("--resolution-directory", required=True)
+    audit_pilot.add_argument("--reviewed-pilot", required=True)
+    audit_pilot.add_argument("--output-directory", required=True)
+    audit_pilot.add_argument("--expected-rows", type=int, default=823)
+    audit_pilot.add_argument("--code-commit", required=True)
+    audit_pilot.add_argument("--adapter-test-receipt", required=True)
 
     publish = stages.add_parser("publish-v4", help="publish v4 Parquet and indexed DuckDB")
     publish.add_argument("--source", required=True)
@@ -141,6 +166,25 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             output_root=args.output_root,
             output_directory=args.output_directory,
             expected_rows=args.expected_rows,
+        )
+    elif stage == "prepare-review":
+        result = write_pilot_execution_review(
+            pilot_selection=args.pilot_selection,
+            resolution_results=(
+                Path(args.resolution_directory) / "resolution_results.parquet"
+            ),
+            output_path=args.output,
+        )
+    elif stage == "audit-pilot":
+        result = publish_pilot_execution_audit(
+            prepare_receipt=args.prepare_receipt,
+            pilot_selection=args.pilot_selection,
+            resolution_directory=args.resolution_directory,
+            reviewed_pilot=args.reviewed_pilot,
+            output_directory=args.output_directory,
+            expected_rows=args.expected_rows,
+            code_commit=args.code_commit,
+            adapter_test_receipt=args.adapter_test_receipt,
         )
     elif stage == "publish-v4":
         result = publish_v4(

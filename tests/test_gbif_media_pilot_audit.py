@@ -4,6 +4,7 @@ import json
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from biominer.gbif_media_resolution.pipeline import PILOT_SELECTION_SCHEMA
 from biominer.gbif_media_resolution.models import ATTEMPT_SCHEMA, RESULT_SCHEMA
@@ -12,6 +13,7 @@ from biominer.gbif_media_resolution.pilot_audit import (
     prepare_pilot_execution_review,
     publish_pilot_execution_audit,
     publish_pilot_preflight_audit,
+    write_pilot_execution_review,
     wilson_interval,
 )
 
@@ -65,6 +67,21 @@ def test_pilot_execution_review_binds_results_to_selection(tmp_path: Path) -> No
     assert by_id["1"]["review_status"] == "PENDING"
     assert by_id["2"]["resolver_status"] == "rights_blocked"
     assert by_id["2"]["review_status"] == "NOT_APPLICABLE"
+
+    output = tmp_path / "review.parquet"
+    inventory = write_pilot_execution_review(
+        pilot_selection=selection,
+        resolution_results=results,
+        output_path=output,
+    )
+    assert inventory["row_count"] == 2
+    assert inventory["physical_sha256"] == "sha256:" + _sha256(output)
+    with pytest.raises(FileExistsError):
+        write_pilot_execution_review(
+            pilot_selection=selection,
+            resolution_results=results,
+            output_path=output,
+        )
 
 
 def test_pilot_execution_audit_requires_review_and_reports_wilson_rates(

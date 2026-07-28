@@ -246,6 +246,41 @@ def prepare_pilot_execution_review(
     return pa.Table.from_pylist(review_rows, schema=REVIEW_SCHEMA)
 
 
+def write_pilot_execution_review(
+    *,
+    pilot_selection: str | Path,
+    resolution_results: str | Path,
+    output_path: str | Path,
+) -> dict[str, object]:
+    destination = Path(output_path).resolve()
+    if destination.exists():
+        raise FileExistsError(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_name(f".{destination.name}.{uuid4().hex}.staging")
+    try:
+        table = prepare_pilot_execution_review(
+            pilot_selection=pilot_selection,
+            resolution_results=resolution_results,
+        )
+        pq.write_table(
+            table,
+            staging,
+            compression="zstd",
+            use_dictionary=True,
+            write_statistics=True,
+        )
+        inventory = _artifact(staging)
+        os.replace(staging, destination)
+        return {
+            **inventory,
+            "path": str(destination),
+            "physical_sha256": "sha256:" + str(inventory["sha256"]),
+        }
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
+
+
 def publish_pilot_execution_audit(
     *,
     prepare_receipt: str | Path,
@@ -765,5 +800,6 @@ __all__=[
     "prepare_pilot_execution_review",
     "publish_pilot_execution_audit",
     "publish_pilot_preflight_audit",
+    "write_pilot_execution_review",
     "wilson_interval",
 ]
