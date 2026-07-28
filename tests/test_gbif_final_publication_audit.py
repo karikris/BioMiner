@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 import pyarrow as pa
@@ -264,3 +265,33 @@ def test_publication_audit_validator_rejects_changed_audit_artifact(
             arguments["output_directory"],
             repository_root=arguments["repository_root"],
         )
+
+
+def test_publication_audit_validator_accepts_relocated_publication(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    manifest = audit_final_publication(**arguments)
+    original = Path(str(arguments["publication_directory"]))
+    relocated = tmp_path / "received" / "current"
+    shutil.copytree(original, relocated)
+    shutil.rmtree(original)
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="audited final publication is no longer complete",
+    ):
+        validate_publication_audit(
+            arguments["output_directory"],
+            repository_root=arguments["repository_root"],
+            require_dependencies=False,
+        )
+    assert (
+        validate_publication_audit(
+            arguments["output_directory"],
+            repository_root=arguments["repository_root"],
+            require_dependencies=False,
+            primary_publication_directory=relocated,
+        )
+        == manifest
+    )

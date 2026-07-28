@@ -395,6 +395,7 @@ def validate_publication_audit(
     *,
     repository_root: str | Path | None = None,
     require_dependencies: bool = True,
+    primary_publication_directory: str | Path | None = None,
 ) -> dict[str, Any]:
     """Revalidate a sealed final-publication audit without trusting PASS flags."""
 
@@ -452,13 +453,24 @@ def validate_publication_audit(
     primary = manifest.get("primary_publication")
     if not isinstance(primary, dict):
         raise RuntimeError("publication audit primary binding is absent")
-    primary_manifest_path = Path(
+    recorded_primary_manifest_path = Path(
         str(primary.get("manifest_path") or "")
     ).resolve()
     recorded_final = primary.get("final_artifact")
     if not isinstance(recorded_final, dict):
         raise RuntimeError("publication audit final-artifact binding is absent")
-    final_path = Path(str(recorded_final.get("path") or "")).resolve()
+    recorded_final_path = Path(
+        str(recorded_final.get("path") or "")
+    ).resolve()
+    if primary_publication_directory is None:
+        primary_manifest_path = recorded_primary_manifest_path
+        final_path = recorded_final_path
+    else:
+        relocated = Path(primary_publication_directory).resolve()
+        primary_manifest_path = (
+            relocated / recorded_primary_manifest_path.name
+        )
+        final_path = relocated / recorded_final_path.name
     if not primary_manifest_path.is_file() or not final_path.is_file():
         raise FileNotFoundError(
             "audited final publication is no longer complete"
