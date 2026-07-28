@@ -17,6 +17,7 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.gbif_final.bounded import (
     assemble_parts,
     validate_assembled_output,
+    validate_part_receipt,
 )
 from biominer.gbif_final.global_sidecar import (
     seal_global_keyed_dimension,
@@ -152,6 +153,28 @@ def build_bounded_final_from_spine(
         )
         for name, paths in dimension_paths.items()
     }
+    for name in ("derived_assertions", "species_enrichment"):
+        dimension_path = dimension_paths[name]
+        if not isinstance(dimension_path, Path):
+            raise RuntimeError(
+                f"{name} must be one sealed Parquet dimension"
+            )
+        receipt_path = dimension_path.with_suffix(
+            dimension_path.suffix + ".receipt.json"
+        )
+        receipt = validate_part_receipt(receipt_path)
+        if (
+            receipt["artifact"]["physical_sha256"]
+            != inventories[name]["physical_sha256"]
+            or receipt["artifact"]["row_count"]
+            != inventories[name]["row_count"]
+            or receipt["artifact"]["schema_fingerprint"]
+            != inventories[name]["schema_fingerprint"]
+        ):
+            raise RuntimeError(
+                f"{name} sealed receipt does not match its inventory"
+            )
+        inventories[name]["sealed_receipt"] = receipt
     if int(inventories["temporal"]["row_count"]) != expected_rows:
         raise RuntimeError(
             "temporal and source-spine row counts differ: "

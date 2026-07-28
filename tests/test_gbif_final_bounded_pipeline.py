@@ -7,6 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import biominer.gbif_final.bounded_pipeline as bounded_pipeline_module
+from biominer.gbif_final.bounded import seal_part
 from biominer.gbif_final.bounded_pipeline import (
     build_bounded_final_from_spine,
 )
@@ -25,6 +26,22 @@ def _write(
         path,
         compression="zstd",
         row_group_size=row_group_size,
+    )
+    return path
+
+
+def _seal_dimension(
+    path: Path,
+    values: dict[str, list[object]],
+) -> Path:
+    table = pa.table(values)
+    seal_part(
+        table=table,
+        part_path=path,
+        source_start_ordinal=0,
+        source_stop_ordinal=table.num_rows,
+        dependencies={"fixture": path.name},
+        row_group_size=2,
     )
     return path
 
@@ -133,7 +150,7 @@ def test_bounded_pipeline_builds_and_resumes_exact_final_dataset(
             "ai_readiness_status": ["review"],
         },
     )
-    derived_dimension = _write(
+    derived_dimension = _seal_dimension(
         inputs / "derived-dimension.parquet",
         {
             "dimension_ordinal": [0],
@@ -143,7 +160,7 @@ def test_bounded_pipeline_builds_and_resumes_exact_final_dataset(
             ],
         },
     )
-    species_dimension = _write(
+    species_dimension = _seal_dimension(
         inputs / "species-dimension.parquet",
         {
             "dataset_species_key": ["1", "2"],
@@ -225,6 +242,11 @@ def test_bounded_pipeline_builds_and_resumes_exact_final_dataset(
     assert manifest["source_scope"]["input_inventory"]["ai_readiness"][
         0
     ]["physical_sha256"]
+    assert manifest["source_scope"]["input_inventory"][
+        "species_enrichment"
+    ]["sealed_receipt"]["dependencies"] == {
+        "fixture": "species-dimension.parquet"
+    }
     assert manifest["source_scope"]["bounded_pipeline_version"] == (
         bounded_pipeline_module.BOUNDED_PIPELINE_VERSION
     )
