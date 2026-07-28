@@ -13,6 +13,23 @@ def _sha256(path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_restart_inventory_covers_all_production_evidence_layers() -> None:
+    required = {
+        "source_lineage/identity_v2/manifest.json",
+        "quality_results/phase2/manifest.json",
+        "quality_results/phase3/manifest.json",
+        "quality_results/phase4_pilot_preflight/manifest.json",
+        "representativeness_concentration/manifest.json",
+        "quality_results/review_capsules/manifest.json",
+        "incremental_state/manifest.json",
+        "freshness/manifest.json",
+        "provider_enrichment/manifest.json",
+        "performance/manifest.json",
+    }
+
+    assert required <= set(recovery.STAGE_MANIFESTS)
+
+
 def test_restart_validation_skips_committed_and_unchanged_work(tmp_path, monkeypatch) -> None:
     data = tmp_path / "data"
     incremental = data / "incremental_validation"

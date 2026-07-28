@@ -14,19 +14,31 @@ import pyarrow.parquet as pq
 RECOVERY_VERSION = "biominer-gbif-restart-validation/v1"
 STAGE_MANIFESTS = (
     "manifest.json",
+    "source_lineage/manifest.json",
+    "source_lineage/identity_v2/manifest.json",
     "occurrence_quality/manifest.json",
     "media_assertion_quality/manifest.json",
+    "quality_results/phase2/manifest.json",
     "derived_assertions/temporal/manifest.json",
     "derived_assertions/geography/manifest.json",
     "derived_assertions/taxonomy/manifest.json",
     "derived_assertions/biology/manifest.json",
+    "quality_results/phase3/manifest.json",
+    "quality_results/phase4_pilot_preflight/manifest.json",
     "rights_and_attribution/manifest.json",
     "duplicates/manifest.json",
     "ai_readiness/manifest.json",
     "representativeness/manifest.json",
+    "representativeness_concentration/manifest.json",
     "media_resources/manifest.json",
     "completeness_gates/manifest.json",
+    "quality_results/review_capsules/manifest.json",
+    "incremental_state/manifest.json",
     "incremental_validation/manifest.json",
+    "freshness/manifest.json",
+    "provider_enrichment/manifest.json",
+    "performance/manifest.json",
+    "canonical_resource_analysis/v1/manifest.json",
 )
 SCHEMA = pa.schema(
     [
