@@ -358,7 +358,7 @@ def build_final_parquet(
     final_path = staging / FINAL_FILENAME
     con = duckdb.connect()
     con.execute("SET threads=4")
-    con.execute("SET memory_limit='32GB'")
+    con.execute("SET memory_limit='52GB'")
     con.execute("SET preserve_insertion_order=false")
     con.execute("SET temp_directory=?", [str(staging / ".duckdb_tmp")])
     media_quality = quality / "media_assertion_quality/media_assertion_quality.parquet"
