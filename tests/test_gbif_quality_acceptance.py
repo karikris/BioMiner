@@ -1,4 +1,12 @@
-from biominer.gbif_quality.acceptance import CRITERIA, SCHEMA, _markdown
+import inspect
+
+import biominer.gbif_quality.acceptance as acceptance
+from biominer.gbif_quality.acceptance import (
+    ACCEPTANCE_VERSION,
+    CRITERIA,
+    SCHEMA,
+    _markdown,
+)
 
 
 def test_global_acceptance_registry_is_exact_and_renderable() -> None:
@@ -22,3 +30,14 @@ def test_global_acceptance_registry_is_exact_and_renderable() -> None:
     rendered = _markdown(rows)
     assert rendered.count("| PASS |") == 42
     assert "| 42 |" in rendered
+    assert ACCEPTANCE_VERSION.endswith("/v3")
+
+
+def test_acceptance_criteria_are_not_unconditional_passes() -> None:
+    source = inspect.getsource(acceptance.publish_acceptance_audit)
+
+    assert ":(True" not in source
+    assert "(True," not in source
+    assert "phase4_pilot_execution/v1/audit/manifest.json" in source
+    assert "restart_validation_v3/manifest.json" in source
+    assert "provider_enrichment_v4/manifest.json" in source
