@@ -307,6 +307,29 @@ def test_image_signature_sniffing_requires_recognised_bytes() -> None:
     assert sniff_image_content_type(b"<html>not an image</html>") is None
 
 
+def test_resolver_rejects_decompression_bomb_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "image/png"},
+            content=_image_bytes("PNG"),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result, _attempts = MediaURLResolver(
+            config=ResolverConfig(max_attempts=1),
+            http_client=client,
+            resolve_host=PUBLIC_DNS,
+        ).resolve(_input())
+
+    assert result.status is ResolutionStatus.UNRESOLVED_INVALID_IMAGE
+    assert result.terminal_reason == "image_probe_decoder_rejected"
+
+
 def test_resolver_follows_redirect_and_validates_structured_candidate() -> None:
     seen: list[str] = []
 

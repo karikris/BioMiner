@@ -13,10 +13,11 @@ import random
 import re
 import socket
 import time
+import warnings
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
-from PIL import ImageFile
+from PIL import Image, ImageFile
 
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.gbif_media_resolution.adapters import (
@@ -888,8 +889,16 @@ def _read_bounded(response: httpx.Response, *, max_bytes: int) -> bytes:
 def _decode_probe_content_type(content: bytes) -> str | None:
     parser = ImageFile.Parser()
     try:
-        parser.feed(content)
-    except (OSError, SyntaxError, ValueError):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            parser.feed(content)
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ):
         return None
     image = parser.image
     if image is None:
