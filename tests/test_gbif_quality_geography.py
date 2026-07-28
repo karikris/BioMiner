@@ -153,6 +153,8 @@ def test_geography_uses_pinned_boundary_and_retains_ambiguous_points(
     assert result.manifest["counts"]["derived_country_occurrences"] == 1
     assert result.manifest["counts"]["ambiguous_border_occurrences"] == 1
     assert result.manifest["counts"]["outside_or_unmapped_occurrences"] == 1
+    assert result.manifest["counts"]["outside_or_unmapped_media_rows"] == 1
+    assert result.manifest["counts"]["ambiguous_border_media_rows"] == 1
     assert result.manifest["counts"]["zero_zero_coordinate_occurrences"] == 1
     assert pq.read_table(result.assertion_path).num_rows == 4
 

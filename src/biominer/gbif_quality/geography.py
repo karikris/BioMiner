@@ -17,8 +17,8 @@ import pyarrow.parquet as pq
 from biominer.gbif_quality.assertions import assertion_table, build_assertion
 
 
-GEOGRAPHY_VERSION = "biominer-gbif-geographic-enrichment/v2"
-GEOGRAPHY_RULE_VERSION = "pinned-boundary-and-snapshot-consensus/v2.0.0"
+GEOGRAPHY_VERSION = "biominer-gbif-geographic-enrichment/v3"
+GEOGRAPHY_RULE_VERSION = "pinned-boundary-and-snapshot-consensus/v2.1.0"
 MIN_MAPPING_CONFIDENCE = 0.99
 COUNTRY_REFERENCE_SCHEMA = pa.schema(
     [
@@ -279,9 +279,15 @@ def publish_geographic_enrichment(
         counts["ambiguous_border_occurrences"] += int(
             missing_country and boundary_match_count > 1
         )
+        counts["ambiguous_border_media_rows"] += int(
+            missing_country and boundary_match_count > 1
+        ) * int(row["affected_media_rows"])
         counts["outside_or_unmapped_occurrences"] += int(
             missing_country and boundary is not None and boundary_match_count == 0
         )
+        counts["outside_or_unmapped_media_rows"] += int(
+            missing_country and boundary is not None and boundary_match_count == 0
+        ) * int(row["affected_media_rows"])
         counts["missing_continent_occurrences"] += int(missing_continent)
         counts["missing_continent_media_rows"] += int(missing_continent) * int(row["affected_media_rows"])
         counts["missing_region_occurrences"] += int(missing_region)

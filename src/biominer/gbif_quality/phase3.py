@@ -16,7 +16,7 @@ from biominer.gbif_quality.assertions import DERIVED_ASSERTION_SCHEMA
 from biominer.gbif_quality.review_samples import build_manual_review_sample
 
 
-PHASE3_VERSION = "biominer-gbif-quality-phase3/v1"
+PHASE3_VERSION = "biominer-gbif-quality-phase3/v2"
 COVERAGE_SCHEMA = pa.schema(
     [
         ("phase3_version", pa.string()),
@@ -159,6 +159,14 @@ def _coverage(manifests: dict[str, dict[str, object]]) -> pa.Table:
         g["derived_country_media_rows"],
         "unique intersection against checksum-pinned boundary polygons",
     )
+    add(
+        "geography",
+        "invalid_zero_zero_coordinate",
+        "FAIL",
+        g["zero_zero_coordinate_occurrences"],
+        g["zero_zero_coordinate_media_rows"],
+        "exact (0,0) is not eligible for country derivation",
+    )
     add("geography","derived_continent","PASS",g["derived_continent_occurrences"],g["derived_continent_media_rows"],"pinned snapshot consensus")
     add("geography","derived_gbif_region","PASS" if g["derived_region_occurrences"] else "UNKNOWN",g["derived_region_occurrences"],g["derived_region_media_rows"],"pinned snapshot consensus")
     add("geography","conflicts","CONFLICT",g["conflict_occurrences"],0,"retained for review")
@@ -170,7 +178,7 @@ def _coverage(manifests: dict[str, dict[str, object]]) -> pa.Table:
 
 def _report(manifests, assertion_rows, review_rows, fingerprint):
     t=manifests["temporal"]["counts"]; g=manifests["geography"]["counts"]; x=manifests["taxonomy"]["counts"]; b=manifests["biology"]["counts"]
-    return f"""# GBIF media v4 Phase 3 deterministic enrichment\n\n- Combined derived assertions: {assertion_rows:,}\n- Manual-review sample rows: {review_rows:,}\n- Semantic assertion fingerprint: `{fingerprint}`\n- Temporal media derivations: year {t['derived_year_media_rows']:,}; month {t['derived_month_media_rows']:,}; day {t['derived_day_media_rows']:,}.\n- Pre-1960 media rows retained and flagged: {t['ancient_media_rows']:,}.\n- Coordinate-to-country candidates: {g['coordinate_country_candidate_media_rows']:,}; safely derived: {g['derived_country_media_rows']:,}; ambiguous borders: {g['ambiguous_border_occurrences']:,}; outside or unmapped: {g['outside_or_unmapped_occurrences']:,}.\n- Continent media rows derived safely: {g['derived_continent_media_rows']:,}.\n- Geographic conflict occurrences retained: {g['conflict_occurrences']:,}.\n- Species-rank media rows repaired from same-record evidence: {x['repaired_media_rows']:,}.\n- Life-stage candidate media rows: {b['life_stage_candidate_media_rows']:,}.\n- Sex candidate media rows: {b['sex_candidate_media_rows']:,}.\n\nAll source fields remain unchanged. Biological candidates require human review. No network requests were made.\n"""
+    return f"""# GBIF media v4 Phase 3 deterministic enrichment\n\n- Combined derived assertions: {assertion_rows:,}\n- Manual-review sample rows: {review_rows:,}\n- Semantic assertion fingerprint: `{fingerprint}`\n- Temporal media derivations: year {t['derived_year_media_rows']:,}; month {t['derived_month_media_rows']:,}; day {t['derived_day_media_rows']:,}.\n- Pre-1960 media rows retained and flagged: {t['ancient_media_rows']:,}.\n- Coordinate-to-country baseline media rows: {g['baseline_coordinate_country_candidate_media_rows']:,}; exact `(0,0)` rows excluded: {g['zero_zero_coordinate_media_rows']:,}; eligible media rows: {g['coordinate_country_candidate_media_rows']:,}; safely derived: {g['derived_country_media_rows']:,}; ambiguous-border media rows: {g['ambiguous_border_media_rows']:,}; outside-or-unmapped media rows: {g['outside_or_unmapped_media_rows']:,}.\n- Continent media rows derived safely: {g['derived_continent_media_rows']:,}.\n- Geographic conflict occurrences retained: {g['conflict_occurrences']:,}.\n- Species-rank media rows repaired from same-record evidence: {x['repaired_media_rows']:,}.\n- Life-stage candidate media rows: {b['life_stage_candidate_media_rows']:,}.\n- Sex candidate media rows: {b['sex_candidate_media_rows']:,}.\n\nAll source fields remain unchanged. Biological candidates require human review. No network requests were made.\n"""
 
 
 def _read_valid_manifest(root: Path) -> dict[str, object]:
