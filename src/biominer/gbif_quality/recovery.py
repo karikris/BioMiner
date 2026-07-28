@@ -27,6 +27,7 @@ STAGE_MANIFESTS = (
     "quality_results/phase3/manifest.json",
     "quality_results/phase3_v3/manifest.json",
     "quality_results/phase4_pilot_preflight/manifest.json",
+    "quality_results/phase4_pilot_execution/v1/audit/manifest.json",
     "rights_and_attribution/manifest.json",
     "duplicates/manifest.json",
     "ai_readiness/manifest.json",

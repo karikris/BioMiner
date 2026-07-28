@@ -21,6 +21,7 @@ def test_restart_inventory_covers_all_production_evidence_layers() -> None:
         "derived_assertions/geography_v3/manifest.json",
         "quality_results/phase3_v3/manifest.json",
         "quality_results/phase4_pilot_preflight/manifest.json",
+        "quality_results/phase4_pilot_execution/v1/audit/manifest.json",
         "representativeness_concentration/manifest.json",
         "quality_results/review_capsules/manifest.json",
         "incremental_state/manifest.json",
