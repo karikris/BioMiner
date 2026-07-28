@@ -63,9 +63,12 @@ def test_quality_offline_publication_commands_have_bounded_defaults() -> None:
 def test_quality_acceptance_defaults_pin_v3_checksum() -> None:
     args = build_parser().parse_args([COMMAND, "acceptance"])
 
-    assert args.report_root == "reports/gbif_media_database/v4_final_20260729"
-    assert args.output_directory.endswith("quality_results/global_acceptance_v3")
+    assert args.report_root == "reports/gbif_media_database/v4_terminal_20260729"
+    assert args.output_directory.endswith("quality_results/global_acceptance_v5")
     assert args.test_receipt.endswith("quality_results/test_receipt.json")
+    assert args.full_resolution_manifest.endswith(
+        "gbif-media-url-resolution/full-v1/finalized-v1/manifest.json"
+    )
     assert args.expected_v3_sha256 == (
         "c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f"
     )
@@ -135,4 +138,7 @@ def test_quality_restart_validation_has_no_mutating_recovery_flag() -> None:
 def test_quality_final_reports_publish_to_a_new_create_only_root() -> None:
     args = build_parser().parse_args([COMMAND, "reports"])
 
-    assert args.report_root == "reports/gbif_media_database/v4_final_20260729"
+    assert args.report_root == "reports/gbif_media_database/v4_terminal_20260729"
+    assert args.full_resolution_manifest.endswith(
+        "gbif-media-url-resolution/full-v1/finalized-v1/manifest.json"
+    )

@@ -1,4 +1,5 @@
 from pathlib import Path
+import inspect
 
 import pytest
 
@@ -20,7 +21,7 @@ def test_final_report_contract_is_complete_and_status_explicit() -> None:
     assert text.startswith("# Example")
     assert "UNKNOWN" in text
     assert "NOT_TESTED" in text
-    assert REPORT_VERSION.endswith("/v2")
+    assert REPORT_VERSION.endswith("/v3")
 
 
 def test_final_reports_require_current_execution_evidence() -> None:
@@ -32,6 +33,10 @@ def test_final_reports_require_current_execution_evidence() -> None:
         "quality_results/phase3_v3/manifest.json",
         "quality_results/phase4_pilot_execution/v1/audit/manifest.json",
     } <= set(LATEST_EVIDENCE_MANIFESTS)
+    source = inspect.getsource(publish_final_reports)
+    assert "data_manifest_sha256s" in source
+    assert "rights_blocked_zero_attempts" in source
+    assert "pilot_acceptance_manifest_sha256" in source
 
 
 def test_final_reports_are_create_only(tmp_path: Path) -> None:
@@ -42,4 +47,5 @@ def test_final_reports_are_create_only(tmp_path: Path) -> None:
             data_root=tmp_path / "missing-data",
             report_root=report_root,
             code_commit="commit",
+            full_resolution_manifest=tmp_path / "missing-full-resolution-manifest.json",
         )

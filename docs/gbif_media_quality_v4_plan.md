@@ -1,6 +1,10 @@
 # GBIF media quality v4 implementation plan
 
-Status: implemented; current local acceptance audit is 42/42 PASS
+Status: implementation and terminal broad-tail validation in progress.
+Historical 42/42 publications are stale because they asserted that only the
+pilot ran; the authorized full reference-only resolver is now active and must
+publish terminal, dependency-verified evidence before global acceptance can
+pass again.
 
 This plan governs the production-grade audit of the immutable rights-filtered
 GBIF media database v3. It is subordinate to the repository scientific and

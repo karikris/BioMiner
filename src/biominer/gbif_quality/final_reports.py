@@ -11,7 +11,7 @@ from uuid import uuid4
 import duckdb
 
 
-REPORT_VERSION = "biominer-gbif-media-v4-reports/v2"
+REPORT_VERSION = "biominer-gbif-media-v4-reports/v3"
 REPORT_NAMES = (
     "source_funnel.md", "schema_and_integrity.md", "completeness_by_applicability.md",
     "occurrence_quality.md", "media_quality.md", "url_resolution_pilot.md", "url_health.md",
@@ -31,8 +31,8 @@ LATEST_EVIDENCE_MANIFESTS = (
 )
 
 
-def publish_final_reports(*, data_root: str | Path, report_root: str | Path, code_commit: str) -> dict[str, object]:
-    data = Path(data_root).resolve(); reports = Path(report_root).resolve()
+def publish_final_reports(*, data_root: str | Path, report_root: str | Path, code_commit: str, full_resolution_manifest: str | Path) -> dict[str, object]:
+    data = Path(data_root).resolve(); reports = Path(report_root).resolve(); full_resolution_path=Path(full_resolution_manifest).resolve()
     if reports.exists():
         raise FileExistsError(reports)
     required = [
@@ -47,6 +47,7 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
         data / "representativeness_concentration/manifest.json",
         data / "freshness/manifest.json",
         *(data / relative for relative in LATEST_EVIDENCE_MANIFESTS),
+        full_resolution_path,
     ]
     for path in required:
         if not path.is_file(): raise FileNotFoundError(path)
@@ -62,6 +63,33 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
     providers=load(data/"provider_enrichment_v4/manifest.json")
     provider_review=load(data/"quality_results/provider_archive_review/v1/manifest.json")
     pilot=load(data/"quality_results/phase4_pilot_execution/v1/audit/manifest.json")
+    pilot_manifest_path=data/"quality_results/phase4_pilot_execution/v1/audit/manifest.json"
+    pilot_manifest_sha256="sha256:"+_sha256(pilot_manifest_path)
+    full_resolution=load(full_resolution_path)
+    full_counts=full_resolution.get("counts") or {}
+    full_validation=full_resolution.get("validation") or {}
+    full_status_counts=full_counts.get("status_counts") or {}
+    full_result_rows=int(full_counts.get("result_rows",-1))
+    full_rights_blocked=int(full_counts.get("rights_blocked_rows",-1))
+    full_eligible=int(full_counts.get("eligible_resolution_rows",-1))
+    full_resolved=int(full_counts.get("resolved_rows",-1))
+    full_unresolved=int(full_counts.get("unresolved_rows",-1))
+    if (
+        (full_resolution.get("input") or {}).get("mode")!="full"
+        or (full_resolution.get("input") or {}).get(
+            "pilot_acceptance_manifest_sha256"
+        )!=pilot_manifest_sha256
+        or full_result_rows!=130_689
+        or full_eligible!=126_634
+        or full_rights_blocked!=4_055
+        or full_eligible+full_rights_blocked!=full_result_rows
+        or full_resolved+full_unresolved!=full_result_rows
+        or sum(int(value) for value in full_status_counts.values())!=full_result_rows
+        or not full_validation
+        or not all(full_validation.values())
+        or full_validation.get("rights_blocked_zero_attempts") is not True
+    ):
+        raise ValueError("terminal full resolver manifest does not reconcile")
     phase3=load(data/"quality_results/phase3_v3/manifest.json")
     temporal=load(data/"derived_assertions/temporal/manifest.json"); geography=load(data/"derived_assertions/geography_v3/manifest.json")
     taxonomy=load(data/"derived_assertions/taxonomy/manifest.json"); biology=load(data/"derived_assertions/biology/manifest.json")
@@ -82,7 +110,11 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
                     f"{pilot['counts']['rights_blocked_rows']:,} rights-blocked outcomes from "
                     f"{pilot['counts']['attempt_rows']:,} recorded network attempts. "
                     f"Manual-review acceptance status: {pilot['overall_acceptance_status']}. "
-                    "The 126,634-row eligible tail remains gated unless every pilot gate passes."
+                    f"The pilot-gated terminal broad run contains {full_counts['result_rows']:,} results: "
+                    f"{full_counts['resolved_rows']:,} resolved and "
+                    f"{full_counts['unresolved_rows']:,} non-resolved, including "
+                    f"{full_counts['rights_blocked_rows']:,} rights-blocked rows. "
+                    f"It records {full_counts['attempt_rows']:,} network attempts."
                 ),
                 _table(
                     c,
@@ -105,10 +137,12 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
                 (
                     f"Direct URL syntax PASS: {media['counts']['status_counts']['direct_media_url_status'].get('PASS',0):,}. "
                     f"Canonical resources: {resources['counts']['canonical_resources']:,}; "
-                    f"reference-only unresolved before the pilot: {resources['counts']['unresolved_reference_only_assertions']:,}. "
-                    f"Live testing is limited to the fixed pilot: {pilot['counts']['result_rows']:,} result rows and "
-                    f"{pilot['counts']['attempt_rows']:,} recorded attempts. No reachability, MIME, decode, or "
-                    "content-health estimate is generalized to the remaining direct-URL population."
+                    f"reference-only unresolved before resolution: {resources['counts']['unresolved_reference_only_assertions']:,}. "
+                    f"Live reference resolution covers the fixed {pilot['counts']['result_rows']:,}-row pilot and "
+                    f"the terminal {full_counts['result_rows']:,}-row broad queue, with "
+                    f"{int(pilot['counts']['attempt_rows'])+int(full_counts['attempt_rows']):,} recorded attempts. "
+                    "No reachability, MIME, decode, or content-health estimate is generalized to the existing "
+                    "direct-URL population."
                 ),
                 _table(c,data/"media_resources/resource_status_summary.parquet", "SELECT * FROM read_parquet(?) ORDER BY status_name,status"),
             ),
@@ -151,7 +185,7 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
             "ai_readiness.md": _report("AI readiness", "Technical readiness is fail-closed. No image is AI_READY until live retrieval and safe byte decoding are evidenced. Coordinates are not required for pure classification; exact species labels are required for species training.", _mapping(readiness["counts"]["decision_counts"]), _table(c,data/"ai_readiness/readiness_status_summary.parquet", "SELECT status_name,status,media_rows,distinct_occurrences,distinct_original_urls FROM read_parquet(?) ORDER BY 1,2"), _table(c,data/"ai_readiness/parts/*.parquet", "SELECT reason,count(*) media_rows FROM read_parquet(?) CROSS JOIN UNNEST(reason_codes) AS t(reason) GROUP BY 1 ORDER BY 2 DESC")),
             "bias_and_representativeness.md": _report("Bias and representativeness", "Counts distinguish raw assertions, occurrences, exact URLs, canonical URLs, and URL-adjusted support. HHI, maximum share, and effective counts quantify provider, creator, regional, and temporal concentration for all and rights-qualified media. Technically usable, content, and perceptual cohorts remain NOT_TESTED; absence in media data does not imply biological absence.", _mapping(representation["counts"]), _mapping(concentration["counts"]), _table(c,data/"representativeness/coverage_by_dimension.parquet", "SELECT dimension,\"value\",raw_image_count,distinct_occurrence_count,duplicate_adjusted_count,unresolved_count FROM read_parquet(?) WHERE dimension IN ('provider','dataset') ORDER BY raw_image_count DESC LIMIT 40"), _table(c,data/"representativeness_concentration/concentration_metrics.parquet", "SELECT cohort,species,concentration_dimension,media_rows,distinct_values,max_value_share,hhi,effective_value_count FROM read_parquet(?) WHERE species<>'<MISSING>' ORDER BY hhi DESC,media_rows DESC LIMIT 40"), _table(c,data/"representativeness/species_bias_flags.parquet", "SELECT species,raw_image_count,distinct_occurrence_count,duplicate_adjusted_count,provider_count,creator_count,country_count,decade_count,bias_flags FROM read_parquet(?) ORDER BY duplicate_adjusted_count DESC LIMIT 30")),
             "provider_remediation_priorities.md": _report("Provider remediation priorities", "Ranking is lexicographic evidence, not an opaque composite score. Provider-level bulk fixes should precede per-record network calls.", _table(c,data/"representativeness/provider_remediation_queue.parquet", "SELECT * FROM read_parquet(?) ORDER BY priority_rank LIMIT 30")),
-            "before_after_summary.md": _report("Before/after summary", "The audit preserves v3 as immutable input and adds sparse v4 evidence. 'After' means a separate derived assertion is available; source completeness is unchanged and originals are not overwritten.", _table(c,data/"source_funnel.parquet", "SELECT stage_id,input_row_count,output_row_count,excluded_row_count,exclusion_reason FROM read_parquet(?) ORDER BY stage_order"), _table(c,data/"completeness_gates/gate_summary.parquet", "SELECT gate_id,passed_media_rows,passed_occurrences,passed_original_urls,url_adjusted_pass_count,exact_content_deduplication_status,pass_percentage FROM read_parquet(?) ORDER BY gate_id"), "| Field/domain | Before missing or candidate media rows | Derived/repaired assertions | After unresolved |\n| --- | ---: | ---: | ---: |\n"+f"| year | {temporal['counts']['derived_year_media_rows']} | {temporal['counts']['derived_year_media_rows']} | 0 |\n| month | {temporal['counts']['derived_month_media_rows']} | {temporal['counts']['derived_month_media_rows']} | 0 |\n| day | {temporal['counts']['derived_day_media_rows']} | {temporal['counts']['derived_day_media_rows']} | 0 |\n| species | {taxonomy['counts']['candidate_media_rows']} | {taxonomy['counts']['repaired_media_rows']} | {taxonomy['counts']['unresolved_occurrences']} occurrences |\n| country | {geography['counts']['baseline_coordinate_country_candidate_media_rows']} | {geography['counts']['derived_country_media_rows']} | {geography['counts']['outside_or_unmapped_media_rows']} coordinate candidates plus explicitly excluded zero/zero rows |\n| continent | {geography['counts']['missing_continent_media_rows']} | {geography['counts']['derived_continent_media_rows']} | {geography['counts']['missing_continent_media_rows']-geography['counts']['derived_continent_media_rows']} |\n| provider metadata targets | {providers['counts']['target_media_rows']} | {providers['counts']['new_assertions']} | {providers['counts']['media_outcomes']} explicit outcomes retained |\n| biological text candidates | {biology['counts']['life_stage_candidate_media_rows']+biology['counts']['sex_candidate_media_rows']} | {biology['counts']['assertion_rows']} review-only | NOT_APPLICABLE |"),
+            "before_after_summary.md": _report("Before/after summary", "The audit preserves v3 as immutable input and adds sparse v4 evidence. 'After' means a separate derived assertion is available; source completeness is unchanged and originals are not overwritten.", _table(c,data/"source_funnel.parquet", "SELECT stage_id,input_row_count,output_row_count,excluded_row_count,exclusion_reason FROM read_parquet(?) ORDER BY stage_order"), _table(c,data/"completeness_gates/gate_summary.parquet", "SELECT gate_id,passed_media_rows,passed_occurrences,passed_original_urls,url_adjusted_pass_count,exact_content_deduplication_status,pass_percentage FROM read_parquet(?) ORDER BY gate_id"), "| Field/domain | Before missing or candidate media rows | Derived/repaired assertions | After unresolved |\n| --- | ---: | ---: | ---: |\n"+f"| year | {temporal['counts']['derived_year_media_rows']} | {temporal['counts']['derived_year_media_rows']} | 0 |\n| month | {temporal['counts']['derived_month_media_rows']} | {temporal['counts']['derived_month_media_rows']} | 0 |\n| day | {temporal['counts']['derived_day_media_rows']} | {temporal['counts']['derived_day_media_rows']} | 0 |\n| species | {taxonomy['counts']['candidate_media_rows']} | {taxonomy['counts']['repaired_media_rows']} | {taxonomy['counts']['unresolved_occurrences']} occurrences |\n| country | {geography['counts']['baseline_coordinate_country_candidate_media_rows']} | {geography['counts']['derived_country_media_rows']} | {geography['counts']['outside_or_unmapped_media_rows']} coordinate candidates plus explicitly excluded zero/zero rows |\n| continent | {geography['counts']['missing_continent_media_rows']} | {geography['counts']['derived_continent_media_rows']} | {geography['counts']['missing_continent_media_rows']-geography['counts']['derived_continent_media_rows']} |\n| provider metadata targets | {providers['counts']['target_media_rows']} | {providers['counts']['new_assertions']} | {providers['counts']['media_outcomes']} explicit outcomes retained |\n| biological text candidates | {biology['counts']['life_stage_candidate_media_rows']+biology['counts']['sex_candidate_media_rows']} | {biology['counts']['assertion_rows']} review-only | NOT_APPLICABLE |\n| reference-only media URLs | {full_counts['result_rows']} | {full_counts['resolved_rows']} terminal resolutions | {full_counts['unresolved_rows']} retained non-resolved outcomes |"),
             "performance_and_reproducibility.md": _report(
                 "Performance and reproducibility",
                 (
@@ -163,7 +197,9 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
                     f"{recovery['counts']['orphaned_staging_directories']} orphaned staging directories. "
                     f"Phase 3 v3 binds {phase3['counts']['derived_assertions']:,} sparse assertions; the manual-review "
                     f"population contains {reviews['counts']['capsule_rows']:,} deterministic sealed capsules. "
-                    f"The fixed URL pilot recorded {pilot['counts']['attempt_rows']:,} network attempts, and "
+                    f"The fixed URL pilot recorded {pilot['counts']['attempt_rows']:,} network attempts and the "
+                    f"terminal broad queue recorded {full_counts['attempt_rows']:,}, each bound to its exact "
+                    "execution manifest. "
                     f"{providers['counts']['executed_archives']:,} pinned provider archives executed. No result is "
                     "generalized beyond those stored denominators."
                 ),
@@ -186,15 +222,23 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
             _atomic_text(path,contents[name])
             generated.append(_entry(path,staging))
         overall="NOT_TESTED" if any("NOT_TESTED" in contents[name] for name in REPORT_NAMES) else "PASS"
+        data_manifest_paths=[
+            str(path) for path in required if path.name=="manifest.json"
+        ]
+        data_manifest_sha256s={
+            path:"sha256:"+_sha256(Path(path))
+            for path in data_manifest_paths
+        }
         manifest={
             "schema_version":REPORT_VERSION,
             "generated_at":datetime.now(UTC).isoformat().replace('+00:00','Z'),
             "code_commit":code_commit,
             "source_snapshot_id":base["source_snapshot_id"],
             "overall_status":overall,
-            "network_requests":pilot["network_requests"],
+            "network_requests":int(pilot["network_requests"])+int(full_counts["attempt_rows"]),
             "reports":generated,
-            "data_manifests":[str(path) for path in required if path.name=="manifest.json"],
+            "data_manifests":data_manifest_paths,
+            "data_manifest_sha256s":data_manifest_sha256s,
             "validation":{
                 "all_required_reports_present":len(generated)==len(REPORT_NAMES),
                 "all_report_checksums_recalculated":all(
@@ -203,7 +247,14 @@ def publish_final_reports(*, data_root: str | Path, report_root: str | Path, cod
                 ),
                 "manifest_written_last":True,
                 "no_unsubstantiated_network_claim":True,
-                "pilot_denominator_bound_to_execution_manifest":True,
+                "pilot_denominator_bound_to_execution_manifest":(
+                    data_manifest_sha256s[str(pilot_manifest_path)]
+                    ==pilot_manifest_sha256
+                ),
+                "full_resolution_denominator_bound_to_execution_manifest":(
+                    data_manifest_sha256s[str(full_resolution_path)]
+                    =="sha256:"+_sha256(full_resolution_path)
+                ),
                 "provider_claims_bound_to_archive_manifest":True,
                 "geography_claims_bound_to_pinned_boundary_manifest":True,
             },

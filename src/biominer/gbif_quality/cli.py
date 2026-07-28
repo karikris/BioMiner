@@ -42,8 +42,11 @@ from biominer.gbif_quality.pipeline import (
 COMMAND = "gbif-media-quality"
 DEFAULT_DATA_ROOT = "data/derived/gbif_media_database/v4"
 DEFAULT_REPORT_ROOT = "reports/gbif_media_database/v4"
-DEFAULT_FINAL_REPORT_ROOT = "reports/gbif_media_database/v4_final_20260729"
+DEFAULT_FINAL_REPORT_ROOT = "reports/gbif_media_database/v4_terminal_20260729"
 DEFAULT_EXPECTED_ROWS = 16_612_063
+DEFAULT_FULL_RESOLUTION_MANIFEST = (
+    "data/state/gbif-media-url-resolution/full-v1/finalized-v1/manifest.json"
+)
 DEFAULT_V3_SHA256 = (
     "c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f"
 )
@@ -188,6 +191,10 @@ def add_gbif_quality_parser(
     reports.add_argument("--repository-root", default=".")
     reports.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     reports.add_argument("--report-root", default=DEFAULT_FINAL_REPORT_ROOT)
+    reports.add_argument(
+        "--full-resolution-manifest",
+        default=DEFAULT_FULL_RESOLUTION_MANIFEST,
+    )
     reports.add_argument("--code-commit")
 
     acceptance = stages.add_parser(
@@ -198,13 +205,17 @@ def add_gbif_quality_parser(
     acceptance.add_argument("--report-root", default=DEFAULT_FINAL_REPORT_ROOT)
     acceptance.add_argument(
         "--output-directory",
-        default=f"{DEFAULT_DATA_ROOT}/quality_results/global_acceptance_v3",
+        default=f"{DEFAULT_DATA_ROOT}/quality_results/global_acceptance_v5",
     )
     acceptance.add_argument(
         "--test-receipt",
         default=f"{DEFAULT_DATA_ROOT}/quality_results/test_receipt.json",
     )
     acceptance.add_argument("--expected-v3-sha256", default=DEFAULT_V3_SHA256)
+    acceptance.add_argument(
+        "--full-resolution-manifest",
+        default=DEFAULT_FULL_RESOLUTION_MANIFEST,
+    )
     acceptance.add_argument("--code-commit")
 
 
@@ -366,6 +377,10 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
             data_root=data,
             report_root=_resolve_from_repository(repository, args.report_root),
             code_commit=commit,
+            full_resolution_manifest=_resolve_from_repository(
+                repository,
+                args.full_resolution_manifest,
+            ),
         )
     if stage == "acceptance":
         return publish_acceptance_audit(
@@ -376,6 +391,10 @@ def _run_publication(args: argparse.Namespace) -> dict[str, object]:
             test_receipt=_resolve_from_repository(repository, args.test_receipt),
             expected_v3_sha256=args.expected_v3_sha256,
             code_commit=commit,
+            full_resolution_manifest=_resolve_from_repository(
+                repository,
+                args.full_resolution_manifest,
+            ),
         )
 
     v3 = (

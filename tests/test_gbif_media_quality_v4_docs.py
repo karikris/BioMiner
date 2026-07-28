@@ -73,7 +73,7 @@ def test_v4_plan_maps_runtime_and_source_control_ownership() -> None:
         assert required in text
 
 
-def test_v4_operations_records_current_pilot_and_acceptance_evidence() -> None:
+def test_v4_operations_records_pilot_and_active_broad_run_evidence() -> None:
     text = " ".join(OPERATIONS.read_text(encoding="utf-8").split())
 
     for required in (
@@ -82,8 +82,11 @@ def test_v4_operations_records_current_pilot_and_acceptance_evidence() -> None:
         "2,068 bounded network attempts",
         "217 resolved rows",
         "agent structured-evidence review",
-        "126,634-row eligible tail has not been executed",
+        "130,689-row reference-only run is active",
+        "126,634 rows are network-eligible",
+        "mutable queue is not terminal evidence",
         "reports/gbif_media_database/v4_final_20260729/",
-        "quality_results/global_acceptance_v3/",
+        "reports/gbif_media_database/v4_terminal_20260729/",
+        "quality_results/global_acceptance_v5/",
     ):
         assert required in text
