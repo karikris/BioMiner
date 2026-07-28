@@ -247,6 +247,12 @@ def test_bounded_pipeline_builds_and_resumes_exact_final_dataset(
     ]["sealed_receipt"]["dependencies"] == {
         "fixture": "species-dimension.parquet"
     }
+    assert "created_at" not in manifest["source_scope"][
+        "input_inventory"
+    ]["species_enrichment"]["sealed_receipt"]
+    assert manifest["source_scope"]["input_inventory"][
+        "species_enrichment"
+    ]["sealed_receipt"]["embedded_receipt_fingerprint"]
     assert manifest["source_scope"]["bounded_pipeline_version"] == (
         bounded_pipeline_module.BOUNDED_PIPELINE_VERSION
     )

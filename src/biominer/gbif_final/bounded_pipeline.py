@@ -174,7 +174,9 @@ def build_bounded_final_from_spine(
             raise RuntimeError(
                 f"{name} sealed receipt does not match its inventory"
             )
-        inventories[name]["sealed_receipt"] = receipt
+        inventories[name]["sealed_receipt"] = (
+            _stable_receipt_evidence(receipt)
+        )
     if int(inventories["temporal"]["row_count"]) != expected_rows:
         raise RuntimeError(
             "temporal and source-spine row counts differ: "
@@ -807,6 +809,27 @@ def _checkpoint_fingerprint(
             for key, value in checkpoint.items()
             if key != "checkpoint_fingerprint"
         }
+    )
+
+
+def _stable_receipt_evidence(
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    evidence = {
+        key: value
+        for key, value in receipt.items()
+        if key not in {"created_at", "receipt_fingerprint"}
+    }
+    evidence["embedded_receipt_fingerprint"] = (
+        canonical_semantic_fingerprint(evidence)
+    )
+    return json.loads(
+        json.dumps(
+            evidence,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
     )
 
 
