@@ -283,6 +283,75 @@ def test_sqlite_complete_pending_is_atomic_and_does_not_clobber_claims(
     assert by_key["completed"]["checksum"] == "sha256:original"
 
 
+def test_sqlite_complete_pending_batch_is_idempotent_and_preserves_claims(
+    tmp_path,
+) -> None:
+    store = SQLiteWorkStore(tmp_path / "work.sqlite")
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [{"work_key": "claimed"}],
+    )
+    claimed = store.claim_next_batch(
+        "worker-1",
+        1,
+        job_name="cache_import",
+        stage="default",
+        registry_version="registry-v1",
+    )
+    assert claimed[0]["work_key"] == "claimed"
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [
+            {"work_key": "pending-a"},
+            {"work_key": "pending-b"},
+            {"work_key": "completed"},
+        ],
+    )
+    assert store.complete_pending(
+        "completed",
+        output_uri="cache/original.parquet",
+        checksum="sha256:original",
+        row_count=1,
+    )
+
+    assert store.complete_pending_batch(
+        [
+            "pending-a",
+            "pending-b",
+            "pending-a",
+            "claimed",
+            "completed",
+            "missing",
+        ],
+        output_uri="cache/results.parquet",
+        checksum="sha256:cache",
+        row_count=2,
+    ) == {"pending-a", "pending-b"}
+    assert store.complete_pending_batch(
+        ["pending-a", "pending-b", "claimed", "completed"],
+        output_uri="cache/replacement.parquet",
+        checksum="sha256:replacement",
+        row_count=99,
+    ) == set()
+
+    by_key = {
+        item["work_key"]: item
+        for item in store.list_work_items(
+            job_name="cache_import",
+            stage="default",
+            registry_version="registry-v1",
+        )
+    }
+    assert by_key["pending-a"]["output_uri"] == "cache/results.parquet"
+    assert by_key["pending-b"]["checksum"] == "sha256:cache"
+    assert by_key["pending-b"]["row_count"] == 2
+    assert by_key["claimed"]["status"] == "claimed"
+    assert by_key["claimed"]["output_uri"] is None
+    assert by_key["completed"]["output_uri"] == "cache/original.parquet"
+
+
 def test_sqlite_workstore_records_failures_and_requeues_stale_claims(tmp_path) -> None:
     store = SQLiteWorkStore(tmp_path / "work.sqlite")
     store.enqueue_work("poll_once", None, [{"work_key": "a"}, {"work_key": "b"}])
@@ -592,6 +661,69 @@ def test_postgres_complete_pending_is_atomic_and_does_not_clobber_claims() -> No
     assert fake.work_items["pending"]["output_uri"] == "cache/results.parquet"
 
 
+def test_postgres_complete_pending_batch_is_idempotent_and_preserves_claims() -> None:
+    fake = _FakePostgres()
+    store = PostgresWorkStore(
+        "postgresql://user:pass@example.test/db",
+        connect=fake.connect,
+    )
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [{"work_key": "claimed"}],
+    )
+    claimed = store.claim_next_batch(
+        "worker-1",
+        1,
+        job_name="cache_import",
+        stage="default",
+        registry_version="registry-v1",
+    )
+    assert claimed[0]["work_key"] == "claimed"
+    store.enqueue_work(
+        "cache_import",
+        "registry-v1",
+        [
+            {"work_key": "pending-a"},
+            {"work_key": "pending-b"},
+            {"work_key": "completed"},
+        ],
+    )
+    assert store.complete_pending(
+        "completed",
+        output_uri="cache/original.parquet",
+        checksum="sha256:original",
+        row_count=1,
+    )
+
+    assert store.complete_pending_batch(
+        [
+            "pending-a",
+            "pending-b",
+            "pending-a",
+            "claimed",
+            "completed",
+            "missing",
+        ],
+        output_uri="cache/results.parquet",
+        checksum="sha256:cache",
+        row_count=2,
+    ) == {"pending-a", "pending-b"}
+    assert store.complete_pending_batch(
+        ["pending-a", "pending-b", "claimed", "completed"],
+        output_uri="cache/replacement.parquet",
+        checksum="sha256:replacement",
+        row_count=99,
+    ) == set()
+
+    assert fake.work_items["pending-a"]["output_uri"] == "cache/results.parquet"
+    assert fake.work_items["pending-b"]["checksum"] == "sha256:cache"
+    assert fake.work_items["pending-b"]["row_count"] == 2
+    assert fake.work_items["claimed"]["status"] == "claimed"
+    assert fake.work_items["claimed"]["output_uri"] is None
+    assert fake.work_items["completed"]["output_uri"] == "cache/original.parquet"
+
+
 def test_postgres_pending_schedule_ranks_control_claim_order() -> None:
     fake = _FakePostgres()
     store = PostgresWorkStore(
@@ -850,6 +982,34 @@ class _FakePostgresConnection:
                 }
             )
             return _FakeResult(rowcount=1)
+        if (
+            normalized.startswith(
+                "UPDATE biominer_work_items SET status = %s, completed_at = now()"
+            )
+            and "work_key = ANY(%s)" in normalized
+        ):
+            status, output_uri, checksum, row_count, work_keys, required_status = (
+                params
+            )
+            rows = []
+            for work_key in work_keys:
+                row = self.db.work_items.get(work_key)
+                if row is None or row["status"] != required_status:
+                    continue
+                row.update(
+                    {
+                        "status": status,
+                        "completed_at": "2026-07-04T00:00:00+00:00",
+                        "output_uri": output_uri,
+                        "checksum": checksum,
+                        "row_count": row_count,
+                        "error": None,
+                        "claimed_by": None,
+                        "claimed_at": None,
+                    }
+                )
+                rows.append({"work_key": work_key})
+            return _FakeResult(rows, rowcount=len(rows))
         if (
             normalized.startswith(
                 "UPDATE biominer_work_items SET status = %s, completed_at = now()"

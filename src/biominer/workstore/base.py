@@ -84,6 +84,15 @@ class WorkStore(Protocol):
         row_count: int | None,
     ) -> bool: ...
 
+    def complete_pending_batch(
+        self,
+        work_keys: list[str],
+        *,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> set[str]: ...
+
     def mark_failed(self, work_key: str, error: str) -> None: ...
 
     def renew_claim(

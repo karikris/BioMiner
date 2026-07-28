@@ -334,6 +334,48 @@ class PostgresWorkStore:
             )
         return int(getattr(result, "rowcount", 0)) == 1
 
+    def complete_pending_batch(
+        self,
+        work_keys: list[str],
+        *,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> set[str]:
+        requested = list(dict.fromkeys(str(value) for value in work_keys))
+        if not requested:
+            return set()
+        completed: set[str] = set()
+        with self._connect() as conn:
+            for offset in range(0, len(requested), 5_000):
+                chunk = requested[offset : offset + 5_000]
+                rows = conn.execute(
+                    """
+                    UPDATE biominer_work_items
+                    SET status = %s,
+                        completed_at = now(),
+                        output_uri = %s,
+                        checksum = %s,
+                        row_count = %s,
+                        error = NULL,
+                        claimed_by = NULL,
+                        claimed_at = NULL
+                    WHERE work_key = ANY(%s)
+                      AND status = %s
+                    RETURNING work_key
+                    """,
+                    (
+                        COMPLETED,
+                        output_uri,
+                        checksum,
+                        row_count,
+                        chunk,
+                        PENDING,
+                    ),
+                ).fetchall()
+                completed.update(str(_row_get(row, "work_key")) for row in rows)
+        return completed
+
     def mark_failed(self, work_key: str, error: str) -> None:
         with self._connect() as conn:
             conn.execute(

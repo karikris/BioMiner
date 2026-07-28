@@ -354,6 +354,77 @@ class SQLiteWorkStore:
             )
         return int(result.rowcount) == 1
 
+    def complete_pending_batch(
+        self,
+        work_keys: list[str],
+        *,
+        output_uri: str | None,
+        checksum: str | None,
+        row_count: int | None,
+    ) -> set[str]:
+        requested = list(dict.fromkeys(str(value) for value in work_keys))
+        if not requested:
+            return set()
+        completed: set[str] = set()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for offset in range(0, len(requested), 500):
+                    chunk = requested[offset : offset + 500]
+                    placeholders = ", ".join("?" for _ in chunk)
+                    eligible = {
+                        str(row["work_key"])
+                        for row in conn.execute(
+                            f"""
+                            SELECT work_key
+                            FROM biominer_work_items
+                            WHERE work_key IN ({placeholders})
+                              AND status = ?
+                            """,
+                            (*chunk, PENDING),
+                        ).fetchall()
+                    }
+                    if not eligible:
+                        continue
+                    eligible_values = sorted(eligible)
+                    eligible_placeholders = ", ".join(
+                        "?" for _ in eligible_values
+                    )
+                    result = conn.execute(
+                        f"""
+                        UPDATE biominer_work_items
+                        SET status = ?,
+                            completed_at = ?,
+                            output_uri = ?,
+                            checksum = ?,
+                            row_count = ?,
+                            error = NULL,
+                            claimed_by = NULL,
+                            claimed_at = NULL
+                        WHERE work_key IN ({eligible_placeholders})
+                          AND status = ?
+                        """,
+                        (
+                            COMPLETED,
+                            _timestamp(),
+                            output_uri,
+                            checksum,
+                            row_count,
+                            *eligible_values,
+                            PENDING,
+                        ),
+                    )
+                    if int(result.rowcount) != len(eligible_values):
+                        raise RuntimeError(
+                            "pending work batch changed during completion"
+                        )
+                    completed.update(eligible_values)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return completed
+
     def mark_failed(self, work_key: str, error: str) -> None:
         with self._connect() as conn:
             conn.execute(
