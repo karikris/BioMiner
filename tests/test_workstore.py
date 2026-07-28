@@ -80,6 +80,58 @@ def test_sqlite_workstore_completed_keys_are_filtered(tmp_path) -> None:
     assert store.completed_keys("poll_once", None) == set()
 
 
+def test_sqlite_pending_schedule_ranks_control_claim_order(tmp_path) -> None:
+    store = SQLiteWorkStore(tmp_path / "work.sqlite")
+    store.enqueue_work(
+        "resolver",
+        "registry-v1",
+        [
+            {"work_key": "a", "value": 1},
+            {"work_key": "b", "value": 2},
+            {"work_key": "c", "value": 3},
+        ],
+        stage="network",
+    )
+
+    assert (
+        store.set_pending_schedule_ranks(
+            [("c", 0), ("a", 1), ("b", 2)],
+            job_name="resolver",
+            stage="network",
+            registry_version="registry-v1",
+        )
+        == 3
+    )
+    claimed = store.claim_next_batch(
+        "worker-1",
+        2,
+        job_name="resolver",
+        stage="network",
+        registry_version="registry-v1",
+    )
+
+    assert [item["work_key"] for item in claimed] == ["c", "a"]
+    assert [item["schedule_rank"] for item in claimed] == [0, 1]
+    assert (
+        store.set_pending_schedule_ranks(
+            [("c", 9), ("b", 0)],
+            job_name="resolver",
+            stage="network",
+            registry_version="registry-v1",
+        )
+        == 1
+    )
+    remaining = store.list_work_items(
+        job_name="resolver",
+        stage="network",
+        registry_version="registry-v1",
+        statuses=["pending"],
+    )
+    assert [(item["work_key"], item["schedule_rank"]) for item in remaining] == [
+        ("b", 0)
+    ]
+
+
 def test_sqlite_complete_pending_is_atomic_and_does_not_clobber_claims(
     tmp_path,
 ) -> None:
@@ -453,6 +505,44 @@ def test_postgres_complete_pending_is_atomic_and_does_not_clobber_claims() -> No
     assert fake.work_items["pending"]["output_uri"] == "cache/results.parquet"
 
 
+def test_postgres_pending_schedule_ranks_control_claim_order() -> None:
+    fake = _FakePostgres()
+    store = PostgresWorkStore(
+        "postgresql://user:pass@example.test/db",
+        connect=fake.connect,
+    )
+    store.enqueue_work(
+        "resolver",
+        "registry-v1",
+        [
+            {"work_key": "a", "value": 1},
+            {"work_key": "b", "value": 2},
+            {"work_key": "c", "value": 3},
+        ],
+        stage="network",
+    )
+
+    assert (
+        store.set_pending_schedule_ranks(
+            [("c", 0), ("a", 1), ("b", 2)],
+            job_name="resolver",
+            stage="network",
+            registry_version="registry-v1",
+        )
+        == 3
+    )
+    claimed = store.claim_next_batch(
+        "worker-1",
+        2,
+        job_name="resolver",
+        stage="network",
+        registry_version="registry-v1",
+    )
+
+    assert [item["work_key"] for item in claimed] == ["c", "a"]
+    assert [item["schedule_rank"] for item in claimed] == [0, 1]
+
+
 def test_postgres_workstore_failure_listing_and_requeue_contract() -> None:
     fake = _FakePostgres()
     store = PostgresWorkStore("postgresql://user:pass@example.test/db", connect=fake.connect)
@@ -607,7 +697,16 @@ class _FakePostgresConnection:
                 ]
             )
         if normalized.startswith("INSERT INTO biominer_work_items"):
-            work_key, job_name, stage, registry_version, status, payload, created_at = params
+            (
+                work_key,
+                job_name,
+                stage,
+                registry_version,
+                status,
+                payload,
+                schedule_rank,
+                created_at,
+            ) = params
             if work_key in self.db.work_items:
                 return _FakeResult(rowcount=0)
             self.db.work_items[work_key] = {
@@ -625,19 +724,28 @@ class _FakePostgresConnection:
                 "row_count": None,
                 "attempt_count": 0,
                 "error": None,
+                "schedule_rank": schedule_rank,
                 "created_at": str(created_at),
             }
             return _FakeResult(rowcount=1)
         if "FOR UPDATE SKIP LOCKED" in normalized:
             job_name, stage, registry_version, limit, worker_id = params
-            rows = [
-                row
-                for row in self.db.work_items.values()
-                if row["job_name"] == job_name
-                and row["stage"] == stage
-                and row["registry_version"] == registry_version
-                and row["status"] == "pending"
-            ][:limit]
+            rows = sorted(
+                (
+                    row
+                    for row in self.db.work_items.values()
+                    if row["job_name"] == job_name
+                    and row["stage"] == stage
+                    and row["registry_version"] == registry_version
+                    and row["status"] == "pending"
+                ),
+                key=lambda row: (
+                    row["schedule_rank"] is None,
+                    row["schedule_rank"] if row["schedule_rank"] is not None else 0,
+                    row["created_at"],
+                    row["work_key"],
+                ),
+            )[:limit]
             for row in rows:
                 row["status"] = "claimed"
                 row["claimed_by"] = worker_id
@@ -677,6 +785,21 @@ class _FakePostgresConnection:
                     "claimed_at": None,
                 }
             )
+            return _FakeResult(rowcount=1)
+        if normalized.startswith(
+            "UPDATE biominer_work_items SET schedule_rank = %s"
+        ):
+            schedule_rank, work_key, job_name, stage, registry_version, status = params
+            row = self.db.work_items.get(work_key)
+            if (
+                row is None
+                or row["job_name"] != job_name
+                or row["stage"] != stage
+                or row["registry_version"] != registry_version
+                or row["status"] != status
+            ):
+                return _FakeResult(rowcount=0)
+            row["schedule_rank"] = schedule_rank
             return _FakeResult(rowcount=1)
         if normalized.startswith("UPDATE biominer_work_items SET status = %s, completed_at"):
             status, completed_at, output_uri, checksum, row_count, error, work_key = params

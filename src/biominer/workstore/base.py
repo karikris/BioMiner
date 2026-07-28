@@ -58,6 +58,15 @@ class WorkStore(Protocol):
         limit: int | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    def set_pending_schedule_ranks(
+        self,
+        schedule: list[tuple[str, int]],
+        *,
+        job_name: str,
+        stage: str,
+        registry_version: str | None,
+    ) -> int: ...
+
     def mark_completed(
         self,
         work_key: str,
@@ -203,3 +212,19 @@ def validate_claim_lease(
         raise ValueError("attempt_count must be a positive integer")
     if isinstance(stale_after_seconds, bool) or not isinstance(stale_after_seconds, int) or stale_after_seconds <= 0:
         raise ValueError("stale_after_seconds must be a positive integer")
+
+
+def validate_schedule_ranks(schedule: list[tuple[str, int]]) -> None:
+    work_keys: set[str] = set()
+    ranks: set[int] = set()
+    for work_key, rank in schedule:
+        if not work_key:
+            raise ValueError("scheduled work_key must not be empty")
+        if work_key in work_keys:
+            raise ValueError(f"duplicate scheduled work_key: {work_key}")
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
+            raise ValueError("schedule ranks must be non-negative integers")
+        if rank in ranks:
+            raise ValueError(f"duplicate schedule rank: {rank}")
+        work_keys.add(work_key)
+        ranks.add(rank)

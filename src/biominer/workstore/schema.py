@@ -29,11 +29,20 @@ CREATE TABLE IF NOT EXISTS biominer_work_items (
   row_count bigint,
   attempt_count int NOT NULL DEFAULT 0,
   error text,
+  schedule_rank bigint,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE biominer_work_items
+ADD COLUMN IF NOT EXISTS schedule_rank bigint;
+
 CREATE INDEX IF NOT EXISTS idx_biominer_work_items_pending
 ON biominer_work_items(job_name, stage, registry_version, status, created_at, work_key);
+
+CREATE INDEX IF NOT EXISTS idx_biominer_work_items_schedule
+ON biominer_work_items(
+  job_name, stage, registry_version, status, schedule_rank, created_at, work_key
+);
 
 CREATE TABLE IF NOT EXISTS biominer_api_call_ledger (
   id bigserial PRIMARY KEY,
@@ -89,7 +98,7 @@ WITH picked AS (
     AND stage = %s
     AND (registry_version IS NOT DISTINCT FROM %s)
     AND status = 'pending'
-  ORDER BY created_at, work_key
+  ORDER BY schedule_rank NULLS LAST, created_at, work_key
   FOR UPDATE SKIP LOCKED
   LIMIT %s
 )

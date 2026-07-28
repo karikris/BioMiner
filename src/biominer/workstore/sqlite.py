@@ -19,7 +19,7 @@ from biominer.common.status import (
     PENDING,
     RUN_PLANNED,
 )
-from biominer.workstore.base import validate_claim_lease
+from biominer.workstore.base import validate_claim_lease, validate_schedule_ranks
 from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
 from biominer.storage.sqlite_connection import connect_closing
 
@@ -135,14 +135,17 @@ class SQLiteWorkStore:
         with self._connect() as conn:
             for item in items:
                 payload = dict(item)
+                schedule_rank = payload.pop("_work_schedule_rank", None)
                 work_key = str(payload.pop("work_key", "") or scoped_work_item_key(job_name, stage, registry_version, payload))
+                if schedule_rank is not None:
+                    validate_schedule_ranks([(work_key, schedule_rank)])
                 result = conn.execute(
                     """
                     INSERT OR IGNORE INTO biominer_work_items (
                         work_key, job_name, stage, registry_version, status,
-                        payload_json, created_at
+                        payload_json, schedule_rank, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         work_key,
@@ -151,6 +154,7 @@ class SQLiteWorkStore:
                         registry_version,
                         PENDING,
                         _json_dumps(payload),
+                        schedule_rank,
                         _timestamp(),
                     ),
                 )
@@ -187,7 +191,11 @@ class SQLiteWorkStore:
                 SELECT *
                 FROM biominer_work_items
                 WHERE {" AND ".join(clauses)}
-                ORDER BY created_at, work_key
+                ORDER BY
+                    CASE WHEN schedule_rank IS NULL THEN 1 ELSE 0 END,
+                    schedule_rank,
+                    created_at,
+                    work_key
                 LIMIT ?
                 """,
                 (*params, limit),
@@ -253,6 +261,40 @@ class SQLiteWorkStore:
                 params,
             ).fetchall()
         return [_row_to_work_item(row) for row in rows]
+
+    def set_pending_schedule_ranks(
+        self,
+        schedule: list[tuple[str, int]],
+        *,
+        job_name: str,
+        stage: str,
+        registry_version: str | None,
+    ) -> int:
+        validate_schedule_ranks(schedule)
+        updated = 0
+        with self._connect() as conn:
+            for work_key, schedule_rank in schedule:
+                result = conn.execute(
+                    """
+                    UPDATE biominer_work_items
+                    SET schedule_rank = ?
+                    WHERE work_key = ?
+                      AND job_name = ?
+                      AND stage = ?
+                      AND registry_version IS ?
+                      AND status = ?
+                    """,
+                    (
+                        schedule_rank,
+                        work_key,
+                        job_name,
+                        stage,
+                        registry_version,
+                        PENDING,
+                    ),
+                )
+                updated += max(int(result.rowcount), 0)
+        return updated
 
     def mark_completed(
         self,
@@ -724,6 +766,7 @@ class SQLiteWorkStore:
                     row_count INTEGER,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     error TEXT,
+                    schedule_rank INTEGER,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -772,6 +815,12 @@ class SQLiteWorkStore:
             )
             _ensure_column(
                 conn,
+                "biominer_work_items",
+                "schedule_rank",
+                "schedule_rank INTEGER",
+            )
+            _ensure_column(
+                conn,
                 "biominer_parquet_shards",
                 "worker_id",
                 "worker_id TEXT NOT NULL DEFAULT ''",
@@ -787,6 +836,15 @@ class SQLiteWorkStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_biominer_work_items_pending
                 ON biominer_work_items(job_name, stage, registry_version, status, created_at, work_key)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_biominer_work_items_schedule
+                ON biominer_work_items(
+                    job_name, stage, registry_version, status,
+                    schedule_rank, created_at, work_key
+                )
                 """
             )
             conn.execute(
@@ -840,6 +898,7 @@ def _row_to_work_item(row: sqlite3.Row) -> dict[str, Any]:
         "row_count": row["row_count"],
         "attempt_count": int(row["attempt_count"]),
         "error": row["error"],
+        "schedule_rank": row["schedule_rank"],
         "created_at": row["created_at"],
     }
 

@@ -14,7 +14,7 @@ from biominer.common.status import (
     PENDING,
     RUN_PLANNED,
 )
-from biominer.workstore.base import validate_claim_lease
+from biominer.workstore.base import validate_claim_lease, validate_schedule_ranks
 from biominer.workstore.keys import publication_lock_digest, scoped_work_item_key
 from biominer.workstore.schema import POSTGRES_CLAIM_SQL, POSTGRES_SCHEMA_SQL
 
@@ -127,14 +127,17 @@ class PostgresWorkStore:
         with self._connect() as conn:
             for item in items:
                 payload = dict(item)
+                schedule_rank = payload.pop("_work_schedule_rank", None)
                 work_key = str(payload.pop("work_key", "") or scoped_work_item_key(job_name, stage, registry_version, payload))
+                if schedule_rank is not None:
+                    validate_schedule_ranks([(work_key, schedule_rank)])
                 result = conn.execute(
                     """
                     INSERT INTO biominer_work_items (
                         work_key, job_name, stage, registry_version, status,
-                        payload_json, created_at
+                        payload_json, schedule_rank, created_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                     ON CONFLICT (work_key) DO NOTHING
                     """,
                     (
@@ -144,6 +147,7 @@ class PostgresWorkStore:
                         registry_version,
                         PENDING,
                         _json_dumps(payload),
+                        schedule_rank,
                         _timestamp(),
                     ),
                 )
@@ -182,7 +186,7 @@ class PostgresWorkStore:
                       SELECT work_key
                       FROM biominer_work_items
                       WHERE {" AND ".join(clauses)}
-                      ORDER BY created_at, work_key
+                      ORDER BY schedule_rank NULLS LAST, created_at, work_key
                       FOR UPDATE SKIP LOCKED
                       LIMIT %s
                     )
@@ -231,6 +235,40 @@ class PostgresWorkStore:
                 tuple(params),
             ).fetchall()
         return [_row_to_work_item(row) for row in rows]
+
+    def set_pending_schedule_ranks(
+        self,
+        schedule: list[tuple[str, int]],
+        *,
+        job_name: str,
+        stage: str,
+        registry_version: str | None,
+    ) -> int:
+        validate_schedule_ranks(schedule)
+        updated = 0
+        with self._connect() as conn:
+            for work_key, schedule_rank in schedule:
+                result = conn.execute(
+                    """
+                    UPDATE biominer_work_items
+                    SET schedule_rank = %s
+                    WHERE work_key = %s
+                      AND job_name = %s
+                      AND stage = %s
+                      AND registry_version IS NOT DISTINCT FROM %s
+                      AND status = %s
+                    """,
+                    (
+                        schedule_rank,
+                        work_key,
+                        job_name,
+                        stage,
+                        registry_version,
+                        PENDING,
+                    ),
+                )
+                updated += max(int(getattr(result, "rowcount", 0)), 0)
+        return updated
 
     def mark_completed(
         self,
@@ -707,6 +745,7 @@ def _row_to_work_item(row: Mapping[str, Any]) -> dict[str, Any]:
         "row_count": _row_get(row, "row_count"),
         "attempt_count": int(_row_get(row, "attempt_count")),
         "error": _row_get(row, "error"),
+        "schedule_rank": _row_get(row, "schedule_rank"),
         "created_at": _row_get(row, "created_at"),
     }
 
