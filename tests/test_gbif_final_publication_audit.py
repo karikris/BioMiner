@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
+import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -14,6 +15,11 @@ from biominer.gbif_final.pipeline import (
     FINAL_FILENAME,
     FINAL_SCHEMA_VERSION,
     MANIFEST_FILENAME,
+)
+from biominer.gbif_final.locator_index import (
+    DATABASE_FILENAME,
+    build_final_locator_index,
+    validate_final_locator_index,
 )
 from biominer.gbif_final.publication_audit import (
     PUBLICATION_AUDIT_VERSION,
@@ -90,6 +96,14 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
             "gbifID": ["A", "B"],
             "source_row_id": ["source-1", "source-2"],
             "media_assertion_id": ["media-1", "media-2"],
+            "media_identifier": [
+                "https://example.test/a.jpg",
+                "https://example.test/b.jpg",
+            ],
+            "media_references": [
+                "https://example.test/a",
+                "https://example.test/b",
+            ],
             "occurrence_quality": ["pass", "pass"],
             "media_quality": ["pass", "pass"],
             "rights_quality": ["pass", "pass"],
@@ -99,6 +113,8 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
             "registry_match_status": ["matched", "matched"],
             "registry_match_method": ["key", "key"],
             "registry_taxon_key": ["taxon-1", "taxon-2"],
+            "speciesKey": ["1", "2"],
+            "species": ["Alpha", "Beta"],
             "keyword_evidence": [["alpha"], ["beta"]],
             "keyword_source_assertions": [[], []],
             "flickr_query_terms": [["alpha"], ["beta"]],
@@ -295,3 +311,85 @@ def test_publication_audit_validator_accepts_relocated_publication(
         )
         == manifest
     )
+
+
+def test_final_locator_indexes_validated_publication_without_full_copy(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    audit_final_publication(**arguments)
+    locator = tmp_path / "locator"
+
+    manifest = build_final_locator_index(
+        publication_directory=arguments["publication_directory"],
+        publication_audit_directory=arguments["output_directory"],
+        output_directory=locator,
+        repository_root=arguments["repository_root"],
+        memory_limit="1GB",
+        threads=1,
+    )
+
+    assert all(manifest["validation"].values())
+    assert manifest["policy"][
+        "full_enriched_rows_remain_only_in_parquet"
+    ]
+    assert manifest["database"]["row_count"] == 2
+    assert set(path.name for path in locator.iterdir()) == {
+        DATABASE_FILENAME,
+        "manifest.json",
+    }
+    assert (
+        validate_final_locator_index(
+            index_directory=locator,
+            publication_audit_directory=arguments["output_directory"],
+            publication_directory=arguments["publication_directory"],
+            repository_root=arguments["repository_root"],
+            require_dependencies=True,
+        )
+        == manifest
+    )
+    connection = duckdb.connect(
+        str(locator / DATABASE_FILENAME),
+        read_only=True,
+    )
+    try:
+        assert connection.execute(
+            """
+            SELECT media_identifier
+            FROM media_locator
+            WHERE speciesKey = ?
+            """,
+            ["1"],
+        ).fetchall() == [("https://example.test/a.jpg",)]
+    finally:
+        connection.close()
+
+
+def test_final_locator_validator_rejects_changed_database(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    audit_final_publication(**arguments)
+    locator = tmp_path / "locator"
+    build_final_locator_index(
+        publication_directory=arguments["publication_directory"],
+        publication_audit_directory=arguments["output_directory"],
+        output_directory=locator,
+        repository_root=arguments["repository_root"],
+        memory_limit="1GB",
+        threads=1,
+    )
+    database = locator / DATABASE_FILENAME
+    database.write_bytes(database.read_bytes() + b"tampered")
+
+    with pytest.raises(
+        RuntimeError,
+        match="locator database checksum mismatch",
+    ):
+        validate_final_locator_index(
+            index_directory=locator,
+            publication_audit_directory=arguments["output_directory"],
+            publication_directory=arguments["publication_directory"],
+            repository_root=arguments["repository_root"],
+            require_dependencies=True,
+        )
