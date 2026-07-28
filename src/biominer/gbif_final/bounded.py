@@ -32,10 +32,6 @@ def seal_part(
 ) -> dict[str, Any]:
     """Write, reopen, verify, and seal one immutable bounded output part."""
 
-    path = Path(part_path).resolve()
-    receipt_path = path.with_suffix(path.suffix + ".receipt.json")
-    if path.exists() or receipt_path.exists():
-        raise FileExistsError(f"refusing to overwrite sealed part: {path}")
     if row_group_size <= 0:
         raise ValueError("row_group_size must be positive")
     if source_start_ordinal < 0 or source_stop_ordinal <= source_start_ordinal:
@@ -46,18 +42,71 @@ def seal_part(
             "part row count does not match its source ordinal range: "
             f"rows={table.num_rows}, range_rows={expected_rows}"
         )
+    return seal_record_batches(
+        batches=table.to_batches(max_chunksize=row_group_size),
+        schema=table.schema,
+        part_path=part_path,
+        source_start_ordinal=source_start_ordinal,
+        source_stop_ordinal=source_stop_ordinal,
+        dependencies=dependencies,
+        row_group_size=row_group_size,
+    )
+
+
+def seal_record_batches(
+    *,
+    batches: Iterable[pa.RecordBatch],
+    schema: pa.Schema,
+    part_path: str | Path,
+    source_start_ordinal: int,
+    source_stop_ordinal: int,
+    dependencies: Mapping[str, object],
+    row_group_size: int = 100_000,
+) -> dict[str, Any]:
+    """Stream, reopen, verify, and seal one immutable bounded output part."""
+
+    path = Path(part_path).resolve()
+    receipt_path = path.with_suffix(path.suffix + ".receipt.json")
+    if path.exists() or receipt_path.exists():
+        raise FileExistsError(f"refusing to overwrite sealed part: {path}")
+    if row_group_size <= 0:
+        raise ValueError("row_group_size must be positive")
+    if source_start_ordinal < 0 or source_stop_ordinal <= source_start_ordinal:
+        raise ValueError("source ordinal range must be non-empty and increasing")
+    expected_rows = source_stop_ordinal - source_start_ordinal
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    rows_written = 0
+    writer: pq.ParquetWriter | None = None
     try:
-        pq.write_table(
-            table,
+        writer = pq.ParquetWriter(
             temporary,
+            schema,
             compression="zstd",
             use_dictionary=True,
             write_statistics=True,
-            row_group_size=row_group_size,
         )
+        for batch in batches:
+            if batch.schema != schema:
+                raise RuntimeError("bounded-part record batch schema changed")
+            if not batch.num_rows:
+                continue
+            rows_written += batch.num_rows
+            if rows_written > expected_rows:
+                raise ValueError(
+                    "record batch stream exceeds its source ordinal range: "
+                    f"rows={rows_written}, range_rows={expected_rows}"
+                )
+            writer.write_batch(batch, row_group_size=row_group_size)
+        writer.close()
+        writer = None
+        if rows_written != expected_rows:
+            raise ValueError(
+                "record batch stream does not cover its source ordinal range: "
+                f"rows={rows_written}, range_rows={expected_rows}"
+            )
+        _fsync_file(temporary)
         inventory = _parquet_inventory(temporary)
         if inventory["row_count"] != expected_rows:
             raise RuntimeError("sealed part row count changed during write")
@@ -66,8 +115,30 @@ def seal_part(
         os.replace(temporary, path)
         _fsync_directory(path.parent)
     finally:
+        if writer is not None:
+            writer.close()
         temporary.unlink(missing_ok=True)
 
+    return _publish_part_receipt(
+        path=path,
+        receipt_path=receipt_path,
+        inventory=inventory,
+        source_start_ordinal=source_start_ordinal,
+        source_stop_ordinal=source_stop_ordinal,
+        dependencies=dependencies,
+    )
+
+
+def _publish_part_receipt(
+    *,
+    path: Path,
+    receipt_path: Path,
+    inventory: Mapping[str, Any],
+    source_start_ordinal: int,
+    source_stop_ordinal: int,
+    dependencies: Mapping[str, object],
+) -> dict[str, Any]:
+    expected_rows = source_stop_ordinal - source_start_ordinal
     dependency_payload = _normalized_dependencies(dependencies)
     body: dict[str, Any] = {
         "schema_version": PART_RECEIPT_VERSION,
@@ -546,6 +617,7 @@ __all__ = [
     "PART_RECEIPT_VERSION",
     "assemble_parts",
     "preflight_assembly",
+    "seal_record_batches",
     "seal_part",
     "validate_part_receipt",
 ]

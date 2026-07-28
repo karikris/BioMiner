@@ -12,6 +12,7 @@ from biominer.gbif_final.bounded import (
     PART_RECEIPT_VERSION,
     assemble_parts,
     preflight_assembly,
+    seal_record_batches,
     seal_part,
     validate_part_receipt,
 )
@@ -121,6 +122,108 @@ def test_tampered_receipt_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="receipt fingerprint mismatch"):
         validate_part_receipt(receipt_path)
+
+
+def test_record_batch_stream_is_sealed_without_materializing_full_table(
+    tmp_path: Path,
+) -> None:
+    schema = pa.schema(
+        [
+            pa.field("source_ordinal", pa.int64()),
+            pa.field("value", pa.string()),
+        ]
+    )
+    observed_batch_rows: list[int] = []
+
+    def batches() -> object:
+        for start, values in ((0, ["a", "b"]), (2, ["c"]), (3, ["d", "e"])):
+            batch = pa.RecordBatch.from_arrays(
+                [
+                    pa.array(
+                        range(start, start + len(values)),
+                        type=pa.int64(),
+                    ),
+                    pa.array(values, type=pa.string()),
+                ],
+                schema=schema,
+            )
+            observed_batch_rows.append(batch.num_rows)
+            yield batch
+
+    path = tmp_path / "streamed.parquet"
+    receipt = seal_record_batches(
+        batches=batches(),
+        schema=schema,
+        part_path=path,
+        source_start_ordinal=0,
+        source_stop_ordinal=5,
+        dependencies={"source_sha256": "sha256:source"},
+        row_group_size=2,
+    )
+
+    assert observed_batch_rows == [2, 1, 2]
+    assert receipt["artifact"]["row_count"] == 5
+    assert receipt["artifact"]["row_group_rows"] == [2, 1, 2]
+    assert pq.read_table(path)["value"].to_pylist() == [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+    ]
+
+
+def test_record_batch_stream_rejects_schema_drift_without_sealing(
+    tmp_path: Path,
+) -> None:
+    schema = pa.schema([pa.field("value", pa.string())])
+    changed = pa.RecordBatch.from_arrays(
+        [pa.array([1], type=pa.int64())],
+        names=["value"],
+    )
+    path = tmp_path / "streamed.parquet"
+
+    with pytest.raises(RuntimeError, match="schema changed"):
+        seal_record_batches(
+            batches=[changed],
+            schema=schema,
+            part_path=path,
+            source_start_ordinal=0,
+            source_stop_ordinal=1,
+            dependencies={"source_sha256": "sha256:source"},
+        )
+
+    assert not path.exists()
+    assert not path.with_suffix(".parquet.receipt.json").exists()
+
+
+def test_record_batch_stream_failure_leaves_no_partial_part(
+    tmp_path: Path,
+) -> None:
+    schema = pa.schema([pa.field("value", pa.string())])
+    valid = pa.RecordBatch.from_arrays(
+        [pa.array(["a"], type=pa.string())],
+        schema=schema,
+    )
+
+    def broken_batches() -> object:
+        yield valid
+        raise RuntimeError("simulated interruption")
+
+    path = tmp_path / "streamed.parquet"
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        seal_record_batches(
+            batches=broken_batches(),
+            schema=schema,
+            part_path=path,
+            source_start_ordinal=0,
+            source_stop_ordinal=2,
+            dependencies={"source_sha256": "sha256:source"},
+        )
+
+    assert not path.exists()
+    assert not path.with_suffix(".parquet.receipt.json").exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_assembly_is_sequential_verified_and_manifest_last(tmp_path: Path) -> None:
