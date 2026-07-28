@@ -438,6 +438,8 @@ def build_final_parquet(
         ) TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
     """
     params = [
+        # DuckDB binds the outer COPY target before placeholders in its SELECT.
+        str(final_path),
         str(pre_temporal),
         str(media_quality),
         str(assertions),
@@ -448,7 +450,6 @@ def build_final_parquet(
         str(duplicates),
         str(readiness),
         str(enrichment_path),
-        str(final_path),
     ]
     try:
         con.execute(query, params)
