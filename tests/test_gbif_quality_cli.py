@@ -63,8 +63,8 @@ def test_quality_offline_publication_commands_have_bounded_defaults() -> None:
 def test_quality_acceptance_defaults_pin_v3_checksum() -> None:
     args = build_parser().parse_args([COMMAND, "acceptance"])
 
-    assert args.report_root == "reports/gbif_media_database/v4"
-    assert args.output_directory.endswith("quality_results/global_acceptance_v2")
+    assert args.report_root == "reports/gbif_media_database/v4_final_20260729"
+    assert args.output_directory.endswith("quality_results/global_acceptance_v3")
     assert args.test_receipt.endswith("quality_results/test_receipt.json")
     assert args.expected_v3_sha256 == (
         "c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f"
@@ -128,5 +128,11 @@ def test_quality_provider_review_is_deterministic_and_offline() -> None:
 def test_quality_restart_validation_has_no_mutating_recovery_flag() -> None:
     args = build_parser().parse_args([COMMAND, "restart-validation"])
 
-    assert args.output_directory.endswith("quality_results/restart_validation")
+    assert args.output_directory.endswith("quality_results/restart_validation_v3")
     assert not hasattr(args, "delete_staging")
+
+
+def test_quality_final_reports_publish_to_a_new_create_only_root() -> None:
+    args = build_parser().parse_args([COMMAND, "reports"])
+
+    assert args.report_root == "reports/gbif_media_database/v4_final_20260729"

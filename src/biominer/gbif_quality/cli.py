@@ -42,6 +42,7 @@ from biominer.gbif_quality.pipeline import (
 COMMAND = "gbif-media-quality"
 DEFAULT_DATA_ROOT = "data/derived/gbif_media_database/v4"
 DEFAULT_REPORT_ROOT = "reports/gbif_media_database/v4"
+DEFAULT_FINAL_REPORT_ROOT = "reports/gbif_media_database/v4_final_20260729"
 DEFAULT_EXPECTED_ROWS = 16_612_063
 DEFAULT_V3_SHA256 = (
     "c96505f410723da57db4bd11bcffdc4e72be59ee59ecbaad8f4af8677229e57f"
@@ -179,14 +180,14 @@ def add_gbif_quality_parser(
     recovery.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     recovery.add_argument(
         "--output-directory",
-        default=f"{DEFAULT_DATA_ROOT}/quality_results/restart_validation",
+        default=f"{DEFAULT_DATA_ROOT}/quality_results/restart_validation_v3",
     )
     recovery.add_argument("--code-commit")
 
     reports = stages.add_parser("reports", help="render the final evidence report suite")
     reports.add_argument("--repository-root", default=".")
     reports.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
-    reports.add_argument("--report-root", default=DEFAULT_REPORT_ROOT)
+    reports.add_argument("--report-root", default=DEFAULT_FINAL_REPORT_ROOT)
     reports.add_argument("--code-commit")
 
     acceptance = stages.add_parser(
@@ -194,10 +195,10 @@ def add_gbif_quality_parser(
     )
     acceptance.add_argument("--repository-root", default=".")
     acceptance.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
-    acceptance.add_argument("--report-root", default=DEFAULT_REPORT_ROOT)
+    acceptance.add_argument("--report-root", default=DEFAULT_FINAL_REPORT_ROOT)
     acceptance.add_argument(
         "--output-directory",
-        default=f"{DEFAULT_DATA_ROOT}/quality_results/global_acceptance_v2",
+        default=f"{DEFAULT_DATA_ROOT}/quality_results/global_acceptance_v3",
     )
     acceptance.add_argument(
         "--test-receipt",
