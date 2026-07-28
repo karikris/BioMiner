@@ -7,6 +7,7 @@ from biominer.gbif_final.bounded import (
     seal_part,
     validate_part_receipt,
 )
+from biominer.gbif_final.dimensions import build_derived_assertion_dimension
 from biominer.gbif_final.pipeline import build_final_parquet, build_species_enrichments
 from biominer.gbif_final.spine import build_source_spine
 from biominer.gbif_final.windowed import (
@@ -17,6 +18,7 @@ from biominer.gbif_final.windowed import (
 __all__ = [
     "assemble_parts",
     "build_final_parquet",
+    "build_derived_assertion_dimension",
     "build_source_spine",
     "build_species_enrichments",
     "preflight_assembly",
