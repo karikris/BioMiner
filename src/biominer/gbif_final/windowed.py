@@ -195,7 +195,7 @@ def seal_keyed_dimension_window(
         connection.execute(
             f"""
             CREATE TEMP TABLE {_quoted(_DIMENSION_TABLE)} AS
-            SELECT {dimension_select}
+            SELECT {dimension_select}, TRUE AS _dimension_matched
             FROM read_parquet(?) AS d
             INNER JOIN (
               SELECT DISTINCT join_key
@@ -438,6 +438,273 @@ def seal_ordinal_aligned_window(
     )
 
 
+def seal_null_safe_composite_dimension_window(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    spine_part: str | Path,
+    dimension: str | Path,
+    output_part: str | Path,
+    source_start_ordinal: int,
+    source_stop_ordinal: int,
+    key_pairs: tuple[tuple[str, str], ...],
+    output_column: str,
+    excluded_dimension_columns: set[str] | frozenset[str],
+    required_match: bool,
+    dependencies: Mapping[str, object],
+    batch_rows: int = 65_536,
+) -> dict[str, Any]:
+    """Join a window on a collision-free tuple with null/empty equivalence."""
+
+    if source_start_ordinal < 0 or source_stop_ordinal <= source_start_ordinal:
+        raise ValueError("source ordinal range must be non-empty and increasing")
+    if not key_pairs:
+        raise ValueError("key_pairs must be non-empty")
+    if batch_rows <= 0:
+        raise ValueError("batch_rows must be positive")
+    if not output_column:
+        raise ValueError("output_column must be non-empty")
+    if not dependencies:
+        raise ValueError("dependencies must be non-empty")
+    if "composite_dimension_contract" in dependencies:
+        raise ValueError(
+            "dependencies may not override composite_dimension_contract"
+        )
+    spine_keys = tuple(pair[0] for pair in key_pairs)
+    dimension_keys = tuple(pair[1] for pair in key_pairs)
+    if (
+        len(spine_keys) != len(set(spine_keys))
+        or len(dimension_keys) != len(set(dimension_keys))
+    ):
+        raise ValueError("composite key columns must be unique")
+
+    start = source_start_ordinal
+    stop = source_stop_ordinal
+    expected_rows = stop - start
+    spine_path = Path(spine_part).resolve()
+    dimension_path = Path(dimension).resolve()
+    output_path = Path(output_part).resolve()
+    spine_file = _open_parquet(spine_path)
+    dimension_file = _open_parquet(dimension_path)
+    _require_columns(
+        spine_file.schema_arrow,
+        ("source_ordinal", *spine_keys),
+        label="source spine",
+    )
+    _require_columns(
+        dimension_file.schema_arrow,
+        dimension_keys,
+        label="composite dimension",
+    )
+    if "_dimension_matched" in dimension_file.schema_arrow.names:
+        raise RuntimeError(
+            "composite dimension uses reserved column _dimension_matched"
+        )
+    for spine_key, dimension_key in key_pairs:
+        spine_type = spine_file.schema_arrow.field(spine_key).type
+        dimension_type = dimension_file.schema_arrow.field(
+            dimension_key
+        ).type
+        if (
+            not pa.types.is_string(spine_type)
+            and not pa.types.is_null(spine_type)
+        ) or (
+            not pa.types.is_string(dimension_type)
+            and not pa.types.is_null(dimension_type)
+        ):
+            raise RuntimeError(
+                "null-safe composite keys must use string columns"
+            )
+    _validate_ordinal_file(
+        connection=connection,
+        path=spine_path,
+        expected_rows=expected_rows,
+        source_start_ordinal=start,
+        source_stop_ordinal=stop,
+        label="source spine",
+    )
+
+    excluded = set(excluded_dimension_columns)
+    dimension_fields = [
+        field
+        for field in dimension_file.schema_arrow
+        if field.name not in excluded
+    ]
+    if not dimension_fields:
+        raise ValueError("composite dimension has no output fields")
+    contract = {
+        "schema_version": WINDOWED_DIMENSION_VERSION,
+        "operation": "null_safe_composite_dimension_window",
+        "key_pairs": [list(pair) for pair in key_pairs],
+        "null_policy": "null_and_empty_string_are_equivalent",
+        "output_column": output_column,
+        "excluded_dimension_columns": sorted(excluded),
+        "required_match": required_match,
+        "spine_schema_fingerprint": _schema_fingerprint(
+            spine_file.schema_arrow
+        ),
+        "dimension_schema_fingerprint": _schema_fingerprint(
+            dimension_file.schema_arrow
+        ),
+        "dimension_output_fields": [
+            {
+                "name": field.name,
+                "type": str(field.type),
+                "nullable": field.nullable,
+            }
+            for field in dimension_fields
+        ],
+    }
+    effective_dependencies = {
+        **dict(dependencies),
+        "composite_dimension_contract": {
+            **contract,
+            "contract_fingerprint": canonical_semantic_fingerprint(contract),
+        },
+    }
+    receipt_path = output_path.with_suffix(
+        output_path.suffix + ".receipt.json"
+    )
+    if output_path.exists() != receipt_path.exists():
+        raise RuntimeError(
+            f"composite dimension is only partially sealed: {output_path}"
+        )
+    if output_path.exists():
+        receipt = validate_part_receipt(
+            receipt_path,
+            expected_dependencies=effective_dependencies,
+        )
+        if (
+            int(receipt["source_start_ordinal"]) != start
+            or int(receipt["source_stop_ordinal"]) != stop
+            or int(receipt["artifact"]["row_count"]) != expected_rows
+        ):
+            raise RuntimeError(
+                f"composite dimension receipt has a stale range: {output_path}"
+            )
+        if pq.ParquetFile(output_path).schema_arrow.names != [
+            "source_ordinal",
+            output_column,
+        ]:
+            raise RuntimeError(
+                f"composite dimension receipt has a stale schema: {output_path}"
+            )
+        return receipt
+
+    key_select = ", ".join(
+        f"coalesce(cast(s.{_quoted(spine_key)} AS VARCHAR), '') "
+        f"AS join_key_{index}"
+        for index, (spine_key, _) in enumerate(key_pairs)
+    )
+    dimension_join = " AND ".join(
+        f"coalesce(cast(d.{_quoted(dimension_key)} AS VARCHAR), '') = "
+        f"k.join_key_{index}"
+        for index, (_, dimension_key) in enumerate(key_pairs)
+    )
+    selected_dimension_columns = [
+        *dimension_keys,
+        *[
+            field.name
+            for field in dimension_fields
+            if field.name not in dimension_keys
+        ],
+    ]
+    dimension_select = ", ".join(
+        f"d.{_quoted(name)}"
+        for name in selected_dimension_columns
+    )
+    normalized_dimension_keys = [
+        f"coalesce(cast({_quoted(name)} AS VARCHAR), '')"
+        for name in dimension_keys
+    ]
+    output_join = " AND ".join(
+        f"k.join_key_{index} = "
+        f"coalesce(cast(d.{_quoted(dimension_key)} AS VARCHAR), '')"
+        for index, (_, dimension_key) in enumerate(key_pairs)
+    )
+
+    _drop_temporary_tables(connection)
+    try:
+        connection.execute(
+            f"""
+            CREATE TEMP TABLE {_quoted(_KEYS_TABLE)} AS
+            SELECT s.source_ordinal, {key_select}
+            FROM read_parquet(?) AS s
+            """,
+            [str(spine_path)],
+        )
+        connection.execute(
+            f"""
+            CREATE TEMP TABLE {_quoted(_DIMENSION_TABLE)} AS
+            SELECT {dimension_select}, TRUE AS _dimension_matched
+            FROM read_parquet(?) AS d
+            INNER JOIN (
+              SELECT DISTINCT
+                {", ".join(f"join_key_{index}" for index in range(len(key_pairs)))}
+              FROM {_quoted(_KEYS_TABLE)}
+            ) AS k
+              ON {dimension_join}
+            """,
+            [str(dimension_path)],
+        )
+        duplicate = connection.execute(
+            f"""
+            SELECT {", ".join(normalized_dimension_keys)}, count(*)
+            FROM {_quoted(_DIMENSION_TABLE)}
+            GROUP BY {", ".join(normalized_dimension_keys)}
+            HAVING count(*) > 1
+            LIMIT 1
+            """
+        ).fetchone()
+        if duplicate is not None:
+            raise RuntimeError(
+                "duplicate composite dimension key in source window"
+            )
+        missing = int(
+            connection.execute(
+                f"""
+                SELECT count(*)
+                FROM {_quoted(_KEYS_TABLE)} AS k
+                LEFT JOIN {_quoted(_DIMENSION_TABLE)} AS d
+                  ON {output_join}
+                WHERE d._dimension_matched IS NULL
+                """
+            ).fetchone()[0]
+        )
+        if required_match and missing:
+            raise RuntimeError(
+                "required composite dimension match missing for "
+                f"{missing} source rows in range [{start}, {stop})"
+            )
+
+        struct_fields = ", ".join(
+            f"{_quoted(field.name)} := d.{_quoted(field.name)}"
+            for field in dimension_fields
+        )
+        query = f"""
+            SELECT
+              k.source_ordinal,
+              struct_pack({struct_fields}) AS {_quoted(output_column)}
+            FROM {_quoted(_KEYS_TABLE)} AS k
+            LEFT JOIN {_quoted(_DIMENSION_TABLE)} AS d
+              ON {output_join}
+            ORDER BY k.source_ordinal
+        """
+        reader = connection.execute(query).to_arrow_reader(
+            batch_size=batch_rows
+        )
+        return seal_record_batches(
+            batches=reader,
+            schema=reader.schema,
+            part_path=output_path,
+            source_start_ordinal=start,
+            source_stop_ordinal=stop,
+            dependencies=effective_dependencies,
+            row_group_size=batch_rows,
+        )
+    finally:
+        _drop_temporary_tables(connection)
+
+
 def _validate_source_window(
     *,
     connection: duckdb.DuckDBPyConnection,
@@ -593,5 +860,6 @@ def _schema_fingerprint(schema: pa.Schema) -> str:
 __all__ = [
     "WINDOWED_DIMENSION_VERSION",
     "seal_keyed_dimension_window",
+    "seal_null_safe_composite_dimension_window",
     "seal_ordinal_aligned_window",
 ]

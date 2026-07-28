@@ -9,6 +9,7 @@ import pytest
 
 from biominer.gbif_final.windowed import (
     seal_keyed_dimension_window,
+    seal_null_safe_composite_dimension_window,
     seal_ordinal_aligned_window,
 )
 
@@ -261,6 +262,108 @@ def test_windowed_dimension_join_reads_multiple_parquet_parts(
         value["status"]
         for value in pq.read_table(output)["media_quality"].to_pylist()
     ] == ["A", "B", "C", "D"]
+
+
+def test_null_safe_composite_window_joins_species_identity(
+    tmp_path: Path,
+) -> None:
+    spine = _write(
+        tmp_path / "spine.parquet",
+        {
+            "source_ordinal": [0, 1, 2, 3],
+            "speciesKey": ["1", None, "", "2"],
+            "species": ["Alpha", None, None, "Beta"],
+        },
+    )
+    dimension = _write(
+        tmp_path / "species.parquet",
+        {
+            "dataset_species_key": ["2", "", "1"],
+            "dataset_species": ["Beta", None, "Alpha"],
+            "registry_match_status": ["matched", "unmatched", "matched"],
+        },
+    )
+    output = tmp_path / "species-window.parquet"
+    connection = duckdb.connect()
+    try:
+        seal_null_safe_composite_dimension_window(
+            connection=connection,
+            spine_part=spine,
+            dimension=dimension,
+            output_part=output,
+            source_start_ordinal=0,
+            source_stop_ordinal=4,
+            key_pairs=(
+                ("speciesKey", "dataset_species_key"),
+                ("species", "dataset_species"),
+            ),
+            output_column="species_enrichment",
+            excluded_dimension_columns={
+                "dataset_species_key",
+                "dataset_species",
+            },
+            required_match=True,
+            dependencies={"registry_sha256": "sha256:registry"},
+            batch_rows=2,
+        )
+    finally:
+        connection.close()
+
+    assert [
+        row["registry_match_status"]
+        for row in pq.read_table(output)["species_enrichment"].to_pylist()
+    ] == ["matched", "unmatched", "unmatched", "matched"]
+
+
+def test_null_safe_composite_window_rejects_normalized_duplicate_key(
+    tmp_path: Path,
+) -> None:
+    spine = _write(
+        tmp_path / "spine.parquet",
+        {
+            "source_ordinal": [0],
+            "speciesKey": [None],
+            "species": [None],
+        },
+    )
+    dimension = _write(
+        tmp_path / "species.parquet",
+        {
+            "dataset_species_key": [None, ""],
+            "dataset_species": [None, ""],
+            "registry_match_status": ["first", "second"],
+        },
+    )
+    output = tmp_path / "species-window.parquet"
+    connection = duckdb.connect()
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="duplicate composite dimension key",
+        ):
+            seal_null_safe_composite_dimension_window(
+                connection=connection,
+                spine_part=spine,
+                dimension=dimension,
+                output_part=output,
+                source_start_ordinal=0,
+                source_stop_ordinal=1,
+                key_pairs=(
+                    ("speciesKey", "dataset_species_key"),
+                    ("species", "dataset_species"),
+                ),
+                output_column="species_enrichment",
+                excluded_dimension_columns={
+                    "dataset_species_key",
+                    "dataset_species",
+                },
+                required_match=True,
+                dependencies={"registry_sha256": "sha256:registry"},
+            )
+    finally:
+        connection.close()
+
+    assert not output.exists()
 
 
 def test_ordinal_aligned_window_combines_sealed_sidecars(
