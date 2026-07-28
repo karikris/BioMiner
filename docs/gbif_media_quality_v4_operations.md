@@ -30,6 +30,12 @@ not treated as an ordinary repairable null.
 | `representativeness_concentration/concentration_metrics.parquet` | species, cohort, concentration dimension | Provider, creator, regional, and temporal HHI, maximum share, and effective count |
 | `freshness/*.parquet` | provider/dataset or derived manifest | Timestamp conflicts and configurable stale/current classifications |
 | `provider_enrichment/provider_enrichment_registry.parquet` | provider adapter | Versioned structured-metadata contracts for the seven remediation priorities; execution status is explicit |
+| `provider_enrichment_v3/provider_archive_execution.parquet` | provider dataset snapshot | Checksum-bound execution status, archive coverage, exact item matches, and unresolved archive reasons |
+| `provider_enrichment_v3/provider_item_evidence.parquet` | exact provider media item match | Item-scoped values bound by exact occurrence ID and direct media URL |
+| `provider_enrichment_v3/provider_derived_assertions.parquet` | sparse missing-field assertion | New provider values with source row, media assertion, archive row, method, and confidence provenance |
+| `provider_enrichment_v3/provider_conflicts.parquet` | conflicting item field | Current provider item values that disagree with preserved v3 values |
+| `provider_enrichment_v3/provider_media_outcomes.parquet` | prioritized-provider media assertion | One retained outcome for every targeted row, including unmatched, core-only, and unavailable archives |
+| `provider_enrichment_v3/provider_field_summary.parquet` | provider dataset and media field | Before/after missingness, direct item evidence, conflicts, and unresolved counts |
 | `completeness_gates/*.parquet` | gate and reporting dimension | Seven cumulative-use gates with media, occurrence, URL, and status denominators |
 | `quality_results/review_capsules/*.parquet` | deterministic review item | Sealed before/after/evidence capsules for rights, attribution, duplicates, and exclusions |
 | `incremental_state/state/**/*.parquet` | media assertion | Binary domain hashes for future snapshot diffs |
@@ -60,6 +66,7 @@ uv run biominer gbif-media-quality representativeness --output-directory data/de
 uv run biominer gbif-media-quality concentration --output-directory data/derived/gbif_media_database/v4-next/representativeness_concentration
 uv run biominer gbif-media-quality freshness --output-directory data/derived/gbif_media_database/v4-next/freshness
 uv run biominer gbif-media-quality provider-registry --output-directory data/derived/gbif_media_database/v4-next/provider_enrichment
+uv run biominer gbif-media-quality provider-archives --output-directory data/derived/gbif_media_database/v4-next/provider_enrichment_v3
 uv run biominer gbif-media-quality media-resources --output-directory data/derived/gbif_media_database/v4-next/media_resources
 uv run biominer gbif-media-quality gates --output-directory data/derived/gbif_media_database/v4-next/completeness_gates
 uv run biominer gbif-media-quality review-capsules --output-directory data/derived/gbif_media_database/v4-next/quality_results/review_capsules
@@ -97,6 +104,16 @@ providers. Registry publication is offline and does not mean an adapter has
 executed: `execution_status=NOT_TESTED` remains authoritative until structured
 provider evidence has been fetched, cached, and validated under explicit
 network authorization.
+
+`provider-archives` consumes a pinned, checksum-inventoried archive manifest.
+It accepts a Darwin Core Multimedia row as direct item evidence only when both
+its occurrence ID and identifier exactly match the preserved media assertion.
+An occurrence-core licence is never promoted to a media licence, and
+`recordedBy` is never promoted to creator. Multiple archive rows for one exact
+item key fail closed as a conflict. Archives without a Multimedia extension,
+unavailable archives, unmatched items, and item rows with no applicable new
+fields remain explicit outcomes. The command performs no network requests and
+refuses to overwrite an existing output directory.
 
 ## Duplicate analysis and AI readiness
 
