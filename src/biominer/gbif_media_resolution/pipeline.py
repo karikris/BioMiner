@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -88,6 +89,19 @@ PILOT_SELECTION_SCHEMA = pa.schema(
         ("rights_blocked", pa.bool_()),
         ("selection_stratum", pa.string()),
         ("selection_hash", pa.string()),
+    ]
+)
+PILOT_CACHE_IMPORT_SCHEMA_VERSION = (
+    "biominer-gbif-media-url-pilot-cache-import/v1"
+)
+PREEXISTING_COMPLETION_SCHEMA = pa.schema(
+    [
+        ("source_row_id", pa.string()),
+        ("output_uri", pa.string()),
+        ("checksum", pa.string()),
+        ("row_count", pa.int64()),
+        ("attempt_count", pa.int64()),
+        ("completed_at", pa.string()),
     ]
 )
 
@@ -280,6 +294,357 @@ def prepare_resolution(
         "pilot_selection_artifact": pilot_artifact,
     }
     _write_json_idempotent(root / f"prepare-{run_id}.json", receipt)
+    return receipt
+
+
+def import_pilot_cache(
+    *,
+    workstore: WorkStore,
+    run_id: str,
+    output_root: str | Path,
+    pilot_acceptance_manifest: str | Path | None = None,
+) -> dict[str, Any]:
+    run = workstore.get_run(run_id=run_id)
+    if run is None or run["job_name"] != JOB_NAME or run["stage"] != STAGE:
+        raise ValueError(f"unknown GBIF URL resolution run: {run_id}")
+    config = run["config"]
+    if config.get("mode") != "full":
+        raise ValueError("pilot cache import requires a full resolution run")
+    root = Path(output_root).resolve()
+    configured_root = Path(str(config.get("output_root", ""))).resolve()
+    if root != configured_root:
+        raise ValueError("pilot cache output root does not match the prepared run")
+    configured_acceptance = Path(
+        str(config.get("pilot_acceptance_manifest", ""))
+    ).resolve()
+    requested_acceptance = (
+        Path(pilot_acceptance_manifest).resolve()
+        if pilot_acceptance_manifest is not None
+        else configured_acceptance
+    )
+    if requested_acceptance != configured_acceptance:
+        raise ValueError("pilot acceptance manifest does not match the prepared run")
+    source_sha = str(run["registry_version"])
+    acceptance = _validate_pilot_acceptance(
+        requested_acceptance,
+        source_sha256=source_sha,
+        required=True,
+    )
+    if acceptance is None:  # pragma: no cover - required=True contract guard.
+        raise RuntimeError("pilot acceptance validation returned no manifest")
+    if acceptance["sha256"] != config.get("pilot_acceptance_manifest_sha256"):
+        raise ValueError("pilot acceptance checksum does not match the prepared run")
+
+    acceptance_path = Path(acceptance["path"])
+    acceptance_value = json.loads(acceptance_path.read_text(encoding="utf-8"))
+    resolution_manifest_value = (
+        acceptance_value.get("input") or {}
+    ).get("resolution_manifest")
+    if not resolution_manifest_value:
+        raise ValueError("pilot acceptance manifest has no resolution manifest")
+    resolution_manifest_path = Path(str(resolution_manifest_value))
+    if not resolution_manifest_path.is_absolute():
+        resolution_manifest_path = acceptance_path.parent / resolution_manifest_path
+    resolution_manifest_path = resolution_manifest_path.resolve()
+    if not resolution_manifest_path.is_file():
+        raise FileNotFoundError(resolution_manifest_path)
+    resolution_manifest = json.loads(
+        resolution_manifest_path.read_text(encoding="utf-8")
+    )
+    _validate_cacheable_pilot_resolution(
+        resolution_manifest,
+        acceptance_value=acceptance_value,
+        source_sha256=source_sha,
+    )
+    result_path, result_inventory = _validated_pilot_artifact(
+        resolution_manifest_path,
+        resolution_manifest,
+        "resolution_results.parquet",
+        RESULT_SCHEMA,
+    )
+    attempt_path, attempt_inventory = _validated_pilot_artifact(
+        resolution_manifest_path,
+        resolution_manifest,
+        "resolution_attempts.parquet",
+        ATTEMPT_SCHEMA,
+    )
+    result_table = pq.read_table(result_path, schema=RESULT_SCHEMA)
+    attempt_table = pq.read_table(attempt_path, schema=ATTEMPT_SCHEMA)
+    result_ids = [str(value) for value in result_table["source_row_id"].to_pylist()]
+    if len(set(result_ids)) != len(result_ids):
+        raise ValueError("pilot cache results contain duplicate source rows")
+    if set(attempt_table["source_row_id"].to_pylist()) - set(result_ids):
+        raise ValueError("pilot cache attempts contain unknown source rows")
+    source_values = set(
+        str(value)
+        for value in result_table["source_artifact_sha256"].to_pylist()
+    )
+    if source_values != {source_sha}:
+        raise ValueError("pilot cache results belong to another source snapshot")
+    rights_blocked_ids = set(
+        result_table.filter(
+            pc.equal(
+                result_table["status"],
+                ResolutionStatus.RIGHTS_BLOCKED.value,
+            )
+        )["source_row_id"].to_pylist()
+    )
+    if rights_blocked_ids & set(attempt_table["source_row_id"].to_pylist()):
+        raise ValueError("pilot cache contains attempts for rights-blocked rows")
+
+    registry_version = str(run["registry_version"])
+    work_items = workstore.list_work_items(
+        job_name=JOB_NAME,
+        stage=STAGE,
+        registry_version=registry_version,
+    )
+    claimed = [item for item in work_items if item["status"] == "claimed"]
+    if claimed:
+        raise RuntimeError(
+            "pilot cache import requires zero active claims; "
+            f"found {len(claimed)}"
+        )
+    by_key = {str(item["work_key"]): item for item in work_items}
+    missing_work = sorted(set(result_ids) - set(by_key))
+    if missing_work:
+        raise ValueError(
+            f"pilot cache rows are absent from the full queue: {len(missing_work)}"
+        )
+    invalid_statuses = Counter(
+        str(by_key[source_id]["status"])
+        for source_id in result_ids
+        if by_key[source_id]["status"] not in {"pending", "completed"}
+    )
+    if invalid_statuses:
+        raise RuntimeError(
+            f"pilot cache rows have non-importable states: {dict(invalid_statuses)}"
+        )
+
+    cache_token = (
+        "pilot-"
+        + canonical_semantic_fingerprint(
+            {
+                "contract": PILOT_CACHE_IMPORT_SCHEMA_VERSION,
+                "run_id": run_id,
+                "source_snapshot_id": source_sha,
+                "pilot_acceptance_manifest_sha256": acceptance["sha256"],
+            }
+        ).split(":", 1)[1]
+    )
+    cache_result_path = (
+        root / "shards" / "results" / f"cache-{cache_token}.parquet"
+    )
+    cache_attempt_path = (
+        root / "shards" / "attempts" / f"cache-{cache_token}.parquet"
+    )
+    result_sha = str(result_inventory["physical_sha256"])
+    attempt_sha = str(attempt_inventory["physical_sha256"])
+    _copy_file_create_only(result_path, cache_result_path, expected_sha256=result_sha)
+    _copy_file_create_only(attempt_path, cache_attempt_path, expected_sha256=attempt_sha)
+    cache_metadata = {
+        "attempt_uri": str(cache_attempt_path),
+        "attempt_sha256": attempt_sha,
+        "attempt_rows": attempt_table.num_rows,
+        "cache_kind": "accepted_pilot_resolution",
+        "pilot_acceptance_manifest": str(acceptance_path),
+        "pilot_acceptance_manifest_sha256": str(acceptance["sha256"]),
+        "pilot_resolution_manifest": str(resolution_manifest_path),
+        "pilot_resolution_manifest_sha256": (
+            "sha256:" + _sha256(resolution_manifest_path)
+        ),
+        "network_requests": 0,
+    }
+    workstore.register_shard(
+        shard_id=cache_token,
+        job_name=JOB_NAME,
+        registry_version=registry_version,
+        stage=STAGE,
+        run_id=run_id,
+        worker_id="pilot-cache-import",
+        uri=str(cache_result_path),
+        checksum=result_sha,
+        row_count=result_table.num_rows,
+        byte_count=cache_result_path.stat().st_size,
+        metadata=cache_metadata,
+    )
+    _validate_registered_cache_shard(
+        workstore=workstore,
+        run_id=run_id,
+        registry_version=registry_version,
+        shard_id=cache_token,
+        result_path=cache_result_path,
+        result_sha256=result_sha,
+        result_rows=result_table.num_rows,
+        metadata=cache_metadata,
+    )
+
+    preexisting = [
+        by_key[source_id]
+        for source_id in result_ids
+        if by_key[source_id]["status"] == "completed"
+        and (
+            str(by_key[source_id].get("output_uri")) != str(cache_result_path)
+            or str(by_key[source_id].get("checksum")) != result_sha
+        )
+    ]
+    already_cached = {
+        source_id
+        for source_id in result_ids
+        if by_key[source_id]["status"] == "completed"
+        and str(by_key[source_id].get("output_uri")) == str(cache_result_path)
+        and str(by_key[source_id].get("checksum")) == result_sha
+    }
+    evidence_path = (
+        root
+        / "cache_imports"
+        / cache_token
+        / "preexisting_full_completions.parquet"
+    )
+    evidence_rows = [
+        {
+            "source_row_id": str(item["work_key"]),
+            "output_uri": (
+                None if item.get("output_uri") is None else str(item["output_uri"])
+            ),
+            "checksum": (
+                None if item.get("checksum") is None else str(item["checksum"])
+            ),
+            "row_count": item.get("row_count"),
+            "attempt_count": int(item["attempt_count"]),
+            "completed_at": (
+                None
+                if item.get("completed_at") is None
+                else str(item["completed_at"])
+            ),
+        }
+        for item in sorted(preexisting, key=lambda value: str(value["work_key"]))
+    ]
+    _write_parquet_create_only(
+        evidence_path,
+        pa.Table.from_pylist(evidence_rows, schema=PREEXISTING_COMPLETION_SCHEMA),
+    )
+
+    receipt_path = root / f"import-{cache_token}.json"
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        _validate_existing_cache_import_receipt(
+            receipt,
+            run_id=run_id,
+            source_sha256=source_sha,
+            acceptance_sha256=str(acceptance["sha256"]),
+            result_path=cache_result_path,
+            result_sha256=result_sha,
+            attempt_path=cache_attempt_path,
+            attempt_sha256=attempt_sha,
+            evidence_path=evidence_path,
+            pilot_source_ids=set(result_ids),
+            work_items=work_items,
+        )
+        return receipt
+
+    pending_ids = [
+        source_id
+        for source_id in result_ids
+        if by_key[source_id]["status"] == "pending"
+    ]
+    for source_id in pending_ids:
+        if not workstore.complete_pending(
+            source_id,
+            output_uri=str(cache_result_path),
+            checksum=result_sha,
+            row_count=1,
+        ):
+            raise RuntimeError(
+                "pilot cache import lost the pending-state transition for "
+                f"{source_id}"
+            )
+    final_work_items = workstore.list_work_items(
+        job_name=JOB_NAME,
+        stage=STAGE,
+        registry_version=registry_version,
+    )
+    final_by_key = {str(item["work_key"]): item for item in final_work_items}
+    final_pilot = [final_by_key[source_id] for source_id in result_ids]
+    cache_completed = [
+        item
+        for item in final_pilot
+        if item["status"] == "completed"
+        and str(item.get("output_uri")) == str(cache_result_path)
+        and str(item.get("checksum")) == result_sha
+    ]
+    all_completed = all(item["status"] == "completed" for item in final_pilot)
+    if not all_completed:
+        raise RuntimeError("pilot cache import did not complete every pilot work row")
+
+    evidence_inventory = _parquet_inventory(evidence_path)
+    receipt = {
+        "schema_version": PILOT_CACHE_IMPORT_SCHEMA_VERSION,
+        "generated_at": _timestamp(),
+        "git_commit": _git_revision(),
+        "run_id": run_id,
+        "source_snapshot_id": source_sha,
+        "pilot_acceptance_manifest": str(acceptance_path),
+        "pilot_acceptance_manifest_sha256": str(acceptance["sha256"]),
+        "pilot_resolution_manifest": str(resolution_manifest_path),
+        "pilot_resolution_manifest_sha256": (
+            "sha256:" + _sha256(resolution_manifest_path)
+        ),
+        "network_requests": 0,
+        "counts": {
+            "pilot_result_rows": result_table.num_rows,
+            "pilot_attempt_rows": attempt_table.num_rows,
+            "cache_completed_rows": len(cache_completed),
+            "preexisting_full_completions": len(preexisting),
+            "duplicate_network_probe_rows": len(preexisting),
+            "already_cached_before_import": len(already_cached),
+            "pending_rows_completed_from_cache": len(pending_ids),
+        },
+        "artifacts": {
+            "cache_results": {
+                **_parquet_inventory(cache_result_path),
+                "path": str(cache_result_path),
+            },
+            "cache_attempts": {
+                **_parquet_inventory(cache_attempt_path),
+                "path": str(cache_attempt_path),
+            },
+            "preexisting_full_completions": {
+                **evidence_inventory,
+                "path": str(evidence_path),
+            },
+        },
+        "validation": {
+            "acceptance_checksum_matches_run": True,
+            "pilot_resolution_checksums_match": True,
+            "pilot_source_snapshot_matches_run": True,
+            "zero_active_claims": True,
+            "every_pilot_row_present_in_full_queue": True,
+            "every_pilot_row_completed": all_completed,
+            "cache_shard_registered": True,
+            "rights_blocked_zero_attempts": not (
+                rights_blocked_ids
+                & set(attempt_table["source_row_id"].to_pylist())
+            ),
+            "network_requests_zero": True,
+            "preexisting_full_completions_retained": (
+                len(preexisting) + len(cache_completed) == len(result_ids)
+            ),
+            "all_parquet_row_groups_complete": all(
+                value["row_groups_complete"]
+                for value in (
+                    _parquet_inventory(cache_result_path),
+                    _parquet_inventory(cache_attempt_path),
+                    evidence_inventory,
+                )
+            ),
+        },
+        "manifest_policy": {"written_last": True},
+    }
+    if not all(receipt["validation"].values()):
+        raise RuntimeError(
+            f"pilot cache import validation failed: {receipt['validation']}"
+        )
+    _write_json(receipt_path, receipt)
     return receipt
 
 
@@ -1063,6 +1428,215 @@ def _read_selected_tables(
     return pa.concat_tables(tables) if tables else pa.Table.from_pylist([], schema=schema)
 
 
+def _validate_cacheable_pilot_resolution(
+    resolution_manifest: dict[str, Any],
+    *,
+    acceptance_value: dict[str, Any],
+    source_sha256: str,
+) -> None:
+    if resolution_manifest.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("pilot resolution manifest schema is unsupported")
+    if resolution_manifest.get("manifest_policy", {}).get("written_last") is not True:
+        raise ValueError("pilot resolution manifest was not written last")
+    resolution_input = resolution_manifest.get("input") or {}
+    if resolution_input.get("mode") != "pilot":
+        raise ValueError("cache source is not a pilot resolution")
+    if resolution_input.get("source_artifact_sha256") != source_sha256:
+        raise ValueError("pilot resolution belongs to another source snapshot")
+    validation = resolution_manifest.get("validation") or {}
+    required_validation = (
+        "one_result_per_input",
+        "unique_source_row_ids",
+        "every_work_item_completed",
+        "rights_blocked_zero_attempts",
+        "all_parquet_row_groups_complete",
+    )
+    if not all(validation.get(name) is True for name in required_validation):
+        raise ValueError("pilot resolution validation is incomplete")
+    acceptance_validation = acceptance_value.get("validation") or {}
+    if acceptance_validation.get("resolution_checksums_match") is not True:
+        raise ValueError("pilot acceptance did not validate resolution checksums")
+    resolution_counts = resolution_manifest.get("counts") or {}
+    acceptance_counts = acceptance_value.get("counts") or {}
+    result_rows = int(resolution_counts.get("result_rows", -1))
+    attempt_rows = int(resolution_counts.get("attempt_rows", -1))
+    if result_rows <= 0:
+        raise ValueError("pilot resolution contains no result rows")
+    if result_rows != int(resolution_input.get("work_rows", -1)):
+        raise ValueError("pilot resolution work/result counts differ")
+    if result_rows != int(acceptance_counts.get("pilot_rows", -1)):
+        raise ValueError("pilot acceptance/result counts differ")
+    if result_rows != int(acceptance_counts.get("result_rows", -1)):
+        raise ValueError("pilot acceptance result count differs")
+    if attempt_rows != int(acceptance_counts.get("attempt_rows", -1)):
+        raise ValueError("pilot acceptance attempt count differs")
+
+
+def _validated_pilot_artifact(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    name: str,
+    expected_schema: pa.Schema,
+) -> tuple[Path, dict[str, Any]]:
+    inventory = (manifest.get("artifacts") or {}).get(name)
+    if not isinstance(inventory, dict):
+        raise ValueError(f"pilot resolution manifest has no {name} inventory")
+    path = manifest_path.parent / str(inventory.get("path", ""))
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    expected_sha = str(inventory.get("physical_sha256", ""))
+    if expected_sha != "sha256:" + _sha256(path):
+        raise ValueError(f"pilot resolution checksum mismatch: {path}")
+    parquet = pq.ParquetFile(path)
+    if not parquet.schema_arrow.equals(expected_schema, check_metadata=False):
+        raise ValueError(f"pilot resolution schema mismatch: {path}")
+    if parquet.metadata.num_rows != int(inventory.get("row_count", -1)):
+        raise ValueError(f"pilot resolution row count mismatch: {path}")
+    row_groups = [
+        parquet.metadata.row_group(index).num_rows
+        for index in range(parquet.metadata.num_row_groups)
+    ]
+    row_groups_complete = (
+        sum(row_groups) == parquet.metadata.num_rows
+        and (
+            parquet.metadata.num_rows == 0
+            or all(row_count > 0 for row_count in row_groups)
+        )
+    )
+    if not row_groups_complete or inventory.get("row_groups_complete") is not True:
+        raise ValueError(f"pilot resolution has incomplete row groups: {path}")
+    return path, inventory
+
+
+def _copy_file_create_only(
+    source: Path,
+    destination: Path,
+    *,
+    expected_sha256: str,
+) -> None:
+    expected = expected_sha256.removeprefix("sha256:")
+    if _sha256(source) != expected:
+        raise ValueError(f"cache source checksum mismatch: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise FileExistsError(f"refusing cache destination symlink: {destination}")
+    if destination.exists():
+        if not destination.is_file() or _sha256(destination) != expected:
+            raise FileExistsError(f"existing cache shard differs: {destination}")
+        return
+    temporary = destination.with_name(
+        f".{destination.name}.{uuid4().hex}.tmp"
+    )
+    try:
+        with source.open("rb") as source_handle, temporary.open("xb") as target:
+            shutil.copyfileobj(source_handle, target, length=16 * 1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+        if _sha256(temporary) != expected:
+            raise RuntimeError(f"cache copy checksum mismatch: {temporary}")
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if destination.is_symlink() or _sha256(destination) != expected:
+                raise FileExistsError(
+                    f"concurrent cache shard differs: {destination}"
+                )
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_registered_cache_shard(
+    *,
+    workstore: WorkStore,
+    run_id: str,
+    registry_version: str,
+    shard_id: str,
+    result_path: Path,
+    result_sha256: str,
+    result_rows: int,
+    metadata: dict[str, Any],
+) -> None:
+    matches = [
+        shard
+        for shard in workstore.list_committed_shards(
+            job_name=JOB_NAME,
+            stage=STAGE,
+            registry_version=registry_version,
+            run_id=run_id,
+        )
+        if shard["shard_id"] == shard_id or shard["uri"] == str(result_path)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("pilot cache shard registration is missing or ambiguous")
+    shard = matches[0]
+    if (
+        shard["shard_id"] != shard_id
+        or shard["uri"] != str(result_path)
+        or shard["checksum"] != result_sha256
+        or int(shard["row_count"]) != result_rows
+        or shard["metadata"] != metadata
+    ):
+        raise RuntimeError("pilot cache shard registration differs")
+
+
+def _validate_existing_cache_import_receipt(
+    receipt: dict[str, Any],
+    *,
+    run_id: str,
+    source_sha256: str,
+    acceptance_sha256: str,
+    result_path: Path,
+    result_sha256: str,
+    attempt_path: Path,
+    attempt_sha256: str,
+    evidence_path: Path,
+    pilot_source_ids: set[str],
+    work_items: list[dict[str, Any]],
+) -> None:
+    if receipt.get("schema_version") != PILOT_CACHE_IMPORT_SCHEMA_VERSION:
+        raise ValueError("existing pilot cache receipt schema is unsupported")
+    if receipt.get("run_id") != run_id:
+        raise ValueError("existing pilot cache receipt belongs to another run")
+    if receipt.get("source_snapshot_id") != source_sha256:
+        raise ValueError("existing pilot cache receipt belongs to another source")
+    if receipt.get("pilot_acceptance_manifest_sha256") != acceptance_sha256:
+        raise ValueError("existing pilot cache receipt acceptance checksum differs")
+    if receipt.get("network_requests") != 0:
+        raise ValueError("existing pilot cache receipt reports network requests")
+    if receipt.get("manifest_policy", {}).get("written_last") is not True:
+        raise ValueError("existing pilot cache receipt was not written last")
+    if not all((receipt.get("validation") or {}).values()):
+        raise ValueError("existing pilot cache receipt validation is incomplete")
+    artifacts = receipt.get("artifacts") or {}
+    expected_artifacts = (
+        ("cache_results", result_path, result_sha256),
+        ("cache_attempts", attempt_path, attempt_sha256),
+        (
+            "preexisting_full_completions",
+            evidence_path,
+            "sha256:" + _sha256(evidence_path),
+        ),
+    )
+    for name, path, checksum in expected_artifacts:
+        artifact = artifacts.get(name) or {}
+        if (
+            artifact.get("path") != str(path)
+            or artifact.get("physical_sha256") != checksum
+            or not path.is_file()
+        ):
+            raise ValueError(f"existing pilot cache receipt artifact differs: {name}")
+    if int((receipt.get("counts") or {}).get("pilot_result_rows", -1)) != len(
+        pilot_source_ids
+    ):
+        raise ValueError("existing pilot cache receipt row count differs")
+    by_key = {str(item["work_key"]): item for item in work_items}
+    if set(pilot_source_ids) - set(by_key):
+        raise ValueError("existing pilot cache receipt has missing queue rows")
+    if any(by_key[source_id]["status"] != "completed" for source_id in pilot_source_ids):
+        raise RuntimeError("existing pilot cache receipt has incomplete queue rows")
+
+
 def _write_parquet_create_only(path: Path, table: pa.Table) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -1074,11 +1648,19 @@ def _write_parquet_create_only(path: Path, table: pa.Table) -> None:
             use_dictionary=True,
             write_statistics=True,
         )
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        if path.is_symlink():
+            raise FileExistsError(f"refusing Parquet destination symlink: {path}")
         if path.exists():
             if _sha256(path) != _sha256(temporary):
                 raise FileExistsError(f"existing shard differs: {path}")
             return
-        temporary.replace(path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.is_symlink() or _sha256(path) != _sha256(temporary):
+                raise FileExistsError(f"concurrent shard differs: {path}")
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -1098,7 +1680,13 @@ def _parquet_inventory(path: Path) -> dict[str, Any]:
         ],
         "row_group_count": parquet.metadata.num_row_groups,
         "row_group_rows": row_groups,
-        "row_groups_complete": sum(row_groups) == parquet.metadata.num_rows and all(value > 0 for value in row_groups),
+        "row_groups_complete": (
+            sum(row_groups) == parquet.metadata.num_rows
+            and (
+                parquet.metadata.num_rows == 0
+                or all(value > 0 for value in row_groups)
+            )
+        ),
     }
 
 

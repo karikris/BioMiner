@@ -8,6 +8,7 @@ from typing import Any
 from biominer.config import create_workstore, load_biominer_config
 from biominer.gbif_media_resolution.pipeline import (
     finalize_resolution,
+    import_pilot_cache,
     prepare_resolution,
     publish_v4,
     run_worker,
@@ -53,6 +54,18 @@ def add_gbif_media_resolution_parser(
         help="required PASS execution-audit manifest before full-queue preparation",
     )
     _add_resolver_arguments(prepare)
+
+    import_cache = stages.add_parser(
+        "import-pilot-cache",
+        help="reuse checksum-bound accepted pilot outcomes without network requests",
+    )
+    _add_workstore_arguments(import_cache)
+    import_cache.add_argument("--output-root", required=True)
+    import_cache.add_argument("--run-id", required=True)
+    import_cache.add_argument(
+        "--pilot-acceptance-manifest",
+        help="optional explicit manifest; must match the prepared full run",
+    )
 
     worker = stages.add_parser("work", help="resolve one or more bounded batches")
     _add_workstore_arguments(worker)
@@ -130,6 +143,13 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             mode=args.mode,
             expected_rights_blocked_rows=args.expected_rights_blocked_rows,
             resolver_config=resolver_config,
+            pilot_acceptance_manifest=args.pilot_acceptance_manifest,
+        )
+    elif stage == "import-pilot-cache":
+        result = import_pilot_cache(
+            workstore=_workstore(args),
+            run_id=args.run_id,
+            output_root=args.output_root,
             pilot_acceptance_manifest=args.pilot_acceptance_manifest,
         )
     elif stage == "work":

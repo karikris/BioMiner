@@ -9,6 +9,7 @@ import time
 import duckdb
 import httpx
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 from PIL import Image
@@ -17,12 +18,17 @@ from biominer.cli import build_parser
 from biominer.gbif_media_resolution.cli import COMMAND, run_gbif_media_resolution_command
 
 from biominer.gbif_media_resolution.models import (
+    ATTEMPT_SCHEMA,
+    JOB_NAME,
+    RESULT_SCHEMA,
+    STAGE,
     ResolutionInput,
     ResolutionStatus,
     source_row_id,
 )
 from biominer.gbif_media_resolution.pipeline import (
     finalize_resolution,
+    import_pilot_cache,
     prepare_resolution,
     publish_v4,
     pilot_selection_table,
@@ -95,6 +101,94 @@ def _write_source(path: Path) -> None:
 
 
 def _write_pilot_acceptance(directory: Path, source: Path) -> Path:
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    source_snapshot = "sha256:" + source_sha
+    source_table = pq.read_table(source)
+    pilot_results: list[dict[str, object]] = []
+    pilot_attempts: list[dict[str, object]] = []
+    for row in source_table.to_pylist():
+        if row["media_identifier"] is not None or row["media_references"] is None:
+            continue
+        identity = source_row_id(
+            source_snapshot,
+            str(row["gbifID"]),
+            str(row["media_references"]),
+        )
+        rights_blocked = row["media_license"] == "All rights reserved"
+        pilot_results.append(
+            {
+                "source_row_id": identity,
+                "source_artifact_sha256": source_snapshot,
+                "gbif_id": str(row["gbifID"]),
+                "media_references": str(row["media_references"]),
+                "status": (
+                    ResolutionStatus.RIGHTS_BLOCKED.value
+                    if rights_blocked
+                    else ResolutionStatus.UNRESOLVED_NOT_FOUND.value
+                ),
+                "terminal_reason": (
+                    "fixture_rights_blocked"
+                    if rights_blocked
+                    else "fixture_not_found"
+                ),
+            }
+        )
+        if not rights_blocked:
+            pilot_attempts.append(
+                {
+                    "attempt_id": f"attempt-{identity}",
+                    "source_row_id": identity,
+                    "sequence": 1,
+                    "phase": "fixture",
+                    "method": "fixture",
+                    "outcome": "not_found",
+                }
+            )
+    resolution_directory = directory / "pilot-resolution"
+    resolution_directory.mkdir()
+    result_path = resolution_directory / "resolution_results.parquet"
+    attempt_path = resolution_directory / "resolution_attempts.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(pilot_results, schema=RESULT_SCHEMA),
+        result_path,
+    )
+    pq.write_table(
+        pa.Table.from_pylist(pilot_attempts, schema=ATTEMPT_SCHEMA),
+        attempt_path,
+    )
+    result_inventory = _test_parquet_inventory(result_path)
+    attempt_inventory = _test_parquet_inventory(attempt_path)
+    resolution_manifest = resolution_directory / "manifest.json"
+    resolution_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "biominer-gbif-media-url-resolution/v1",
+                "run_id": "fixture-pilot",
+                "input": {
+                    "mode": "pilot",
+                    "source_artifact_sha256": source_snapshot,
+                    "work_rows": len(pilot_results),
+                },
+                "counts": {
+                    "result_rows": len(pilot_results),
+                    "attempt_rows": len(pilot_attempts),
+                },
+                "artifacts": {
+                    result_path.name: result_inventory,
+                    attempt_path.name: attempt_inventory,
+                },
+                "validation": {
+                    "one_result_per_input": True,
+                    "unique_source_row_ids": True,
+                    "every_work_item_completed": True,
+                    "rights_blocked_zero_attempts": True,
+                    "all_parquet_row_groups_complete": True,
+                },
+                "manifest_policy": {"written_last": True},
+            }
+        ),
+        encoding="utf-8",
+    )
     artifact = directory / "pilot-gates.parquet"
     pq.write_table(
         pa.table(
@@ -106,14 +200,21 @@ def _write_pilot_acceptance(directory: Path, source: Path) -> Path:
         artifact,
     )
     artifact_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
     manifest = directory / "pilot-acceptance.json"
     manifest.write_text(
         json.dumps(
             {
                 "schema_version": "biominer-gbif-media-url-pilot-execution-audit/v1",
-                "source_snapshot_id": "sha256:" + source_sha,
+                "source_snapshot_id": source_snapshot,
                 "overall_acceptance_status": "PASS",
+                "input": {
+                    "resolution_manifest": str(resolution_manifest),
+                },
+                "counts": {
+                    "pilot_rows": len(pilot_results),
+                    "result_rows": len(pilot_results),
+                    "attempt_rows": len(pilot_attempts),
+                },
                 "artifacts": [
                     {
                         "path": artifact.name,
@@ -125,12 +226,33 @@ def _write_pilot_acceptance(directory: Path, source: Path) -> Path:
                     "rights_blocked_zero_attempts": True,
                     "unresolved_reasons_complete": True,
                     "manifest_written_last": True,
+                    "resolution_checksums_match": True,
                 },
             }
         ),
         encoding="utf-8",
     )
     return manifest
+
+
+def _test_parquet_inventory(path: Path) -> dict[str, object]:
+    parquet = pq.ParquetFile(path)
+    row_groups = [
+        parquet.metadata.row_group(index).num_rows
+        for index in range(parquet.metadata.num_row_groups)
+    ]
+    return {
+        "path": path.name,
+        "physical_sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        "row_count": parquet.metadata.num_rows,
+        "row_groups_complete": (
+            sum(row_groups) == parquet.metadata.num_rows
+            and (
+                parquet.metadata.num_rows == 0
+                or all(row_count > 0 for row_count in row_groups)
+            )
+        ),
+    }
 
 
 def test_source_row_id_is_trimmed_and_source_bound() -> None:
@@ -289,6 +411,17 @@ def test_cli_requires_explicit_network_and_full_queue_opt_in() -> None:
         ]
     )
     assert audit.gbif_media_url_command == "audit-pilot"
+    import_cache = parser.parse_args(
+        [
+            COMMAND,
+            "import-pilot-cache",
+            "--output-root",
+            "runtime",
+            "--run-id",
+            "full-run",
+        ]
+    )
+    assert import_cache.gbif_media_url_command == "import-pilot-cache"
 
 
 def test_structured_html_extraction_does_not_scrape_generic_images() -> None:
@@ -617,6 +750,186 @@ def test_prepare_worker_finalize_and_publish_v4(tmp_path: Path) -> None:
     assert json.loads((v4 / "manifest.json").read_text())["manifest_policy"][
         "written_last"
     ]
+
+
+def test_import_pilot_cache_is_checksum_bound_idempotent_and_mixes_prior_results(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.parquet"
+    source_manifest = tmp_path / "source_manifest.json"
+    runtime = tmp_path / "runtime"
+    sidecars = tmp_path / "resolution-full"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    _write_source(source)
+    source_manifest.write_text("{}\n", encoding="utf-8")
+    pilot_acceptance = _write_pilot_acceptance(tmp_path, source)
+    prepared = prepare_resolution(
+        source=source,
+        source_manifest=source_manifest,
+        output_root=runtime,
+        workstore=state,
+        run_id="cache-full-run",
+        expected_missing_rows=3,
+        mode="full",
+        pilot_acceptance_manifest=pilot_acceptance,
+        resolver_config=ResolverConfig(max_attempts=1),
+    )
+
+    pilot_results = pq.read_table(
+        tmp_path / "pilot-resolution" / "resolution_results.parquet"
+    )
+    pilot_attempts = pq.read_table(
+        tmp_path / "pilot-resolution" / "resolution_attempts.parquet"
+    )
+    preexisting_id = str(pilot_results["source_row_id"][0].as_py())
+    preexisting_result = runtime / "shards" / "results" / "preexisting.parquet"
+    preexisting_attempt = runtime / "shards" / "attempts" / "preexisting.parquet"
+    preexisting_result.parent.mkdir(parents=True)
+    preexisting_attempt.parent.mkdir(parents=True)
+    pq.write_table(
+        pilot_results.filter(
+            pc.equal(pilot_results["source_row_id"], preexisting_id)
+        ),
+        preexisting_result,
+    )
+    pq.write_table(
+        pilot_attempts.filter(
+            pc.equal(pilot_attempts["source_row_id"], preexisting_id)
+        ),
+        preexisting_attempt,
+    )
+    result_sha = "sha256:" + hashlib.sha256(
+        preexisting_result.read_bytes()
+    ).hexdigest()
+    attempt_sha = "sha256:" + hashlib.sha256(
+        preexisting_attempt.read_bytes()
+    ).hexdigest()
+    state.register_shard(
+        shard_id="preexisting",
+        job_name=JOB_NAME,
+        registry_version=prepared["source_artifact_sha256"],
+        stage=STAGE,
+        run_id="cache-full-run",
+        worker_id="network-worker-before-cache-fix",
+        uri=str(preexisting_result),
+        checksum=result_sha,
+        row_count=1,
+        byte_count=preexisting_result.stat().st_size,
+        metadata={
+            "attempt_uri": str(preexisting_attempt),
+            "attempt_sha256": attempt_sha,
+            "attempt_rows": pq.ParquetFile(preexisting_attempt).metadata.num_rows,
+        },
+    )
+    assert state.complete_pending(
+        preexisting_id,
+        output_uri=str(preexisting_result),
+        checksum=result_sha,
+        row_count=1,
+    )
+
+    receipt = import_pilot_cache(
+        workstore=state,
+        run_id="cache-full-run",
+        output_root=runtime,
+    )
+    assert receipt["network_requests"] == 0
+    assert receipt["counts"]["pilot_result_rows"] == 3
+    assert receipt["counts"]["cache_completed_rows"] == 2
+    assert receipt["counts"]["preexisting_full_completions"] == 1
+    assert receipt["counts"]["duplicate_network_probe_rows"] == 1
+    assert pq.read_table(
+        receipt["artifacts"]["preexisting_full_completions"]["path"]
+    ).num_rows == 1
+    assert (
+        import_pilot_cache(
+            workstore=state,
+            run_id="cache-full-run",
+            output_root=runtime,
+        )
+        == receipt
+    )
+
+    manifest = finalize_resolution(
+        workstore=state,
+        run_id="cache-full-run",
+        output_root=runtime,
+        output_directory=sidecars,
+        expected_rows=3,
+    )
+    assert manifest["counts"]["result_rows"] == 3
+    assert manifest["counts"]["attempt_rows"] == 2
+
+
+def test_import_pilot_cache_rejects_active_claims_before_publication(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.parquet"
+    source_manifest = tmp_path / "source_manifest.json"
+    runtime = tmp_path / "runtime"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    _write_source(source)
+    source_manifest.write_text("{}\n", encoding="utf-8")
+    pilot_acceptance = _write_pilot_acceptance(tmp_path, source)
+    prepared = prepare_resolution(
+        source=source,
+        source_manifest=source_manifest,
+        output_root=runtime,
+        workstore=state,
+        run_id="cache-claimed-run",
+        expected_missing_rows=3,
+        mode="full",
+        pilot_acceptance_manifest=pilot_acceptance,
+        resolver_config=ResolverConfig(max_attempts=1),
+    )
+    assert state.claim_next_batch(
+        "active-worker",
+        1,
+        job_name=JOB_NAME,
+        stage=STAGE,
+        registry_version=prepared["source_artifact_sha256"],
+    )
+
+    with pytest.raises(RuntimeError, match="zero active claims"):
+        import_pilot_cache(
+            workstore=state,
+            run_id="cache-claimed-run",
+            output_root=runtime,
+        )
+    assert not (runtime / "shards").exists()
+
+
+def test_import_pilot_cache_rejects_resolution_checksum_mismatch(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.parquet"
+    source_manifest = tmp_path / "source_manifest.json"
+    runtime = tmp_path / "runtime"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    _write_source(source)
+    source_manifest.write_text("{}\n", encoding="utf-8")
+    pilot_acceptance = _write_pilot_acceptance(tmp_path, source)
+    prepare_resolution(
+        source=source,
+        source_manifest=source_manifest,
+        output_root=runtime,
+        workstore=state,
+        run_id="cache-checksum-run",
+        expected_missing_rows=3,
+        mode="full",
+        pilot_acceptance_manifest=pilot_acceptance,
+        resolver_config=ResolverConfig(max_attempts=1),
+    )
+    result_path = tmp_path / "pilot-resolution" / "resolution_results.parquet"
+    result_path.write_bytes(result_path.read_bytes() + b"corrupt")
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        import_pilot_cache(
+            workstore=state,
+            run_id="cache-checksum-run",
+            output_root=runtime,
+        )
+    assert not (runtime / "shards").exists()
 
 
 def test_worker_renews_every_claim_before_shard_publication(
