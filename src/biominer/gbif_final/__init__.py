@@ -5,6 +5,7 @@ from biominer.gbif_final.bounded import (
     preflight_assembly,
     seal_record_batches,
     seal_part,
+    validate_assembled_output,
     validate_part_receipt,
 )
 from biominer.gbif_final.dimensions import build_derived_assertion_dimension
@@ -33,6 +34,7 @@ __all__ = [
     "seal_null_safe_composite_dimension_window",
     "seal_ordinal_aligned_window",
     "seal_temporal_enriched_window",
+    "validate_assembled_output",
     "validate_source_spine",
     "validate_part_receipt",
 ]

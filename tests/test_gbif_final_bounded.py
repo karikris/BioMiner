@@ -14,6 +14,7 @@ from biominer.gbif_final.bounded import (
     preflight_assembly,
     seal_record_batches,
     seal_part,
+    validate_assembled_output,
     validate_part_receipt,
 )
 
@@ -285,9 +286,20 @@ def test_assembly_is_sequential_verified_and_manifest_last(tmp_path: Path) -> No
     assert table["value"].to_pylist() == ["a", "b", "c", "d"]
     disk_manifest = json.loads((output / "manifest.json").read_text())
     assert disk_manifest == manifest
+    assert manifest["manifest_fingerprint"]
     assert (output / "manifest.json").stat().st_mtime_ns >= (
         output / "gbif_media_final_enriched.parquet"
     ).stat().st_mtime_ns
+    assert validate_assembled_output(
+        output,
+        expected_rows=4,
+        expected_code_commit="deadbeef",
+        expected_source_scope={
+            "row_scope": "post_1960",
+            "rows": 4,
+            "excluded_pre_1960_rows": 2,
+        },
+    ) == manifest
 
     with pytest.raises(FileExistsError):
         assemble_parts(
@@ -298,6 +310,37 @@ def test_assembly_is_sequential_verified_and_manifest_last(tmp_path: Path) -> No
             source_scope={"rows": 4},
             minimum_headroom_bytes=0,
         )
+
+
+def test_assembly_validator_rejects_manifest_tampering(
+    tmp_path: Path,
+) -> None:
+    part = _seal(
+        tmp_path / "parts",
+        name="part-00000",
+        start=0,
+        stop=1,
+        values=["a"],
+    )
+    output = tmp_path / "final"
+    assemble_parts(
+        part_receipts=[part],
+        output_directory=output,
+        expected_rows=1,
+        code_commit="deadbeef",
+        source_scope={"rows": 1},
+        minimum_headroom_bytes=0,
+    )
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["counts"]["rows"] = 2
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(
+        RuntimeError,
+        match="manifest fingerprint mismatch",
+    ):
+        validate_assembled_output(output)
 
 
 def test_assembly_refuses_gaps_overlaps_and_schema_drift(tmp_path: Path) -> None:

@@ -417,6 +417,9 @@ def assemble_parts(
         }
         if not all(manifest["validation"].values()):
             raise RuntimeError("bounded final manifest validation failed")
+        manifest["manifest_fingerprint"] = (
+            _assembly_manifest_fingerprint(manifest)
+        )
         _write_json_atomic(staging / MANIFEST_FILENAME, manifest)
         _fsync_directory(staging)
         os.replace(staging, destination)
@@ -425,6 +428,153 @@ def assemble_parts(
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def validate_assembled_output(
+    output_directory: str | Path,
+    *,
+    expected_rows: int | None = None,
+    expected_code_commit: str | None = None,
+    expected_source_scope: Mapping[str, object] | None = None,
+) -> dict[str, Any]:
+    """Independently verify a completed bounded final publication."""
+
+    destination = Path(output_directory).resolve()
+    manifest_path = destination / MANIFEST_FILENAME
+    final_path = destination / FINAL_FILENAME
+    if not destination.is_dir():
+        raise FileNotFoundError(destination)
+    if not manifest_path.is_file():
+        raise FileNotFoundError(manifest_path)
+    if not final_path.is_file():
+        raise FileNotFoundError(final_path)
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != ASSEMBLY_MANIFEST_VERSION:
+        raise RuntimeError(
+            f"unsupported bounded assembly manifest: {manifest_path}"
+        )
+    if manifest.get(
+        "manifest_fingerprint"
+    ) != _assembly_manifest_fingerprint(manifest):
+        raise RuntimeError(
+            f"bounded assembly manifest fingerprint mismatch: {manifest_path}"
+        )
+    if expected_code_commit is not None and manifest.get(
+        "code_commit"
+    ) != expected_code_commit:
+        raise RuntimeError("bounded assembly code commit is stale")
+    source_scope = _normalized_dependencies(
+        manifest.get("source_scope") or {}
+    )
+    if not source_scope or manifest.get(
+        "source_scope_fingerprint"
+    ) != canonical_semantic_fingerprint(source_scope):
+        raise RuntimeError("bounded assembly source scope is invalid")
+    if (
+        expected_source_scope is not None
+        and source_scope
+        != _normalized_dependencies(expected_source_scope)
+    ):
+        raise RuntimeError("bounded assembly source scope is stale")
+    validation = manifest.get("validation")
+    if not isinstance(validation, dict) or not validation or not all(
+        validation.values()
+    ):
+        raise RuntimeError("bounded assembly validation is not PASS")
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != 1:
+        raise RuntimeError("bounded assembly artifact inventory is invalid")
+    recorded_artifact = artifacts[0]
+    if recorded_artifact.get("path") != FINAL_FILENAME:
+        raise RuntimeError("bounded assembly artifact path is invalid")
+    observed_artifact = _parquet_inventory(final_path)
+    for field in (
+        "physical_bytes",
+        "physical_sha256",
+        "row_count",
+        "column_count",
+        "row_group_count",
+        "row_group_rows",
+        "row_groups_complete",
+        "schema_fingerprint",
+        "columns",
+    ):
+        if recorded_artifact.get(field) != observed_artifact.get(field):
+            raise RuntimeError(
+                f"bounded assembly artifact {field} mismatch"
+            )
+
+    rows = int(observed_artifact["row_count"])
+    if expected_rows is not None and rows != expected_rows:
+        raise RuntimeError(
+            "bounded assembly row count is stale: "
+            f"expected={expected_rows}, observed={rows}"
+        )
+    counts = manifest.get("counts") or {}
+    if (
+        int(counts.get("rows") or -1) != rows
+        or int(counts.get("columns") or -1)
+        != int(observed_artifact["column_count"])
+        or int(counts.get("row_groups") or -1)
+        != int(observed_artifact["row_group_count"])
+    ):
+        raise RuntimeError("bounded assembly counts do not reconcile")
+
+    part_evidence = manifest.get("part_evidence")
+    if not isinstance(part_evidence, list) or not part_evidence:
+        raise RuntimeError("bounded assembly part evidence is missing")
+    receipt_paths = [
+        Path(str(evidence.get("receipt_path") or "")).resolve()
+        for evidence in part_evidence
+        if isinstance(evidence, dict)
+    ]
+    if len(receipt_paths) != len(part_evidence):
+        raise RuntimeError("bounded assembly part evidence is invalid")
+    receipts = _validated_receipts(receipt_paths, expected_rows=rows)
+    if len(receipts) != int(counts.get("input_parts") or -1):
+        raise RuntimeError("bounded assembly input part count is stale")
+    for evidence, receipt in zip(part_evidence, receipts):
+        receipt_path = Path(receipt["_receipt_path"])
+        expected = {
+            "receipt_path": str(receipt_path),
+            "receipt_sha256": _prefixed_sha256(receipt_path),
+            "part_id": receipt["part_id"],
+            "source_start_ordinal": receipt["source_start_ordinal"],
+            "source_stop_ordinal": receipt["source_stop_ordinal"],
+            "part_sha256": receipt["artifact"]["physical_sha256"],
+            "row_count": receipt["artifact"]["row_count"],
+        }
+        if evidence != expected:
+            raise RuntimeError(
+                f"bounded assembly part evidence mismatch: {receipt_path}"
+            )
+    if (
+        receipts[0]["artifact"]["schema_fingerprint"]
+        != observed_artifact["schema_fingerprint"]
+    ):
+        raise RuntimeError("bounded assembly final schema differs from parts")
+
+    observed_files = {
+        path.resolve()
+        for path in destination.rglob("*")
+        if path.is_file()
+    }
+    if observed_files != {manifest_path, final_path}:
+        raise RuntimeError(
+            "bounded assembly publication file inventory is invalid"
+        )
+    newest_input_mtime = max(
+        final_path.stat().st_mtime_ns,
+        *(
+            Path(receipt["_receipt_path"]).stat().st_mtime_ns
+            for receipt in receipts
+        ),
+    )
+    if manifest_path.stat().st_mtime_ns < newest_input_mtime:
+        raise RuntimeError("bounded assembly manifest was not written last")
+    return manifest
 
 
 def _validated_receipts(
@@ -561,6 +711,17 @@ def _receipt_fingerprint(payload: Mapping[str, object]) -> str:
     return canonical_semantic_fingerprint(body)
 
 
+def _assembly_manifest_fingerprint(
+    payload: Mapping[str, object],
+) -> str:
+    body = {
+        key: value
+        for key, value in payload.items()
+        if key != "manifest_fingerprint"
+    }
+    return canonical_semantic_fingerprint(body)
+
+
 def _normalized_dependencies(
     value: Mapping[str, object],
 ) -> dict[str, object]:
@@ -619,5 +780,6 @@ __all__ = [
     "preflight_assembly",
     "seal_record_batches",
     "seal_part",
+    "validate_assembled_output",
     "validate_part_receipt",
 ]
