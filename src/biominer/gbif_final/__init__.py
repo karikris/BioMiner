@@ -15,6 +15,10 @@ from biominer.gbif_final.dimensions import (
     build_derived_assertion_dimension,
     build_species_enrichment_dimension,
 )
+from biominer.gbif_final.global_sidecar import (
+    seal_global_keyed_dimension,
+    seal_global_sidecar_window,
+)
 from biominer.gbif_final.materialize import seal_temporal_enriched_window
 from biominer.gbif_final.pipeline import build_final_parquet, build_species_enrichments
 from biominer.gbif_final.spine import (
@@ -37,6 +41,8 @@ __all__ = [
     "build_species_enrichments",
     "preflight_assembly",
     "seal_record_batches",
+    "seal_global_keyed_dimension",
+    "seal_global_sidecar_window",
     "seal_part",
     "seal_keyed_dimension_window",
     "seal_null_safe_composite_dimension_window",
