@@ -41,8 +41,8 @@ additional data blocks.
 ```bash
 cd /home/toffe/github/karikris/BioMiner
 
-BASE="$PWD/data/derived/gbif_media_final/current"
-PUBLICATION="$PWD/data/derived/gbif_media_final/resolved-v1"
+BASE="$PWD/data/derived/gbif_media_final/base-v1"
+PUBLICATION="$PWD/data/derived/gbif_media_final/current"
 RESOLUTION="$PWD/data/state/gbif-media-url-resolution/full-v1/finalized-v1"
 AUDIT="$PWD/data/derived/gbif_media_final/audit-v1"
 LOCATOR="$PWD/data/derived/gbif_media_final/locator-v1"

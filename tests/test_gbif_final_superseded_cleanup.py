@@ -238,6 +238,9 @@ def test_cleanup_is_dry_run_by_default_then_removes_exact_allowlist(
     protected = [
         repository / relative for relative in PROTECTED_RELATIVE_PATHS
     ]
+    final_publication = (
+        repository / "data/derived/gbif_media_final/current"
+    )
 
     assert plan["counts"]["target_directories"] == len(
         SUPERSEDED_RELATIVE_PATHS
@@ -251,6 +254,7 @@ def test_cleanup_is_dry_run_by_default_then_removes_exact_allowlist(
         arguments["state_directory"] / "manifest.json"
     ).exists()
     assert all(path.exists() for path in protected)
+    assert final_publication.is_dir()
 
     manifest = execute_superseded_cleanup(**arguments)
 
@@ -261,6 +265,7 @@ def test_cleanup_is_dry_run_by_default_then_removes_exact_allowlist(
         for relative in SUPERSEDED_RELATIVE_PATHS
     )
     assert all(path.exists() for path in protected)
+    assert final_publication.is_dir()
     assert (
         validate_superseded_cleanup(**arguments)
         == manifest

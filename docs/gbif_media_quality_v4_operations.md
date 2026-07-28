@@ -85,11 +85,15 @@ directory; choose a new versioned destination for a new run.
 
 ## Final enriched Parquet and retained filtering lineage
 
-`data/derived/gbif_media_final/current/` is a source of truth only when it
-contains exactly `gbif_media_final_enriched.parquet` and `manifest.json`, and a
+`data/derived/gbif_media_final/current/` is the sole final source of truth only
+when it contains exactly `gbif_media_final_enriched.parquet` and
+`manifest.json`, includes the five terminal URL-resolution fields, and a
 separate publication audit has independently passed. A staging Parquet is not
-a publication. Do not copy, clean inputs for, or advertise a final dataset
-while its builder still owns `.current.staging/`.
+a publication. The currently running legacy wide builder is producing a base,
+not the terminal final: after it seals `current`, rename that directory
+create-only to `base-v1`, then publish the resolver-integrated output directly
+to the newly absent `current`. Do not copy, clean inputs for, or advertise a
+final dataset while its builder still owns `.current.staging/`.
 
 The retained lineage is:
 
@@ -107,6 +111,12 @@ The retained lineage is:
    original temporal fields.
 8. Add occurrence, media, rights, duplicate, AI-readiness, registry, keyword,
    and Flickr-query evidence as nested columns.
+9. Retain the original media identifier/reference fields and append
+   `resolved_media_identifier`, `effective_media_identifier`,
+   `media_identifier_resolution_status`,
+   `media_identifier_resolution_id`, and
+   `media_identifier_license_basis`. Matching unresolved and rights-blocked
+   rows remain present with explicit terminal status.
 
 The rights-filtered input has 16,612,063 rows. The post-1960 temporal
 publication has 16,609,827 rows. Manifests, rather than these prose numbers,
@@ -134,9 +144,44 @@ uv run python scripts/build_gbif_final_enriched_bounded.py \
   --threads 4
 ```
 
-Independently audit the completed publication before transfer or cleanup. The
-expected producer SHA must be the exact value in the primary manifest, not
-current `HEAD`.
+After the legacy base builder and every resolver work item complete, seal the
+terminal resolver sidecar, move the base publication out of the canonical
+name, and stream the resolver evidence into the sole `current` publication.
+The move is reversible and must fail if `base-v1` already exists.
+
+```bash
+uv run biominer gbif-media-url-resolve finalize \
+  --sqlite-workstore data/state/gbif-media-url-full-v1.sqlite \
+  --output-root data/state/gbif-media-url-resolution/full-v1 \
+  --output-directory data/state/gbif-media-url-resolution/full-v1/finalized-v1 \
+  --run-id gbif-media-url-full-v1 \
+  --expected-rows 130689
+
+test -d data/derived/gbif_media_final/current
+test ! -e data/derived/gbif_media_final/base-v1
+mv data/derived/gbif_media_final/current \
+  data/derived/gbif_media_final/base-v1
+
+uv run python scripts/enrich_gbif_final_with_resolutions.py \
+  --base-publication-directory data/derived/gbif_media_final/base-v1 \
+  --resolution-directory data/state/gbif-media-url-resolution/full-v1/finalized-v1 \
+  --output-directory data/derived/gbif_media_final/current \
+  --repository-root . \
+  --producer-git-sha "<exact-enrichment-producer-git-sha>" \
+  --expected-resolution-rows 130689 \
+  --batch-rows 50000 \
+  --row-group-rows 100000
+
+uv run python scripts/validate_gbif_final_resolution_enrichment.py \
+  --output-directory data/derived/gbif_media_final/current \
+  --base-publication-directory data/derived/gbif_media_final/base-v1 \
+  --resolution-directory data/state/gbif-media-url-resolution/full-v1/finalized-v1 \
+  --repository-root .
+```
+
+Independently audit the resolver-integrated publication before transfer or
+cleanup. The expected producer SHA must be the exact value in the primary
+manifest, not current `HEAD`.
 
 ```bash
 uv run python scripts/audit_gbif_final_enriched.py \
@@ -146,6 +191,8 @@ uv run python scripts/audit_gbif_final_enriched.py \
   --registry-directory data/derived/gbif_flickr_keyword_registry/v2/registry \
   --source-assertions data/derived/gbif_flickr_keyword_registry/v2/enrichment/source_name_assertions.parquet \
   --quality-directory data/derived/gbif_media_database/v4 \
+  --base-publication-directory data/derived/gbif_media_final/base-v1 \
+  --resolution-directory data/state/gbif-media-url-resolution/full-v1/finalized-v1 \
   --output-directory data/derived/gbif_media_final/audit-v1 \
   --repository-root . \
   --expected-producer-git-sha "<producer-git-sha-from-primary-manifest>" \
@@ -168,13 +215,16 @@ uv run python scripts/build_gbif_final_locator_index.py \
   --threads 4
 ```
 
-The superseded-artifact cleanup is dry-run by default. It permits only the 13
-named v1/v2 and pre-rights intermediate directories encoded in
-`superseded_cleanup.py`. It explicitly protects v3, v4, the rights-filtered
-source, raw intake Parquet and archive, unresolved-row audit, resolver state,
-the final publication, and its publication audit. Execution first persists
-checksummed intent, rechecks each file immediately before unlinking, resumes
-after interruption, rejects unexpected files, and writes its manifest last.
+The superseded-artifact cleanup is dry-run by default. It permits only the 14
+named targets encoded in `superseded_cleanup.py`: the terminally superseded
+`base-v1`, the v1/v2 layers, and the pre-rights intermediate directories. It
+explicitly protects v3, v4, the rights-filtered source, raw intake Parquet and
+archive, unresolved-row audit, resolver state, the canonical `current`
+publication, and its publication audit. The original obsolete set is about
+38 GB; once `base-v1` is terminally superseded, the eligible total grows by
+the base publication's physical size. Execution first persists checksummed
+intent, rechecks each file immediately before unlinking, resumes after
+interruption, rejects unexpected files, and writes its manifest last.
 
 ```bash
 uv run python scripts/cleanup_superseded_gbif_artifacts.py \

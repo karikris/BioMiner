@@ -20,6 +20,7 @@ CLEANUP_PROGRESS_VERSION = "gbif-final-superseded-cleanup-progress/v1"
 CLEANUP_MANIFEST_VERSION = "gbif-final-superseded-cleanup/v1"
 
 SUPERSEDED_RELATIVE_PATHS = (
+    "data/derived/gbif_media_final/base-v1",
     "data/derived/gbif_media_database/v1",
     "data/derived/gbif_media_database/v2",
     "data/derived/gbif_media_temporal/v1",
