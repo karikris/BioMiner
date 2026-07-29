@@ -205,7 +205,7 @@ def add_gbif_quality_parser(
     acceptance.add_argument("--report-root", default=DEFAULT_FINAL_REPORT_ROOT)
     acceptance.add_argument(
         "--output-directory",
-        default=f"{DEFAULT_DATA_ROOT}/quality_results/global_acceptance_v5",
+        default=f"{DEFAULT_DATA_ROOT}/quality_results/global_acceptance_v6",
     )
     acceptance.add_argument(
         "--test-receipt",

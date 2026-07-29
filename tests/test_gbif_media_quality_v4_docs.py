@@ -90,6 +90,6 @@ def test_v4_operations_records_pilot_and_terminal_broad_run_evidence() -> None:
         "39,001 attempt-evidence rows",
         "reports/gbif_media_database/v4_final_20260729/",
         "reports/gbif_media_database/v4_terminal_20260729/",
-        "quality_results/global_acceptance_v5/",
+        "quality_results/global_acceptance_v6/",
     ):
         assert required in text

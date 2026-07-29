@@ -39,7 +39,7 @@ not treated as an ordinary repairable null.
 | `provider_enrichment_v4/provider_field_summary.parquet` | provider dataset and media field | Before/after missingness, direct item evidence, conflicts, and unresolved counts |
 | `quality_results/phase4_pilot_execution/v1/audit/*` | resolver pilot result, review, gate, provider, and URL pattern | Executed 823-row pilot evidence, including every terminal outcome and reviewed resolution |
 | `quality_results/restart_validation_v3/*` | committed stage | Checksum-bound restart, orphan-staging, and unchanged-row validation |
-| `quality_results/global_acceptance_v5/*` | global criterion | Terminal evidence for all 42 criteria, including dependency-scoped checksum and Parquet verification |
+| `quality_results/global_acceptance_v6/*` | global criterion | Terminal evidence for all 42 criteria, including dependency-scoped checksum and Parquet verification |
 | `completeness_gates/*.parquet` | gate and reporting dimension | Seven cumulative-use gates with media, occurrence, URL, and status denominators |
 | `quality_results/review_capsules/*.parquet` | deterministic review item | Sealed before/after/evidence capsules for rights, attribution, duplicates, and exclusions |
 | `incremental_state/state/**/*.parquet` | media assertion | Binary domain hashes for future snapshot diffs |
@@ -330,9 +330,12 @@ The historical reports live in
 `reports/gbif_media_database/v4_final_20260729/`; their manifest hashes all 19
 Markdown reports, but their assertion that no broad run occurred is stale.
 Historical executable acceptance directories remain immutable and are not
-terminal evidence for the completed run. The terminal audit publishes
+terminal evidence for the completed run. The 40/42
+`global_acceptance_v5/` preflight remains preserved: it exposed and led to the
+repair of an evidence-auditor rule that incorrectly rejected complete,
+schema-bearing zero-row Parquet outputs. The terminal audit publishes
 create-only under
-`data/derived/gbif_media_database/v4/quality_results/global_acceptance_v5/`;
+`data/derived/gbif_media_database/v4/quality_results/global_acceptance_v6/`;
 its report suite will publish create-only under
 `reports/gbif_media_database/v4_terminal_20260729/`.
 
@@ -344,7 +347,7 @@ audit against the fresh full-suite test receipt:
 CODE_COMMIT="$(git rev-parse HEAD)"
 FULL_RESOLUTION="data/state/gbif-media-url-resolution/full-v1/finalized-v1/manifest.json"
 REPORTS="reports/gbif_media_database/v4_terminal_20260729"
-ACCEPTANCE="data/derived/gbif_media_database/v4/quality_results/global_acceptance_v5"
+ACCEPTANCE="data/derived/gbif_media_database/v4/quality_results/global_acceptance_v6"
 TEST_RECEIPT="data/derived/gbif_media_database/v4/quality_results/full_test_receipt_v6.json"
 
 uv run biominer gbif-media-quality reports \
