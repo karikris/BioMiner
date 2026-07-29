@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import time
+import zipfile
 
 import duckdb
 import httpx
@@ -17,6 +18,11 @@ from PIL import Image
 from biominer.cli import build_parser
 from biominer.gbif_media_resolution.cli import COMMAND, run_gbif_media_resolution_command
 
+from biominer.gbif_media_resolution.archive_circuit import (
+    ARCHIVE_CIRCUIT_VERSION,
+    TERMINAL_REASON,
+    complete_archive_reference_only_rows,
+)
 from biominer.gbif_media_resolution.models import (
     ATTEMPT_SCHEMA,
     JOB_NAME,
@@ -437,6 +443,26 @@ def test_cli_requires_explicit_network_and_full_queue_opt_in() -> None:
         ]
     )
     assert rebalance.gbif_media_url_command == "rebalance"
+    archive_circuit = parser.parse_args(
+        [
+            COMMAND,
+            "archive-circuit",
+            "--output-root",
+            "runtime",
+            "--run-id",
+            "full-run",
+            "--archive-manifest",
+            "archives/manifest.json",
+            "--provider",
+            "Provider",
+            "--dataset-key",
+            "dataset-key",
+            "--expected-pending-rows",
+            "2",
+        ]
+    )
+    assert archive_circuit.gbif_media_url_command == "archive-circuit"
+    assert archive_circuit.expected_pending_rows == 2
 
 
 def test_structured_html_extraction_does_not_scrape_generic_images() -> None:
@@ -1134,6 +1160,120 @@ def test_rebalance_resolution_queue_is_idempotent_and_auditable(
             output_root=runtime,
             chunk_rows=1,
         )
+
+
+def test_archive_circuit_completes_exact_reference_bound_rows_without_network(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    state.get_or_create_run(
+        job_name=JOB_NAME,
+        stage=STAGE,
+        run_id="archive-run",
+        registry_version="sha256:source",
+        config={"output_root": str(runtime.resolve())},
+    )
+    provider = "Reference-only Provider"
+    inputs = [
+        _input(
+            source_row_id=f"source-{index}",
+            gbif_id=str(index),
+            media_references=f"https://provider.test/record/{index}.html",
+            provider=provider if index < 3 else "Other Provider",
+        )
+        for index in range(1, 4)
+    ]
+    state.enqueue_work(
+        JOB_NAME,
+        "sha256:source",
+        [
+            {"work_key": item.source_row_id, **item.to_payload()}
+            for item in inputs
+        ],
+        stage=STAGE,
+    )
+
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    archive_path = archive_root / "provider.zip"
+    meta = """\
+<archive xmlns="http://rs.tdwg.org/dwc/text/">
+  <core encoding="UTF-8" fieldsTerminatedBy="\\t" ignoreHeaderLines="1"
+        rowType="http://rs.tdwg.org/dwc/terms/Occurrence">
+    <files><location>occurrence.txt</location></files>
+    <id index="0"/>
+    <field index="1" term="http://rs.tdwg.org/dwc/terms/associatedMedia"/>
+  </core>
+</archive>
+"""
+    with zipfile.ZipFile(archive_path, "w") as bundle:
+        bundle.writestr("meta.xml", meta)
+        bundle.writestr(
+            "occurrence.txt",
+            "id\tassociatedMedia\n"
+            "archive-1\thttps://provider.test/record/1.html\n"
+            "archive-2\thttps://provider.test/record/2.html\n",
+        )
+    archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    manifest_path = archive_root / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "archives": [
+                    {
+                        "provider": provider,
+                        "dataset_key": "dataset-1",
+                        "source_url": "https://provider.test/archive.zip",
+                        "path": archive_path.name,
+                        "physical_bytes": archive_path.stat().st_size,
+                        "sha256": archive_sha,
+                        "intake_status": "PASS",
+                    }
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    receipt = complete_archive_reference_only_rows(
+        workstore=state,
+        run_id="archive-run",
+        output_root=runtime,
+        archive_manifest=manifest_path,
+        provider=provider,
+        dataset_key="dataset-1",
+        expected_pending_rows=2,
+    )
+
+    assert receipt["schema_version"] == ARCHIVE_CIRCUIT_VERSION
+    assert receipt["network_requests"] == 0
+    assert receipt["terminal_reason"] == TERMINAL_REASON
+    assert receipt["counts"]["completed_rows"] == 2
+    assert all(receipt["validation"].values())
+    result_path = Path(receipt["artifacts"]["result_shard"]["path"])
+    results = pq.read_table(result_path)
+    assert results["source_row_id"].to_pylist() == ["source-1", "source-2"]
+    assert set(results["status"].to_pylist()) == {
+        ResolutionStatus.UNRESOLVED_ARCHIVE_REFERENCE_ONLY.value
+    }
+    assert set(results["attempt_count"].to_pylist()) == {0}
+    attempts = pq.read_table(receipt["artifacts"]["attempt_shard"]["path"])
+    assert attempts.num_rows == 0
+    statuses = {
+        item["work_key"]: item["status"]
+        for item in state.list_work_items(
+            job_name=JOB_NAME,
+            stage=STAGE,
+            registry_version="sha256:source",
+        )
+    }
+    assert statuses == {
+        "source-1": "completed",
+        "source-2": "completed",
+        "source-3": "pending",
+    }
 
 
 def test_worker_renews_every_claim_before_shard_publication(

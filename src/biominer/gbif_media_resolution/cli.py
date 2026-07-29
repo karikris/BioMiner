@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from biominer.config import create_workstore, load_biominer_config
+from biominer.gbif_media_resolution.archive_circuit import (
+    complete_archive_reference_only_rows,
+)
 from biominer.gbif_media_resolution.pipeline import (
     finalize_resolution,
     import_pilot_cache,
@@ -92,6 +95,21 @@ def add_gbif_media_resolution_parser(
         help="explicit opt-in required before any resolver network requests",
     )
     _add_resolver_arguments(worker)
+
+    archive_circuit = stages.add_parser(
+        "archive-circuit",
+        help=(
+            "complete a provider cohort from a checksum-bound Darwin Core "
+            "archive with reference-only associatedMedia evidence"
+        ),
+    )
+    _add_workstore_arguments(archive_circuit)
+    archive_circuit.add_argument("--output-root", required=True)
+    archive_circuit.add_argument("--run-id", required=True)
+    archive_circuit.add_argument("--archive-manifest", required=True)
+    archive_circuit.add_argument("--provider", required=True)
+    archive_circuit.add_argument("--dataset-key", required=True)
+    archive_circuit.add_argument("--expected-pending-rows", type=int)
 
     finalize = stages.add_parser("finalize", help="reduce shards and publish v1 sidecars")
     _add_workstore_arguments(finalize)
@@ -207,6 +225,16 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             "completed_rows": sum(int(item["completed_rows"]) for item in batches),
             "attempt_rows": sum(int(item.get("attempt_rows", 0)) for item in batches),
         }
+    elif stage == "archive-circuit":
+        result = complete_archive_reference_only_rows(
+            workstore=_workstore(args),
+            run_id=args.run_id,
+            output_root=args.output_root,
+            archive_manifest=args.archive_manifest,
+            provider=args.provider,
+            dataset_key=args.dataset_key,
+            expected_pending_rows=args.expected_pending_rows,
+        )
     elif stage == "finalize":
         result = finalize_resolution(
             workstore=_workstore(args),

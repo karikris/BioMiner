@@ -24,6 +24,7 @@ class ResolutionStatus(StrEnum):
     UNRESOLVED_AMBIGUOUS_CANDIDATES = "unresolved_ambiguous_candidates"
     UNRESOLVED_INVALID_IMAGE = "unresolved_invalid_image"
     UNRESOLVED_PROVIDER_UNAVAILABLE = "unresolved_provider_unavailable"
+    UNRESOLVED_ARCHIVE_REFERENCE_ONLY = "unresolved_archive_reference_only"
     RETRY_EXHAUSTED = "retry_exhausted"
 
 
