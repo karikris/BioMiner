@@ -73,7 +73,7 @@ def test_v4_plan_maps_runtime_and_source_control_ownership() -> None:
         assert required in text
 
 
-def test_v4_operations_records_pilot_and_active_broad_run_evidence() -> None:
+def test_v4_operations_records_pilot_and_terminal_broad_run_evidence() -> None:
     text = " ".join(OPERATIONS.read_text(encoding="utf-8").split())
 
     for required in (
@@ -82,9 +82,12 @@ def test_v4_operations_records_pilot_and_active_broad_run_evidence() -> None:
         "2,068 bounded network attempts",
         "217 resolved rows",
         "agent structured-evidence review",
-        "130,689-row reference-only run is active",
-        "126,634 rows are network-eligible",
-        "mutable queue is not terminal evidence",
+        "130,689-row reference-only run is terminal",
+        "126,634 rows were network-eligible",
+        "4,055 were retained as rights-blocked with zero network attempts",
+        "5,891 resolved direct-image URLs",
+        "124,798 explicitly retained non-resolved outcomes",
+        "39,001 attempt-evidence rows",
         "reports/gbif_media_database/v4_final_20260729/",
         "reports/gbif_media_database/v4_terminal_20260729/",
         "quality_results/global_acceptance_v5/",
