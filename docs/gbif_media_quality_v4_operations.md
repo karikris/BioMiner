@@ -261,12 +261,17 @@ matching image MIME, signature, bounded decoder, sampled-byte, and provenance
 evidence. It is explicitly an agent structured-evidence review, not a claim of
 human visual inspection.
 
-All ten pilot acceptance gates pass. The separately authorized, checkpointed
-130,689-row reference-only run is active: 126,634 rows are network-eligible
-and 4,055 are retained as rights-blocked. Its mutable queue is not terminal
-evidence. Final resolved and unresolved counts may be reported only after the
-create-only reducer publishes and independently verifies one result per input.
-Every unresolved pilot row remains present with a terminal reason.
+All ten pilot acceptance gates pass. The separately authorized 130,689-row
+reference-only run is terminal: 126,634 rows were network-eligible and 4,055
+were retained as rights-blocked with zero network attempts. The create-only
+reducer independently verified one result per input and published 5,891
+resolved direct-image URLs plus 124,798 explicitly retained non-resolved
+outcomes. Those outcomes include 110,329 records terminalized against pinned
+provider archives that contained the exact occurrence reference but no direct
+multimedia item bridge. The reducer selected 39,001 attempt-evidence rows and
+validated every registered shard checksum, Parquet row group, schema,
+membership constraint, and source-row identifier. Every unresolved row remains
+present with a terminal reason.
 
 ## Provider enrichment
 
@@ -321,11 +326,11 @@ meets both conditions.
 
 ## Reports, rollback, and recovery
 
-The current historical reports live in
+The historical reports live in
 `reports/gbif_media_database/v4_final_20260729/`; their manifest hashes all 19
 Markdown reports, but their assertion that no broad run occurred is stale.
 Historical executable acceptance directories remain immutable and are not
-terminal evidence for the active run. The next terminal audit will publish
+terminal evidence for the completed run. The terminal audit publishes
 create-only under
 `data/derived/gbif_media_database/v4/quality_results/global_acceptance_v5/`;
 its report suite will publish create-only under
@@ -370,11 +375,11 @@ incomplete staging directory after inspection, and restart into a new
 destination. Rollback means selecting the previous manifest-bound output;
 never mutate v3 or a committed v4 directory in place.
 
-The bounded 823-row resolver pilot completed with 2,068 stored attempts. An
-authorized 130,689-row reference-only run is active and checkpointed; it does
-not probe the existing direct-URL population broadly. Until its terminal
-manifest is published, only completed immutable shards are evidence and no
-full-tail success rate is claimed. Reachability, redirect-final URLs, MIME
-truth, decoding, image dimensions, content hashes, perceptual duplicates, and
-model readiness remain explicitly `NOT_TESTED` outside their actual tested
-denominators.
+The bounded 823-row resolver pilot completed with 2,068 stored attempts. The
+authorized 130,689-row reference-only run is terminal and does not claim to
+probe the existing direct-URL population broadly. Its manifest binds 5,891
+resolved rows and 124,798 retained non-resolved rows to the exact input
+population; every claim is backed by selected immutable result and attempt
+shards. Reachability, redirect-final URLs, MIME truth, decoding, image
+dimensions, content hashes, perceptual duplicates, and model readiness remain
+explicitly `NOT_TESTED` outside their actual tested denominators.
