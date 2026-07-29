@@ -232,10 +232,16 @@ def _audit_artifact(
             result["row_group_rows"] = row_group_rows
             row_groups_complete = (
                 sum(row_group_rows) == metadata.num_rows
-                and all(rows > 0 for rows in row_group_rows)
                 and (
-                    metadata.num_rows == 0
-                    or metadata.num_row_groups > 0
+                    (
+                        metadata.num_rows == 0
+                        and all(rows == 0 for rows in row_group_rows)
+                    )
+                    or (
+                        metadata.num_rows > 0
+                        and metadata.num_row_groups > 0
+                        and all(rows > 0 for rows in row_group_rows)
+                    )
                 )
             )
             metadata_matches = all(

@@ -80,6 +80,28 @@ def test_evidence_audit_recalculates_parquet_and_dependency_fingerprint(
     assert result["dependency_fingerprint"].startswith("sha256:")
 
 
+def test_evidence_audit_accepts_a_complete_empty_parquet(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "empty.parquet"
+    pq.write_table(
+        pa.table({"id": pa.array([], type=pa.int64())}),
+        artifact,
+    )
+    manifest = _write_manifest(tmp_path, artifact=artifact)
+
+    result = audit_evidence_manifest(
+        manifest,
+        repository_root=Path.cwd(),
+        expected_source_snapshot_id="sha256:source",
+    )
+
+    assert result["status"] == "PASS"
+    assert result["artifacts"][0]["observed_row_count"] == 0
+    assert result["artifacts"][0]["row_group_rows"] in ([], [0])
+    assert result["artifacts"][0]["row_group_status"] == "PASS"
+
+
 def test_evidence_audit_fails_closed_for_checksum_or_truncation(
     tmp_path: Path,
 ) -> None:
