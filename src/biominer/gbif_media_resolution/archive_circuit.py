@@ -30,12 +30,14 @@ from biominer.gbif_media_resolution.models import (
 from biominer.workstore.base import WorkStore
 
 
-ARCHIVE_CIRCUIT_VERSION = "gbif-media-provider-archive-circuit/v1"
+ARCHIVE_CIRCUIT_VERSION = "gbif-media-provider-archive-circuit/v2"
 TERMINAL_REASON = (
-    "provider_archive_core_associated_media_reference_only_no_multimedia_extension"
+    "provider_archive_associated_media_reference_only_no_multimedia_extension"
 )
 _MULTIMEDIA_ROW_TYPE = "http://rs.gbif.org/terms/1.0/multimedia"
+_OCCURRENCE_ROW_TYPE = "http://rs.tdwg.org/dwc/terms/occurrence"
 _ASSOCIATED_MEDIA_TERM = "http://rs.tdwg.org/dwc/terms/associatedmedia"
+_OCCURRENCE_ID_TERM = "http://rs.tdwg.org/dwc/terms/occurrenceid"
 _DIRECT_IMAGE_SUFFIXES = {
     ".avif",
     ".bmp",
@@ -56,7 +58,7 @@ ARCHIVE_BINDING_SCHEMA = pa.schema(
         ("provider", pa.string()),
         ("media_references", pa.string()),
         ("reference_host", pa.string()),
-        ("archive_core_id", pa.string()),
+        ("archive_occurrence_id", pa.string()),
         ("archive_reference_occurrences", pa.int64()),
         ("archive_sha256", pa.string()),
         ("archive_manifest_sha256", pa.string()),
@@ -212,7 +214,9 @@ def complete_archive_reference_only_rows(
                     "provider": provider,
                     "media_references": item.media_references,
                     "reference_host": item.host,
-                    "archive_core_id": archive_match["first_core_id"],
+                    "archive_occurrence_id": archive_match[
+                        "first_occurrence_id"
+                    ],
                     "archive_reference_occurrences": archive_match["count"],
                     "archive_sha256": archive_sha256,
                     "archive_manifest_sha256": manifest_sha256,
@@ -315,10 +319,13 @@ def complete_archive_reference_only_rows(
                     "archive_path": str(archive_path),
                     "archive_sha256": archive_sha256,
                     "archive_source_url": archive_entry.get("source_url"),
-                    "archive_core_location": archive["core_location"],
+                    "archive_occurrence_location": archive["occurrence_location"],
+                    "archive_occurrence_table_kind": archive[
+                        "occurrence_table_kind"
+                    ],
                 },
                 "counts": {
-                    "archive_core_rows": archive["core_rows"],
+                    "archive_occurrence_rows": archive["occurrence_rows"],
                     "archive_nonblank_associated_media_rows": (
                         archive["nonblank_reference_rows"]
                     ),
@@ -348,7 +355,7 @@ def complete_archive_reference_only_rows(
                     "archive_manifest_checksum_recorded": True,
                     "archive_checksum_matches_manifest": True,
                     "archive_zip_crc_passed": True,
-                    "archive_has_occurrence_core": True,
+                    "archive_has_occurrence_table": True,
                     "archive_has_associated_media_field": True,
                     "archive_has_no_multimedia_extension": True,
                     "all_selected_rows_exactly_bound": len(binding_rows)
@@ -433,7 +440,23 @@ def _read_reference_only_archive(path: Path) -> dict[str, Any]:
         namespace = {"dwc": "http://rs.tdwg.org/dwc/text/"}
         core = meta.find("dwc:core", namespace)
         if core is None:
-            raise ValueError("archive has no Darwin Core occurrence core")
+            raise ValueError("archive has no Darwin Core core table")
+        if str(core.get("rowType", "")).casefold() == _OCCURRENCE_ROW_TYPE:
+            occurrence_table = core
+            occurrence_table_kind = "core"
+        else:
+            occurrence_extensions = [
+                extension
+                for extension in meta.findall("dwc:extension", namespace)
+                if str(extension.get("rowType", "")).casefold()
+                == _OCCURRENCE_ROW_TYPE
+            ]
+            if len(occurrence_extensions) != 1:
+                raise ValueError(
+                    "archive must contain exactly one Darwin Core occurrence table"
+                )
+            occurrence_table = occurrence_extensions[0]
+            occurrence_table_kind = "extension"
         multimedia = [
             extension
             for extension in meta.findall("dwc:extension", namespace)
@@ -444,26 +467,38 @@ def _read_reference_only_archive(path: Path) -> dict[str, Any]:
             raise ValueError(
                 "archive circuit requires absence of a Multimedia extension"
             )
-        location = core.findtext("dwc:files/dwc:location", namespaces=namespace)
+        location = occurrence_table.findtext(
+            "dwc:files/dwc:location",
+            namespaces=namespace,
+        )
         if not location:
-            raise ValueError("archive occurrence core has no file location")
+            raise ValueError("archive occurrence table has no file location")
         associated_index = None
-        for field in core.findall("dwc:field", namespace):
+        occurrence_id_index = None
+        for field in occurrence_table.findall("dwc:field", namespace):
             if str(field.get("term", "")).casefold() == _ASSOCIATED_MEDIA_TERM:
                 associated_index = int(str(field.get("index")))
-                break
+            if str(field.get("term", "")).casefold() == _OCCURRENCE_ID_TERM:
+                occurrence_id_index = int(str(field.get("index")))
         if associated_index is None:
-            raise ValueError("archive occurrence core has no associatedMedia field")
-        core_id = core.find("dwc:id", namespace)
-        core_id_index = (
-            int(str(core_id.get("index"))) if core_id is not None else None
+            raise ValueError("archive occurrence table has no associatedMedia field")
+        if occurrence_id_index is None and occurrence_table_kind == "core":
+            occurrence_id = occurrence_table.find("dwc:id", namespace)
+            occurrence_id_index = (
+                int(str(occurrence_id.get("index")))
+                if occurrence_id is not None
+                else None
+            )
+        delimiter = _dwca_character(
+            occurrence_table.get("fieldsTerminatedBy", "\\t")
         )
-        delimiter = _dwca_character(core.get("fieldsTerminatedBy", "\\t"))
-        quote = _dwca_character(core.get("fieldsEnclosedBy", ""))
-        encoding = str(core.get("encoding", "UTF-8"))
-        ignore_header_lines = int(core.get("ignoreHeaderLines", "0"))
+        quote = _dwca_character(occurrence_table.get("fieldsEnclosedBy", ""))
+        encoding = str(occurrence_table.get("encoding", "UTF-8"))
+        ignore_header_lines = int(
+            occurrence_table.get("ignoreHeaderLines", "0")
+        )
         references: dict[str, dict[str, Any]] = {}
-        core_rows = 0
+        occurrence_rows = 0
         nonblank_reference_rows = 0
         with ExitStack() as stack:
             raw = stack.enter_context(bundle.open(location))
@@ -479,7 +514,7 @@ def _read_reference_only_archive(path: Path) -> dict[str, Any]:
             for _ in range(ignore_header_lines):
                 next(reader, None)
             for row in reader:
-                core_rows += 1
+                occurrence_rows += 1
                 if associated_index >= len(row):
                     raise ValueError(
                         "archive occurrence row is shorter than associatedMedia index"
@@ -492,18 +527,19 @@ def _read_reference_only_archive(path: Path) -> dict[str, Any]:
                     reference,
                     {
                         "count": 0,
-                        "first_core_id": (
-                            row[core_id_index].strip()
-                            if core_id_index is not None
-                            and core_id_index < len(row)
+                        "first_occurrence_id": (
+                            row[occurrence_id_index].strip()
+                            if occurrence_id_index is not None
+                            and occurrence_id_index < len(row)
                             else None
                         ),
                     },
                 )
                 match["count"] += 1
         return {
-            "core_location": location,
-            "core_rows": core_rows,
+            "occurrence_location": location,
+            "occurrence_table_kind": occurrence_table_kind,
+            "occurrence_rows": occurrence_rows,
             "nonblank_reference_rows": nonblank_reference_rows,
             "references": references,
         }

@@ -1162,8 +1162,10 @@ def test_rebalance_resolution_queue_is_idempotent_and_auditable(
         )
 
 
+@pytest.mark.parametrize("occurrence_as_extension", [False, True])
 def test_archive_circuit_completes_exact_reference_bound_rows_without_network(
     tmp_path: Path,
+    occurrence_as_extension: bool,
 ) -> None:
     runtime = tmp_path / "runtime"
     state = SQLiteWorkStore(tmp_path / "state.sqlite")
@@ -1197,7 +1199,30 @@ def test_archive_circuit_completes_exact_reference_bound_rows_without_network(
     archive_root = tmp_path / "archives"
     archive_root.mkdir()
     archive_path = archive_root / "provider.zip"
-    meta = """\
+    if occurrence_as_extension:
+        meta = """\
+<archive xmlns="http://rs.tdwg.org/dwc/text/">
+  <core encoding="UTF-8" fieldsTerminatedBy="\\t" ignoreHeaderLines="1"
+        rowType="http://rs.tdwg.org/dwc/terms/Event">
+    <files><location>event.txt</location></files>
+    <id index="0"/>
+  </core>
+  <extension encoding="UTF-8" fieldsTerminatedBy="\\t" ignoreHeaderLines="1"
+             rowType="http://rs.tdwg.org/dwc/terms/Occurrence">
+    <files><location>occurrence.txt</location></files>
+    <coreid index="0"/>
+    <field index="1" term="http://rs.tdwg.org/dwc/terms/occurrenceID"/>
+    <field index="2" term="http://rs.tdwg.org/dwc/terms/associatedMedia"/>
+  </extension>
+</archive>
+"""
+        occurrence_text = (
+            "coreid\toccurrenceID\tassociatedMedia\n"
+            "event-1\tarchive-1\thttps://provider.test/record/1.html\n"
+            "event-2\tarchive-2\thttps://provider.test/record/2.html\n"
+        )
+    else:
+        meta = """\
 <archive xmlns="http://rs.tdwg.org/dwc/text/">
   <core encoding="UTF-8" fieldsTerminatedBy="\\t" ignoreHeaderLines="1"
         rowType="http://rs.tdwg.org/dwc/terms/Occurrence">
@@ -1207,14 +1232,16 @@ def test_archive_circuit_completes_exact_reference_bound_rows_without_network(
   </core>
 </archive>
 """
-    with zipfile.ZipFile(archive_path, "w") as bundle:
-        bundle.writestr("meta.xml", meta)
-        bundle.writestr(
-            "occurrence.txt",
+        occurrence_text = (
             "id\tassociatedMedia\n"
             "archive-1\thttps://provider.test/record/1.html\n"
-            "archive-2\thttps://provider.test/record/2.html\n",
+            "archive-2\thttps://provider.test/record/2.html\n"
         )
+    with zipfile.ZipFile(archive_path, "w") as bundle:
+        bundle.writestr("meta.xml", meta)
+        if occurrence_as_extension:
+            bundle.writestr("event.txt", "id\nevent-1\nevent-2\n")
+        bundle.writestr("occurrence.txt", occurrence_text)
     archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
     manifest_path = archive_root / "manifest.json"
     manifest_path.write_text(
@@ -1261,6 +1288,24 @@ def test_archive_circuit_completes_exact_reference_bound_rows_without_network(
     assert set(results["attempt_count"].to_pylist()) == {0}
     attempts = pq.read_table(receipt["artifacts"]["attempt_shard"]["path"])
     assert attempts.num_rows == 0
+    bindings = pq.read_table(
+        Path(receipt["artifacts"]["archive_reference_bindings"]["path"])
+        if Path(
+            receipt["artifacts"]["archive_reference_bindings"]["path"]
+        ).is_absolute()
+        else (
+            runtime
+            / "archive_circuits"
+            / Path(receipt["artifacts"]["result_shard"]["path"]).stem.removeprefix(
+                "archive-"
+            )
+            / receipt["artifacts"]["archive_reference_bindings"]["path"]
+        )
+    )
+    assert bindings["archive_occurrence_id"].to_pylist() == [
+        "archive-1",
+        "archive-2",
+    ]
     statuses = {
         item["work_key"]: item["status"]
         for item in state.list_work_items(
