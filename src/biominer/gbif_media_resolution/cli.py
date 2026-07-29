@@ -15,13 +15,19 @@ from biominer.gbif_media_resolution.pipeline import (
     prepare_resolution,
     publish_v4,
     rebalance_resolution_queue,
+    run_targeted_provider_batch,
     run_worker,
 )
 from biominer.gbif_media_resolution.pilot_audit import (
     publish_pilot_execution_audit,
     write_pilot_execution_review,
 )
-from biominer.gbif_media_resolution.resolver import MediaURLResolver, ResolverConfig
+from biominer.gbif_media_resolution.resolver import (
+    SAME_HOST_MIXED_CONTENT_POLICY_VERSION,
+    MediaURLResolver,
+    ResolverConfig,
+    upgrade_same_host_mixed_content_candidate,
+)
 from biominer.workstore.base import WorkStore
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -110,6 +116,32 @@ def add_gbif_media_resolution_parser(
     archive_circuit.add_argument("--provider", required=True)
     archive_circuit.add_argument("--dataset-key", required=True)
     archive_circuit.add_argument("--expected-pending-rows", type=int)
+
+    targeted_provider = stages.add_parser(
+        "targeted-provider",
+        help=(
+            "resolve a bounded provider cohort under an explicit, versioned "
+            "candidate amendment"
+        ),
+    )
+    _add_workstore_arguments(targeted_provider)
+    targeted_provider.add_argument("--output-root", required=True)
+    targeted_provider.add_argument("--run-id", required=True)
+    targeted_provider.add_argument("--provider", required=True)
+    targeted_provider.add_argument(
+        "--policy",
+        choices=("same-host-http-to-https",),
+        required=True,
+    )
+    targeted_provider.add_argument("--expected-pending-rows", type=int)
+    targeted_provider.add_argument("--batch-rows", type=int, default=250)
+    targeted_provider.add_argument("--max-batches", type=int, default=100)
+    targeted_provider.add_argument(
+        "--execute-network",
+        action="store_true",
+        help="explicit opt-in required before targeted provider requests",
+    )
+    _add_resolver_arguments(targeted_provider)
 
     finalize = stages.add_parser("finalize", help="reduce shards and publish v1 sidecars")
     _add_workstore_arguments(finalize)
@@ -235,6 +267,70 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             dataset_key=args.dataset_key,
             expected_pending_rows=args.expected_pending_rows,
         )
+    elif stage == "targeted-provider":
+        if not args.execute_network:
+            raise ValueError(
+                "targeted provider resolution requires --execute-network"
+            )
+        if args.batch_rows <= 0 or args.max_batches <= 0:
+            raise ValueError("batch_rows and max_batches must be positive")
+        store = _workstore(args)
+        config = _resolver_config(args)
+        batches: list[dict[str, Any]] = []
+        with MediaURLResolver(
+            config=config,
+            request_guard=lambda host: store.publication_lock(
+                f"gbif_media_url_resolution:origin:{host}"
+            ),
+            structured_candidate_rewriter=(
+                upgrade_same_host_mixed_content_candidate
+            ),
+            structured_candidate_rewriter_version=(
+                SAME_HOST_MIXED_CONTENT_POLICY_VERSION
+            ),
+        ) as resolver:
+            for batch_index in range(args.max_batches):
+                receipt = run_targeted_provider_batch(
+                    workstore=store,
+                    output_root=args.output_root,
+                    run_id=args.run_id,
+                    provider=args.provider,
+                    policy_version=(
+                        SAME_HOST_MIXED_CONTENT_POLICY_VERSION
+                    ),
+                    resolver=resolver,
+                    batch_rows=args.batch_rows,
+                    expected_pending_rows=(
+                        args.expected_pending_rows
+                        if batch_index == 0
+                        else None
+                    ),
+                )
+                batches.append(receipt)
+                _event("gbif_media_url_targeted_provider_batch", **receipt)
+                if int(receipt["selected_rows"]) == 0:
+                    break
+        result = {
+            "run_id": args.run_id,
+            "provider": args.provider,
+            "policy_version": SAME_HOST_MIXED_CONTENT_POLICY_VERSION,
+            "batches": len(batches),
+            "selected_rows": sum(
+                int(item["selected_rows"]) for item in batches
+            ),
+            "completed_rows": sum(
+                int(item["completed_rows"]) for item in batches
+            ),
+            "network_attempt_rows": sum(
+                int(
+                    (item.get("counts") or {}).get(
+                        "network_attempt_rows",
+                        item.get("network_attempt_rows", 0),
+                    )
+                )
+                for item in batches
+            ),
+        }
     elif stage == "finalize":
         result = finalize_resolution(
             workstore=_workstore(args),

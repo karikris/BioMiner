@@ -40,16 +40,19 @@ from biominer.gbif_media_resolution.pipeline import (
     publish_v4,
     rebalance_resolution_queue,
     pilot_selection_table,
+    run_targeted_provider_batch,
     run_worker,
     select_pilot_inputs,
 )
 from biominer.gbif_media_resolution.resolver import (
+    SAME_HOST_MIXED_CONTENT_POLICY_VERSION,
     MediaURLResolver,
     ResolverConfig,
     extract_structured_image_candidates,
     sniff_image_content_type,
     validate_public_http_url,
     redact_url_for_audit,
+    upgrade_same_host_mixed_content_candidate,
 )
 from biominer.workstore.sqlite import SQLiteWorkStore
 
@@ -463,6 +466,22 @@ def test_cli_requires_explicit_network_and_full_queue_opt_in() -> None:
     )
     assert archive_circuit.gbif_media_url_command == "archive-circuit"
     assert archive_circuit.expected_pending_rows == 2
+    targeted = parser.parse_args(
+        [
+            COMMAND,
+            "targeted-provider",
+            "--output-root",
+            "runtime",
+            "--run-id",
+            "full-run",
+            "--provider",
+            "Provider",
+            "--policy",
+            "same-host-http-to-https",
+        ]
+    )
+    with pytest.raises(ValueError, match="--execute-network"):
+        run_gbif_media_resolution_command(targeted)
 
 
 def test_structured_html_extraction_does_not_scrape_generic_images() -> None:
@@ -474,6 +493,137 @@ def test_structured_html_extraction_does_not_scrape_generic_images() -> None:
     assert extract_structured_image_candidates(
         html, base_url="https://example.org/record/1"
     ) == ("https://example.org/media/specimen.jpg",)
+
+
+def test_mixed_content_upgrade_is_same_host_and_default_port_only() -> None:
+    source = "https://images.example.org/record/1"
+    assert upgrade_same_host_mixed_content_candidate(
+        "http://images.example.org/media/1.jpg",
+        source,
+    ) == "https://images.example.org/media/1.jpg"
+    assert upgrade_same_host_mixed_content_candidate(
+        "http://images.example.org:80/media/1.jpg?size=large",
+        source,
+    ) == "https://images.example.org/media/1.jpg?size=large"
+    for candidate in (
+        "http://other.example.org/media/1.jpg",
+        "http://images.example.org:8080/media/1.jpg",
+        "https://images.example.org/media/1.jpg",
+        "http://user@images.example.org/media/1.jpg",
+    ):
+        assert (
+            upgrade_same_host_mixed_content_candidate(candidate, source)
+            == candidate
+        )
+
+
+def test_targeted_provider_batch_records_mixed_content_rewrite_and_image(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    state = SQLiteWorkStore(tmp_path / "state.sqlite")
+    state.get_or_create_run(
+        job_name=JOB_NAME,
+        stage=STAGE,
+        run_id="targeted-run",
+        registry_version="sha256:source",
+        config={
+            "output_root": str(runtime.resolve()),
+            "resolver_fingerprint": "sha256:prepared-resolver",
+        },
+    )
+    provider = "Mixed Content Provider"
+    inputs = [
+        _input(
+            source_row_id=f"targeted-{index}",
+            gbif_id=str(index),
+            media_references=f"https://images.test/record/{index}",
+            provider=provider,
+        )
+        for index in range(1, 3)
+    ]
+    state.enqueue_work(
+        JOB_NAME,
+        "sha256:source",
+        [
+            {"work_key": item.source_row_id, **item.to_payload()}
+            for item in inputs
+        ],
+        stage=STAGE,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/record/"):
+            image_id = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/html"},
+                content=(
+                    "<meta property='og:image' "
+                    f"content='http://images.test/media/{image_id}.png'>"
+                ).encode(),
+            )
+        if request.url.scheme == "https" and request.url.path.startswith(
+            "/media/"
+        ):
+            return httpx.Response(
+                206,
+                headers={"Content-Type": "image/png"},
+                content=_image_bytes("PNG"),
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with MediaURLResolver(
+            config=ResolverConfig(max_attempts=1),
+            http_client=client,
+            resolve_host=PUBLIC_DNS,
+            structured_candidate_rewriter=(
+                upgrade_same_host_mixed_content_candidate
+            ),
+            structured_candidate_rewriter_version=(
+                SAME_HOST_MIXED_CONTENT_POLICY_VERSION
+            ),
+        ) as resolver:
+            receipt = run_targeted_provider_batch(
+                workstore=state,
+                output_root=runtime,
+                run_id="targeted-run",
+                provider=provider,
+                policy_version=SAME_HOST_MIXED_CONTENT_POLICY_VERSION,
+                resolver=resolver,
+                batch_rows=2,
+                expected_pending_rows=2,
+            )
+
+    assert receipt["counts"]["completed_rows"] == 2
+    assert receipt["counts"]["status_counts"] == {"resolved": 2}
+    assert receipt["counts"]["attempt_rows"] == 6
+    assert receipt["counts"]["network_attempt_rows"] == 4
+    assert all(receipt["validation"].values())
+    results = pq.read_table(
+        receipt["artifacts"]["result_shard"]["path"]
+    ).to_pylist()
+    assert [row["stable_candidate_url"] for row in results] == [
+        "https://images.test/media/1.png",
+        "https://images.test/media/2.png",
+    ]
+    assert {
+        row["adapter_version"] for row in results
+    } == {SAME_HOST_MIXED_CONTENT_POLICY_VERSION}
+    attempts = pq.read_table(
+        receipt["artifacts"]["attempt_shard"]["path"]
+    ).to_pylist()
+    rewrites = [
+        row for row in attempts if row["phase"] == "candidate_normalization"
+    ]
+    assert len(rewrites) == 2
+    assert all(row["outcome"] == "rewritten" for row in rewrites)
+    assert all(
+        row["requested_url"].startswith("http://")
+        and row["response_url"].startswith("https://")
+        for row in rewrites
+    )
 
 
 def test_image_signature_sniffing_requires_recognised_bytes() -> None:

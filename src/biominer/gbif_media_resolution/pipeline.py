@@ -95,6 +95,9 @@ PILOT_CACHE_IMPORT_SCHEMA_VERSION = (
     "biominer-gbif-media-url-pilot-cache-import/v1"
 )
 HOST_FAIR_SCHEDULER_VERSION = "gbif-media-url-host-fair-scheduler/v1"
+TARGETED_PROVIDER_RESOLUTION_VERSION = (
+    "gbif-media-url-targeted-provider-resolution/v1"
+)
 PREEXISTING_COMPLETION_SCHEMA = pa.schema(
     [
         ("source_row_id", pa.string()),
@@ -1008,6 +1011,252 @@ def run_worker(
         "attempt_shard": str(attempt_path),
         "attempt_sha256": attempt_sha,
     }
+
+
+def run_targeted_provider_batch(
+    *,
+    workstore: WorkStore,
+    output_root: str | Path,
+    run_id: str,
+    provider: str,
+    policy_version: str,
+    resolver: MediaURLResolver,
+    batch_rows: int = 250,
+    expected_pending_rows: int | None = None,
+) -> dict[str, Any]:
+    """Resolve one explicit provider batch under a versioned amendment policy."""
+
+    provider = str(provider).strip()
+    policy_version = str(policy_version).strip()
+    if not provider or not policy_version:
+        raise ValueError("provider and policy_version must be nonblank")
+    if batch_rows <= 0:
+        raise ValueError("batch_rows must be positive")
+    run = workstore.get_run(run_id=run_id)
+    if run is None or run["job_name"] != JOB_NAME or run["stage"] != STAGE:
+        raise ValueError(f"unknown GBIF URL resolution run: {run_id}")
+    root = Path(output_root).resolve()
+    if root != Path(str(run["config"].get("output_root", ""))).resolve():
+        raise ValueError("targeted provider output root does not match prepared run")
+    registry_version = str(run["registry_version"])
+    if resolver.semantic_fingerprint == run["config"].get("resolver_fingerprint"):
+        raise ValueError(
+            "targeted provider resolution requires an explicit resolver amendment"
+        )
+    lock_key = (
+        f"{JOB_NAME}:targeted-provider:{run_id}:{provider}:{policy_version}"
+    )
+    with workstore.publication_lock(lock_key):
+        work_items = workstore.list_work_items(
+            job_name=JOB_NAME,
+            stage=STAGE,
+            registry_version=registry_version,
+        )
+        claimed = [item for item in work_items if item["status"] == "claimed"]
+        if claimed:
+            raise RuntimeError(
+                "targeted provider resolution requires zero active claims; "
+                f"found {len(claimed)}"
+            )
+        pending = [
+            item
+            for item in work_items
+            if item["status"] == "pending"
+            and ResolutionInput.from_payload(dict(item["payload"])).provider
+            == provider
+        ]
+        pending.sort(
+            key=lambda item: (
+                item.get("schedule_rank") is None,
+                item.get("schedule_rank")
+                if item.get("schedule_rank") is not None
+                else 0,
+                str(item["work_key"]),
+            )
+        )
+        if (
+            expected_pending_rows is not None
+            and len(pending) != expected_pending_rows
+        ):
+            raise ValueError(
+                "targeted provider pending row count mismatch: "
+                f"expected {expected_pending_rows}, found {len(pending)}"
+            )
+        selected = pending[:batch_rows]
+        if not selected:
+            return {
+                "schema_version": TARGETED_PROVIDER_RESOLUTION_VERSION,
+                "run_id": run_id,
+                "provider": provider,
+                "policy_version": policy_version,
+                "pending_rows_before": 0,
+                "selected_rows": 0,
+                "completed_rows": 0,
+                "network_attempt_rows": 0,
+            }
+
+        results: list[dict[str, Any]] = []
+        attempts: list[dict[str, Any]] = []
+        for work_item in selected:
+            item = ResolutionInput.from_payload(dict(work_item["payload"]))
+            try:
+                result, item_attempts = resolver.resolve(item)
+            except Exception as exc:  # noqa: BLE001 - terminal evidence is required.
+                result = _worker_exception_result(item, exc)
+                item_attempts = ()
+            results.append(result.to_row())
+            attempts.extend(attempt.to_row() for attempt in item_attempts)
+
+        token = canonical_semantic_fingerprint(
+            {
+                "contract": TARGETED_PROVIDER_RESOLUTION_VERSION,
+                "run_id": run_id,
+                "provider": provider,
+                "policy_version": policy_version,
+                "resolver_semantic_fingerprint": resolver.semantic_fingerprint,
+                "source_row_ids": sorted(
+                    str(item["work_key"]) for item in selected
+                ),
+            }
+        ).split(":", 1)[1]
+        result_path = (
+            root / "shards" / "results" / f"targeted-{token}.parquet"
+        )
+        attempt_path = (
+            root / "shards" / "attempts" / f"targeted-{token}.parquet"
+        )
+        publication = root / "targeted_provider_runs" / token
+        if publication.exists() or result_path.exists() or attempt_path.exists():
+            raise FileExistsError(
+                "targeted provider content-addressed publication already exists"
+            )
+        publication.parent.mkdir(parents=True, exist_ok=True)
+        staging = (
+            publication.parent / f".{publication.name}.{uuid4().hex}.staging"
+        )
+        staging.mkdir()
+        try:
+            _write_parquet_create_only(
+                result_path,
+                pa.Table.from_pylist(results, schema=RESULT_SCHEMA),
+            )
+            _write_parquet_create_only(
+                attempt_path,
+                pa.Table.from_pylist(attempts, schema=ATTEMPT_SCHEMA),
+            )
+            result_inventory = _parquet_inventory(result_path)
+            attempt_inventory = _parquet_inventory(attempt_path)
+            result_sha = str(result_inventory["physical_sha256"])
+            attempt_sha = str(attempt_inventory["physical_sha256"])
+            workstore.register_shard(
+                shard_id=f"targeted-{token}",
+                job_name=JOB_NAME,
+                registry_version=registry_version,
+                stage=STAGE,
+                run_id=run_id,
+                worker_id="targeted-provider-amendment",
+                uri=str(result_path),
+                checksum=result_sha,
+                row_count=len(results),
+                byte_count=result_path.stat().st_size,
+                metadata={
+                    "attempt_uri": str(attempt_path),
+                    "attempt_sha256": attempt_sha,
+                    "attempt_rows": len(attempts),
+                    "targeted_provider_resolution_version": (
+                        TARGETED_PROVIDER_RESOLUTION_VERSION
+                    ),
+                    "provider": provider,
+                    "policy_version": policy_version,
+                    "resolver_semantic_fingerprint": (
+                        resolver.semantic_fingerprint
+                    ),
+                },
+            )
+            completed = workstore.complete_pending_batch(
+                [str(item["work_key"]) for item in selected],
+                output_uri=str(result_path),
+                checksum=result_sha,
+                row_count=1,
+            )
+            expected_keys = {str(item["work_key"]) for item in selected}
+            if completed != expected_keys:
+                raise RuntimeError(
+                    "targeted provider cohort changed during atomic completion"
+                )
+            status_counts = Counter(str(row["status"]) for row in results)
+            network_attempt_rows = sum(
+                row["phase"] != "candidate_normalization" for row in attempts
+            )
+            manifest = {
+                "schema_version": TARGETED_PROVIDER_RESOLUTION_VERSION,
+                "generated_at": _timestamp(),
+                "git_commit": _git_revision(),
+                "run_id": run_id,
+                "source_snapshot_id": registry_version,
+                "provider": provider,
+                "policy_version": policy_version,
+                "prepared_resolver_fingerprint": run["config"].get(
+                    "resolver_fingerprint"
+                ),
+                "amended_resolver_fingerprint": resolver.semantic_fingerprint,
+                "counts": {
+                    "pending_rows_before": len(pending),
+                    "selected_rows": len(selected),
+                    "completed_rows": len(completed),
+                    "result_rows": len(results),
+                    "attempt_rows": len(attempts),
+                    "network_attempt_rows": network_attempt_rows,
+                    "status_counts": dict(sorted(status_counts.items())),
+                },
+                "artifacts": {
+                    "result_shard": {
+                        **result_inventory,
+                        "path": str(result_path),
+                    },
+                    "attempt_shard": {
+                        **attempt_inventory,
+                        "path": str(attempt_path),
+                    },
+                },
+                "validation": {
+                    "explicit_resolver_amendment": (
+                        resolver.semantic_fingerprint
+                        != run["config"].get("resolver_fingerprint")
+                    ),
+                    "zero_active_claims_before_resolution": True,
+                    "one_result_per_selected_row": len(results)
+                    == len(selected),
+                    "all_selected_rows_completed": len(completed)
+                    == len(selected),
+                    "attempts_bounded_to_selected_rows": {
+                        str(row["source_row_id"]) for row in attempts
+                    }.issubset(expected_keys),
+                    "result_membership_exact": {
+                        str(row["source_row_id"]) for row in results
+                    }
+                    == expected_keys,
+                    "all_parquet_row_groups_complete": (
+                        result_inventory["row_groups_complete"]
+                        and attempt_inventory["row_groups_complete"]
+                    ),
+                },
+                "manifest_policy": {
+                    "written_last": True,
+                    "create_only": True,
+                },
+            }
+            if not all(manifest["validation"].values()):
+                raise RuntimeError(
+                    "targeted provider validation failed: "
+                    f"{manifest['validation']}"
+                )
+            _write_json(staging / "manifest.json", manifest)
+            staging.replace(publication)
+            return manifest
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
 
 
 def _renew_claimed_batch(

@@ -37,6 +37,9 @@ from biominer.references.downloader import (
 
 
 RESOLVER_VERSION = "biominer-gbif-media-url-resolver/v1"
+SAME_HOST_MIXED_CONTENT_POLICY_VERSION = (
+    "same-host-http-to-https-candidate-policy/v1"
+)
 ALLOWED_IMAGE_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/webp", "image/tiff", "image/gif"}
 )
@@ -308,7 +311,20 @@ class MediaURLResolver:
         monotonic: Callable[[], float] = time.monotonic,
         provider_adapters: tuple[ProviderURLResolver, ...] = DEFAULT_PROVIDER_ADAPTERS,
         request_guard: Callable[[str], AbstractContextManager[None]] | None = None,
+        structured_candidate_rewriter: Callable[[str, str], str] | None = None,
+        structured_candidate_rewriter_version: str | None = None,
     ) -> None:
+        if (structured_candidate_rewriter is None) != (
+            structured_candidate_rewriter_version is None
+        ):
+            raise ValueError(
+                "structured candidate rewriter and version must be supplied together"
+            )
+        if (
+            structured_candidate_rewriter_version is not None
+            and not structured_candidate_rewriter_version.strip()
+        ):
+            raise ValueError("structured candidate rewriter version must be nonblank")
         self.config = config or ResolverConfig()
         self._resolve_host = resolve_host or resolve_host_addresses
         self._now = now or (lambda: datetime.now(UTC))
@@ -316,6 +332,10 @@ class MediaURLResolver:
         self._monotonic = monotonic
         self._provider_adapters = provider_adapters
         self._request_guard = request_guard or (lambda _host: nullcontext())
+        self._structured_candidate_rewriter = structured_candidate_rewriter
+        self._structured_candidate_rewriter_version = (
+            structured_candidate_rewriter_version
+        )
         self._attempts: list[ResolutionAttempt] = []
         self._source_row_id = ""
         self._origin_last_request: dict[str, float] = {}
@@ -342,16 +362,19 @@ class MediaURLResolver:
 
     @property
     def semantic_fingerprint(self) -> str:
-        return canonical_semantic_fingerprint(
-            {
-                "resolver_version": RESOLVER_VERSION,
-                "config_fingerprint": self.config.fingerprint,
-                "provider_adapters": [
-                    {"adapter_id": adapter.adapter_id, "version": adapter.version}
-                    for adapter in self._provider_adapters
-                ],
-            }
-        )
+        identity: dict[str, object] = {
+            "resolver_version": RESOLVER_VERSION,
+            "config_fingerprint": self.config.fingerprint,
+            "provider_adapters": [
+                {"adapter_id": adapter.adapter_id, "version": adapter.version}
+                for adapter in self._provider_adapters
+            ],
+        }
+        if self._structured_candidate_rewriter_version is not None:
+            identity["structured_candidate_rewriter_version"] = (
+                self._structured_candidate_rewriter_version
+            )
+        return canonical_semantic_fingerprint(identity)
 
     def close(self) -> None:
         if self._owns_client:
@@ -391,13 +414,31 @@ class MediaURLResolver:
                 primary_failure = _ResolutionFailure(ResolutionStatus.UNRESOLVED_AMBIGUOUS_CANDIDATES, "multiple_structured_image_candidates")
             elif len(candidates) == 1:
                 candidate = candidates[0]
+                if self._structured_candidate_rewriter is not None:
+                    rewritten = self._structured_candidate_rewriter(
+                        candidate,
+                        reference.final_url,
+                    )
+                    if rewritten != candidate:
+                        self._record_rewrite(candidate, rewritten)
+                    candidate = rewritten
                 if _is_ephemeral_url(candidate):
                     primary_failure = _ResolutionFailure(ResolutionStatus.UNRESOLVED_INVALID_IMAGE, "ephemeral_candidate_url")
                 else:
                     try:
                         probed = self._fetch(candidate, phase="candidate", method="structured_metadata", max_bytes=self.config.max_probe_bytes, image_probe=True)
                         detected = self._require_valid_image(probed)
-                        return self._resolved(item, probed, stable_candidate_url=candidate, method="structured_metadata", detected=detected), tuple(self._attempts)
+                        return self._resolved(
+                            item,
+                            probed,
+                            stable_candidate_url=candidate,
+                            method="structured_metadata",
+                            detected=detected,
+                            adapter_version=(
+                                self._structured_candidate_rewriter_version
+                                or RESOLVER_VERSION
+                            ),
+                        ), tuple(self._attempts)
                     except _ResolutionFailure as exc:
                         primary_failure = exc
             else:
@@ -806,6 +847,45 @@ class MediaURLResolver:
             )
         )
 
+    def _record_rewrite(self, requested_url: str, response_url: str) -> None:
+        started = self._timestamp()
+        sequence = len(self._attempts) + 1
+        method = str(self._structured_candidate_rewriter_version)
+        safe_requested_url = redact_url_for_audit(requested_url)
+        safe_response_url = redact_url_for_audit(response_url)
+        self._attempts.append(
+            ResolutionAttempt(
+                attempt_id=canonical_semantic_fingerprint(
+                    {
+                        "source_row_id": self._source_row_id,
+                        "sequence": sequence,
+                        "phase": "candidate_normalization",
+                        "method": method,
+                        "requested_url": safe_requested_url,
+                        "started_at": started,
+                    }
+                ),
+                source_row_id=self._source_row_id,
+                sequence=sequence,
+                phase="candidate_normalization",
+                method=method,
+                requested_url=safe_requested_url,
+                response_url=safe_response_url,
+                redirect_from=None,
+                status_code=None,
+                outcome="rewritten",
+                error=None,
+                declared_content_type=None,
+                response_prefix_sha256=None,
+                response_byte_count=0,
+                etag=None,
+                last_modified=None,
+                retry_number=0,
+                started_at=started,
+                ended_at=self._timestamp(),
+            )
+        )
+
     def _timestamp(self) -> str:
         value = self._now()
         if value.tzinfo is None or value.utcoffset() is None:
@@ -866,6 +946,37 @@ def redact_url_for_audit(url: str) -> str:
     ]
     return urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
+
+
+def upgrade_same_host_mixed_content_candidate(
+    candidate_url: str,
+    source_page_url: str,
+) -> str:
+    """Upgrade only default-port HTTP mixed content on the same HTTPS host."""
+
+    candidate = urlsplit(candidate_url)
+    source = urlsplit(source_page_url)
+    same_host = (
+        candidate.hostname is not None
+        and source.hostname is not None
+        and candidate.hostname.casefold() == source.hostname.casefold()
+    )
+    if not (
+        candidate.scheme.casefold() == "http"
+        and source.scheme.casefold() == "https"
+        and same_host
+        and candidate.port in (None, 80)
+        and source.port in (None, 443)
+        and candidate.username is None
+        and candidate.password is None
+    ):
+        return candidate_url
+    host = str(candidate.hostname)
+    if ":" in host:
+        host = f"[{host}]"
+    return urlunsplit(
+        ("https", host, candidate.path, candidate.query, candidate.fragment)
     )
 
 
