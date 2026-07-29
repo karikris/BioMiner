@@ -16,7 +16,11 @@ import pytest
 from PIL import Image
 
 from biominer.cli import build_parser
-from biominer.gbif_media_resolution.cli import COMMAND, run_gbif_media_resolution_command
+from biominer.gbif_media_resolution.cli import (
+    COMMAND,
+    _receipt_count,
+    run_gbif_media_resolution_command,
+)
 
 from biominer.gbif_media_resolution.archive_circuit import (
     ARCHIVE_CIRCUIT_VERSION,
@@ -515,6 +519,15 @@ def test_mixed_content_upgrade_is_same_host_and_default_port_only() -> None:
             upgrade_same_host_mixed_content_candidate(candidate, source)
             == candidate
         )
+
+
+def test_receipt_count_supports_manifest_and_empty_batch_shapes() -> None:
+    assert _receipt_count(
+        {"counts": {"selected_rows": 2}, "selected_rows": 99},
+        "selected_rows",
+    ) == 2
+    assert _receipt_count({"selected_rows": 0}, "selected_rows") == 0
+    assert _receipt_count({}, "selected_rows") == 0
 
 
 def test_targeted_provider_batch_records_mixed_content_rewrite_and_image(

@@ -35,6 +35,13 @@ from biominer.workstore.sqlite import SQLiteWorkStore
 COMMAND = "gbif-media-url-resolve"
 
 
+def _receipt_count(receipt: dict[str, Any], name: str) -> int:
+    counts = receipt.get("counts")
+    if isinstance(counts, dict) and name in counts:
+        return int(counts[name])
+    return int(receipt.get(name, 0))
+
+
 def add_gbif_media_resolution_parser(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
@@ -308,7 +315,7 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
                 )
                 batches.append(receipt)
                 _event("gbif_media_url_targeted_provider_batch", **receipt)
-                if int(receipt["selected_rows"]) == 0:
+                if _receipt_count(receipt, "selected_rows") == 0:
                     break
         result = {
             "run_id": args.run_id,
@@ -316,18 +323,13 @@ def run_gbif_media_resolution_command(args: argparse.Namespace) -> int:
             "policy_version": SAME_HOST_MIXED_CONTENT_POLICY_VERSION,
             "batches": len(batches),
             "selected_rows": sum(
-                int(item["selected_rows"]) for item in batches
+                _receipt_count(item, "selected_rows") for item in batches
             ),
             "completed_rows": sum(
-                int(item["completed_rows"]) for item in batches
+                _receipt_count(item, "completed_rows") for item in batches
             ),
             "network_attempt_rows": sum(
-                int(
-                    (item.get("counts") or {}).get(
-                        "network_attempt_rows",
-                        item.get("network_attempt_rows", 0),
-                    )
-                )
+                _receipt_count(item, "network_attempt_rows")
                 for item in batches
             ),
         }
