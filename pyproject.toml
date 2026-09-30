@@ -2,16 +2,18 @@
 name = "biominer"
 version = "0.1.0"
 description = "Flickr Lepidoptera image triage pipeline with BioCLIP visual evidence."
-requires-python = ">=3.14"
+requires-python = ">=3.14.7"
 dependencies = [
-  "duckdb>=1.2",
+  "anyio>=4.15.1,<5",
+  "duckdb>=1.5.6",
   "httpcore>=1.0.9,<1.1",
-  "httpx>=0.28,<1",
-  "matplotlib>=3.10",
-  "pillow>=12",
-  "polars>=1.30",
-  "pyarrow>=18",
-  "pydantic>=2.10",
+  "httpx>=0.28.1,<1",
+  "lxml>=6.1.3",
+  "matplotlib>=3.11.2",
+  "pillow>=12.3.0",
+  "polars>=1.44.2,<2",
+  "pyarrow>=25.0.1",
+  "pydantic>=2.13.5",
   "python-pptx>=1.0.2",
 ]
 
@@ -20,16 +22,16 @@ geo = [
     "h3>=4.5,<5",
 ]
 ml = [
-    "numpy>=2.4,<3",
-    "scikit-learn>=1.9,<2",
-    "skops>=0.14,<0.15",
+    "numpy>=2.5.3,<3",
+    "scikit-learn>=1.9.1,<2",
+    "skops>=0.16,<0.17",
 ]
 postgres = [
-    "psycopg[binary]>=3.2",
+    "psycopg[binary]>=3.3.6",
 ]
 test = [
     "h3>=4.5,<5",
-    "pytest>=8",
+    "pytest>=9.1.1",
 ]
 
 [project.scripts]
@@ -40,7 +42,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=84"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
