@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
+import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -76,11 +79,112 @@ def preserve_inputs(receipt, directory):
     return receipt
 
 
+def deployment_host_inventory(profile, expected):
+    """Read only the explicitly pinned deployment host inventory, never artifacts."""
+    profile = Path(profile).absolute()
+    if profile.resolve() != profile:
+        raise ValueError('deployment host profile must have an unaliased absolute path')
+    raw = profile.read_bytes()
+    if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected) or hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError('deployment host profile checksum mismatch')
+    doc = json.loads(raw)
+    if doc.get('schema_version') != 1 or not isinstance(doc.get('native_files'), list) or not isinstance(doc.get('host_packages'), list):
+        raise ValueError('deployment host profile inventory is incomplete')
+    packages = [item.get('name') for item in doc['host_packages']]
+    if any(not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9+.-]*', name) for name in packages) or len(set(packages)) != len(packages):
+        raise ValueError('deployment host packages must have unique valid names')
+    inventory, seen = {}, set()
+    for item in doc['native_files']:
+        if not isinstance(item, dict) or not isinstance(item.get('path'), str) or not isinstance(item.get('owner'), str):
+            raise ValueError('deployment native file requires path and owner')
+        if item['path'] in seen:
+            raise ValueError('duplicate deployment native path')
+        seen.add(item['path'])
+        if not item['owner'].startswith('dpkg:'):
+            continue
+        package = item['owner'].removeprefix('dpkg:')
+        path = Path(item['path'])
+        if (not re.fullmatch(r'[a-z0-9][a-z0-9+.-]*', package) or package not in packages
+                or not path.is_absolute() or str(path) != item['path'] or path.resolve() != path
+                or not isinstance(item.get('sha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', item['sha256'])):
+            raise ValueError('deployment dpkg inventory path, owner or hash is invalid')
+        inventory[item['path']] = item
+    if __package__:
+        runtime = importlib.import_module(f'{__package__}.native_runtime')
+    else:
+        spec = importlib.util.spec_from_file_location('assembly_host_runtime', Path(__file__).with_name('native_runtime.py'))
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+    observed = runtime._host(doc)
+    for item in inventory.values():
+        runtime.verify_native_file(item, profile, profile.parent)
+    return {'profile': profile, 'raw': raw, 'sha256': expected, 'inventory': inventory,
+            'host_packages': doc['host_packages'], 'observed_packages': observed, 'runtime': runtime}
+
+
+def merge_host_packages(existing, deployment):
+    """Retain both existing mandatory floors and any stronger deployment pins."""
+    packages = {item['name']: item for item in existing}
+    for item in deployment['host_packages']:
+        previous = packages.get(item['name'])
+        if previous is not None:
+            result = subprocess.run(
+                ['/usr/bin/dpkg', '--compare-versions', item['minimum_version'],
+                 'ge', previous['minimum_version']], capture_output=True, text=True)
+            if result.returncode not in (0, 1):
+                raise ValueError('deployment package version comparison failed')
+            if result.returncode == 1:
+                continue
+        packages[item['name']] = item
+    merged = list(packages.values())
+    deployment['runtime']._host({'host_packages': merged})
+    return merged
+
+
+def reconcile_native_files(items, deployment=None):
+    native, mappings = {}, {}
+    for item in items:
+        selected = item
+        if deployment is not None and item['owner'].startswith('dpkg:'):
+            selected = deployment['inventory'].get(item['path'])
+            if (selected is None or item['owner'] != selected['owner']
+                    or not isinstance(item.get('sha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', item['sha256'])):
+                raise ValueError('build native file lacks matching deployment path, owner or valid hash')
+            mapping = mappings.setdefault(item['path'], {'path': item['path'],
+                'owner': item['owner'], 'build_records': [], 'selected': dict(selected)})
+            if item not in mapping['build_records']:
+                mapping['build_records'].append(dict(item))
+        previous = native.get(selected['path'])
+        if previous is not None and previous != selected:
+            raise ValueError(f'conflicting native ownership/hash records: {selected["path"]}')
+        native[selected['path']] = dict(selected)
+    return list(native.values()), list(mappings.values())
+
+
+def preserve_deployment_host(root, deployment):
+    target = root / '.native-runtime/build-materials' / deployment['sha256'] / 'deployment-host-profile.json'
+    if any(path.is_symlink() for path in (target, *target.parents)):
+        raise ValueError('deployment host preservation path is aliased')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if target.read_bytes() != deployment['raw']:
+            raise ValueError('preserved deployment host profile differs')
+    else:
+        with target.open('xb') as stream:
+            stream.write(deployment['raw'])
+    return file_record(target)
+
+
 def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer_receipt=None,
-             lxml_receipt=None, psycopg_receipt=None, arrow_receipt=None):
+             lxml_receipt=None, psycopg_receipt=None, arrow_receipt=None,
+             deployment_host_profile=None, deployment_host_profile_sha256=None):
     root, output, python = root.absolute(), output.absolute(), python.absolute()
     if output.exists() or output.is_symlink():
         raise FileExistsError(f'profile already exists; choose a new output path: {output}')
+    if (deployment_host_profile is None) != (deployment_host_profile_sha256 is None):
+        raise ValueError('deployment host profile and SHA256 must be supplied together')
+    deployment = (deployment_host_inventory(deployment_host_profile, deployment_host_profile_sha256)
+                  if deployment_host_profile is not None else None)
     sources = {
         'biominer': root / '.native-runtime/biominer/receipt.json',
         'psycopg-c': root / '.native-runtime/psycopg/receipt.json',
@@ -246,13 +350,24 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
             doc['recipes'].append({'script': file_record(root / 'scripts' / script), 'args': args})
     if not doc['extension_policy']:
         doc['extension_policy'] = {'policy_id': None, 'allowlist': [], 'status': 'pending_duckdb_wheel'}
-    native = {}
-    for item in doc['native_files']:
-        previous = native.get(item['path'])
-        if previous is not None and previous != item:
-            raise ValueError(f'conflicting native ownership/hash records: {item["path"]}')
-        native[item['path']] = item
-    doc['native_files'] = list(native.values())
+    doc['native_files'], mappings = reconcile_native_files(doc['native_files'], deployment)
+    if deployment is not None:
+        doc['host_packages'] = merge_host_packages(doc['host_packages'], deployment)
+        for item in doc['native_files']:
+            if item['owner'].startswith('dpkg:'):
+                deployment['runtime'].verify_native_file(item, deployment['profile'], deployment['profile'].parent)
+        if sha256(deployment['profile']) != deployment['sha256']:
+            raise ValueError('deployment host profile changed during assembly')
+        # The captured profile is inventory evidence only. In particular, its
+        # historical wheel set is never used as a current artifact selection.
+        retained = preserve_deployment_host(root, deployment)
+        doc['inputs'].append(retained | {'kind': 'deployment-host-profile'})
+        doc['deployment_host_reconciliation'] = {
+            'deployment_profile': retained, 'original_profile_path': str(deployment['profile']),
+            'observed_host_packages': deployment['observed_packages'], 'mappings': mappings,
+            'scope': 'dpkg deployment inventory only; historical build receipts and non-dpkg files unchanged',
+            'required_next_step': 'refresh host, install a new immutable generation and pass full qualification',
+        }
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open('x') as stream:
         stream.write(json.dumps(doc, indent=2, sort_keys=True) + '\n')
@@ -260,7 +375,7 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--output', type=Path, default=Path('native-runtime.lock'))
     parser.add_argument('--python', type=Path, default=Path(sys.executable))
@@ -275,10 +390,15 @@ def main():
                         help='Explicit preserved Psycopg build receipt')
     parser.add_argument('--arrow-receipt', type=Path,
                         help='Explicit preserved or newly qualified Arrow build receipt')
+    parser.add_argument('--deployment-host-profile', type=Path,
+                        help='Explicit pinned deployment host inventory; never selects its historical wheels')
+    parser.add_argument('--deployment-host-profile-sha256',
+                        help='Required SHA256 of the exact deployment host profile bytes')
     args = parser.parse_args()
     print(json.dumps(assemble(args.root, args.output, args.python, args.preserve_inputs,
                               args.duckdb_receipt, args.biominer_receipt, args.lxml_receipt,
-                              args.psycopg_receipt, args.arrow_receipt), sort_keys=True))
+                              args.psycopg_receipt, args.arrow_receipt,
+                              args.deployment_host_profile, args.deployment_host_profile_sha256), sort_keys=True))
 
 
 if __name__ == '__main__':

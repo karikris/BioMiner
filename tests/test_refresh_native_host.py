@@ -7,15 +7,17 @@ import pytest
 
 from scripts import refresh_native_host as refresh
 runtime = refresh.runtime
-from tests.test_native_runtime import profile  # shared valid artifact fixture
+from tests.test_native_runtime import arrow_fixture_pins, profile  # shared valid artifact fixture
 
 
 def setup_host(profile, monkeypatch):
     path, doc = profile
     # refresh loads its own hash-bound copy of native_runtime, while the shared
-    # fixture replaces only the test patch digest in the normal imported copy.
+    # fixture replaces synthetic source pins in the normal imported copy.
     monkeypatch.setattr(runtime, 'LXML_ZLIB_PATCH_SHA256',
                         hashlib.sha256(b'reviewed patch fixture').hexdigest())
+    for name, value in arrow_fixture_pins().items():
+        monkeypatch.setattr(runtime, name, value)
     lib = path.parent / 'libssl.so'
     lib.write_bytes(b'old package bytes')
     doc['ready'] = True

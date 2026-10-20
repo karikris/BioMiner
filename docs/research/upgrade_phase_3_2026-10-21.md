@@ -371,3 +371,104 @@ the unified-diff space marker. `.gitattributes` disables only end-of-line
 blank checks for that exact patch path so `git diff --check` accepts its
 required bytes; whitespace checks remain enabled for implementation files.
 The patch digest remains unchanged.
+
+## Patched Arrow 25 build and compiler correction
+
+The corrective source commit is
+`0dee88002c517354b2770dcee76310e7b4510f1e`. Its first actual C++ build
+completed, but Python wheel configuration failed because scikit-build-core
+selected `clang` from the approved Python interpreter's build settings.
+Clang was unavailable in the isolated build path. The first attempt's final
+receipt is `phase3/arrow25-backport-builder/build-finished.json`, SHA-256
+`d4e72bd1a5e06bcb55831321d88a1e9acabea973d33616a144fe05c24765b0d4`.
+The observed compiler maximum was four; this attempt produced no wheel.
+
+GitHits source inspection confirmed that scikit-build-core 1.1.1 uses
+Python's recommended compiler only when `CC`/`CXX` are absent. The reviewed
+retry selects `/usr/bin/gcc` and `/usr/bin/g++`, whose resolved binary hashes
+match the original C++ configuration's `cc`/`c++`. It uses the unchanged
+committed recipe and immutable build-input manifest, preserving the version
+`25.0.1+biominer.e9697ff28bd8`.
+
+All 5,267 archive files matched their original or reviewed transformed bytes.
+The failed backend had added one generated version file. The retry preserves
+that exact file, the failed receipt and all overwritten logs before removing
+only that generated file and rerunning the strict source checks. The
+independent pre-resume review is
+`phase3/arrow25-backport-resume-prep/independent-pre-resume-review.json`,
+SHA-256 `a6f0aa10d87b3f5cebfe83a2c6dc2aad01203be6d4f6094febe0bf8cf11d7c82`.
+Historical first-attempt paths that the recipe updates are mapped to their
+preserved copies in the retry's `preserved-failure.json`.
+
+The retry passed source and manifest validation before compilation. No
+source guard, dependency pin or security gate was relaxed.
+
+The retry completed in 561.345 seconds with outer exit 0, no monitor or cleanup
+error, and an observed maximum of four compiler frontends. The resulting wheel
+is `25.0.1+biominer.e9697ff28bd8`, SHA-256
+`2657f0336db3a09d780af50542db4ac539b23fdff3a8a7adbd706882593508ca`.
+The compiled receipt SHA-256 is
+`a418f8246e2f8c6fd10e6e25272d632a82e21978cd815013f1ecfc73e3e157da`.
+
+The independent final artifact audit binds patched source to the actual unity
+object, compute linkmap, library, installed prefix and wheel. All 37 wheel ELF
+members match their receipt; seven C++ wheel libraries match the final prefix.
+All 37 resolved host files match the already-patched deployment inventories.
+The 154 static archive origins include one explicit, byte-identical c-ares
+relocation from its build directory into the owned install prefix. Recompilation
+changed 49 archive hashes; external archives and static OpenSSL are unchanged.
+The final audit is `phase3/arrow25-generated-audit-prep/final-artifact-3/audit.json`,
+SHA-256 `e0d30a6649184a77b9c9938a46acd5e2546f0c9bee18b6a46bebb0e8b685b617`.
+This establishes artifact identity; actual kernel qualification remains a
+separate requirement.
+
+The first patched runtime-pair build stopped at command 16, before publishing
+a complete pair. Its assembler rejected conflicting host `libssl.so.3` hashes:
+the new Arrow build correctly records the patched deployment library, while
+the unchanged PostgreSQL-driver build receipt records the library present at
+its original build. Neither source receipt was rewritten. The failed command
+receipt is `phase3/arrow25-pair-1/commands/016-p1a25-assemble.json`, SHA-256
+`ee948ec74c6c68847d6b9f7da87ed1b18cb957a7efc5565cb7beb8673c71ad20`.
+The stopped pair remains unqualified evidence.
+
+
+## Explicit deployment host reconciliation
+
+Starting from `0dee88002c517354b2770dcee76310e7b4510f1e` on `main`, task
+3.3 now accepts an explicitly checksummed deployment profile for host library
+inventory only. It verifies current package policy, file ownership and bytes,
+retains stronger mandatory version floors, and records every historical to
+current mapping. It preserves both historical build receipts and the exact
+selected profile. Wheel and interpreter conflicts still fail; no historical
+Arrow wheel is admitted through this option. The candidate remains unready
+until installation and qualification succeed.
+
+GitHits inspection of auditwheel at
+`63a51b2f62936e38b6504faa60db5ca042559f97` informed the separation between
+external host libraries and wheel contents. No upstream code was copied.
+The unavailable Ubuntu CVE tracker lookup supplied no evidence.
+
+The focused assembler suite passed **40 tests in 1.64 seconds**. An initial
+neighbor run had five failures and 170 passes because the refresh fixture
+loads a separate native policy module without the new synthetic Arrow pins.
+The fixture now supplies those same synthetic pins to its private module;
+production checks remain unchanged. The corrected assembly, host-refresh,
+admission and snapshot suites passed **175 tests in 12.35 seconds**, supervised
+outer exit 0. Exact command, source hashes and log are retained in
+`phase3/assembler-host-neighbors-2/checks.json`, SHA-256
+`9cae71ecb6353eac8a71dd0e7e4438bf942f49aa517723d9a7eeec4d9fb3b230`.
+The original failed result remains in `assembler-host-neighbors-1`.
+
+An isolated preflight used the actual failed pair's five artifact receipts
+and exact new assembler. Assembly, artifact validation and host refresh each
+exited 0 under supervision. All 44 selected host mappings matched current
+files. Candidate and refreshed profile bytes were identical, SHA-256
+`d6b1a4cc83b511b0965c9eb3dac4f58c0c8d78b32cf77e737fffbbd110cad8ee`.
+The result is `phase3/assembler-host-preflight-1/result.json`, SHA-256
+`ea809b52107a622a3bdc2eaf3a4482b8f9ffccff12dea2b4826e3f3633f94d05`.
+Independent integration review:
+`phase3/assembler-host-preflight-1/independent-integration-review.json`,
+SHA-256 `3afbbbf66666c8f7b3c8805d226b3a85e593f13552e7f709e61e055535c12ea4`.
+This preflight installed no environment and ran no Arrow kernels. Runtime
+qualification, registered runtime replacement and the phase push remain
+pending. Unrelated scientific work is excluded from this task's commit.
