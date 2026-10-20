@@ -472,3 +472,34 @@ SHA-256 `3afbbbf66666c8f7b3c8805d226b3a85e593f13552e7f709e61e055535c12ea4`.
 This preflight installed no environment and ran no Arrow kernels. Runtime
 qualification, registered runtime replacement and the phase push remain
 pending. Unrelated scientific work is excluded from this task's commit.
+
+
+The inventory correction was committed as
+`5d905ade29b916ca91c9859de42d22fde080e0fa`. The next fresh attempt,
+`phase3/arrow25-pair-2`, passed assembly and host refresh, then failed at
+command 18 while freezing the profile. No environment was installed or
+activated. Two historical observations in the reconciliation mapping used
+`path` and `sha256`, which the snapshot format reserves for live references.
+The strict recursive verifier therefore rejected the intentionally historical
+libssl/libcrypto hashes. Current selected host records were correct. The
+failed tree and exact command receipt remain preserved; the correction must
+use explicit historical observation fields and retain strict validation of
+live references. The original five build receipts remain unchanged.
+
+
+The historical rows now use `recorded_path` and `recorded_sha256`, preserving
+both observations and ownership without declaring stale bytes as current
+inputs. The selected deployment rows retain normal live references. The
+unchanged freezer is exercised by two new regressions: retained history
+survives freezing, while changed current library bytes still fail verification.
+The focused assembler and snapshot suites passed **71 tests in 6.40 seconds**.
+Their three expected pre-fix failures and successful run are retained in
+`phase3/assembler-history-reference-1/{red,green}.json`.
+
+The extended actual-input preflight passed all five supervised commands:
+assembly, host refresh, freeze, frozen verification and frozen artifact
+validation. Its result is `phase3/assembler-history-preflight-1/result.json`,
+SHA-256 `a89aee4d645737a6cca9ef4ae558f43009a7a04c5288eedf0277910171c55338`.
+It uses exact current source bytes and the previous attempt's actual artifact
+receipts, in a fresh directory. No kernel tests, environment installation,
+activation or finding closure is claimed by this preflight.

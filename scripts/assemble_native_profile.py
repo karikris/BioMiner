@@ -152,8 +152,12 @@ def reconcile_native_files(items, deployment=None):
                 raise ValueError('build native file lacks matching deployment path, owner or valid hash')
             mapping = mappings.setdefault(item['path'], {'path': item['path'],
                 'owner': item['owner'], 'build_records': [], 'selected': dict(selected)})
-            if item not in mapping['build_records']:
-                mapping['build_records'].append(dict(item))
+            # Historical observations are not live path/hash references: the
+            # selected deployment record remains subject to normal verification.
+            historical = {'recorded_path': item['path'], 'recorded_sha256': item['sha256'],
+                          'owner': item['owner']}
+            if historical not in mapping['build_records']:
+                mapping['build_records'].append(historical)
         previous = native.get(selected['path'])
         if previous is not None and previous != selected:
             raise ValueError(f'conflicting native ownership/hash records: {selected["path"]}')

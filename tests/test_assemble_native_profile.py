@@ -9,6 +9,7 @@ import zipfile
 import pytest
 
 from scripts import assemble_native_profile as assembler
+from scripts import freeze_native_profile as freezer
 from scripts import native_runtime
 
 
@@ -236,11 +237,56 @@ def test_explicit_host_profile_reconciles_deployment_without_rewriting_build_his
     assert Path(retained['path']).read_bytes() == original_host
     assert retained['sha256'] == assembler.sha256(fixture['host'])
     assert any(item['path'] == retained['path'] for item in doc['inputs'])
-    assert reconciliation['mappings'][0]['build_records'] == [fixture['old'], fixture['current']]
+    assert reconciliation['mappings'][0]['build_records'] == [
+        {'recorded_path': item['path'], 'recorded_sha256': item['sha256'], 'owner': item['owner']}
+        for item in (fixture['old'], fixture['current'])]
     assert reconciliation['mappings'][0]['selected'] == fixture['current']
     assert {item['name'] for item in doc['host_packages']} == {
         'openssl', 'libssl3t64', 'libssl-dev', 'libpq5', 'libfixture'}
     assert next(item for item in doc['host_packages'] if item['name'] == 'libpq5')['minimum_version'] == '18.6-0ubuntu0.26.04.1'
+
+
+def freeze_mixed_candidate(fixture):
+    """Exercise the real freezer with explicitly synthetic artifact admission."""
+    root = fixture['root']
+    (root / 'scripts').mkdir()
+    (root / 'scripts/native_runtime.py').write_text(
+        'import hashlib\nfrom pathlib import Path\n'
+        'def verify_artifacts(path):\n'
+        '    return {"status": "candidate", "ready": False,\n'
+        '            "profile_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}\n'
+        'def main(argv=None):\n    return 0\n')
+    (root / 'pyproject.toml').write_text('# synthetic freezer control fixture\n')
+    (root / 'uv.lock').write_text('# synthetic freezer lock fixture\n')
+    assemble_mixed(fixture, deployment_host_profile=fixture['host'],
+                   deployment_host_profile_sha256=assembler.sha256(fixture['host']))
+    output = root / 'snapshot'
+    freezer.freeze(root / 'candidate.json', output)
+    return output
+
+
+def test_reconciled_host_history_survives_unchanged_freezer(mixed_host_receipts):
+    fixture = mixed_host_receipts
+    assert assembler.sha256(fixture['library']) != fixture['old']['sha256']
+    snapshot = freeze_mixed_candidate(fixture)
+    frozen = json.loads((snapshot / 'profile.json').read_bytes())
+    mapping = frozen['deployment_host_reconciliation']['mappings'][0]
+    assert mapping['build_records'][0] == {
+        'recorded_path': fixture['old']['path'], 'recorded_sha256': fixture['old']['sha256'],
+        'owner': fixture['old']['owner']}
+    assert mapping['selected'] == fixture['current']
+    references = list(freezer.records(frozen))
+    assert mapping['selected'] in references
+    assert not any(item['sha256'] == fixture['old']['sha256'] for item in references)
+    assert freezer.verify_snapshot(snapshot)['ready'] is False
+
+
+def test_frozen_reconciled_host_still_rejects_changed_selected_library(mixed_host_receipts):
+    fixture = mixed_host_receipts
+    snapshot = freeze_mixed_candidate(fixture)
+    fixture['library'].write_bytes(b'changed selected deployment library')
+    with pytest.raises(freezer.SnapshotError, match='retained file missing or SHA256 hash mismatch'):
+        freezer.verify_snapshot(snapshot)
 
 
 @pytest.mark.parametrize('bad', ['missing_hash', 'missing_profile', 'changed_profile', 'missing_path',
