@@ -189,6 +189,15 @@ def supervise(argv, timeout):
     try:
         output, _ = process.communicate(timeout=timeout)
         code = process.returncode
+        # communicate() has reaped the direct child. Reap already-exited
+        # adoptees before deciding whether any running work leaked.
+        while True:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
         if descendants(os.getpid()):
             stop_descendants()
             output += b"\nnative case left descendant processes; cleaned up\n"

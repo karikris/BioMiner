@@ -199,3 +199,91 @@ A corrective task-3.3 commit
 preserves the original history rather than amending it. The phase must build
 and qualify a fresh pair bound to that corrected commit; the first pair and
 unexecuted gate preparation remain preserved.
+
+The first corrective task-3.3 implementation commit is
+`ff59a7c758d62ae7d0485b77edcc8ff441bceb35`.
+Its fresh `phase3/pair-2/` build completed all 29 commands successfully in
+194.258 seconds; `built-pair.json` SHA-256 is
+`8aa72771492f4e3990349f876ff9a835cd5a34b68c95c7849b02f92e7fe9e2c1`.
+Both complete 714-file source contexts then passed validation without narrowing.
+The preflight receipt SHA-256 is
+`c04ce803bb2c5f76675d7018bd7ded6fb721e7a3e94f0c2e7d2e9a285ea53eb4`.
+
+All four installed `biominer --help` console checks passed across generation
+and development environments for both Polars versions. Each used the permanent
+interpreter, completed its resource lifecycle and removed its private scratch.
+`phase3/pair-2-console-checks/consoles.json` has SHA-256
+`0cb363b5e50a1439535467c57a86c3f4d40c7f7c5a09db7fa2d1a5d16d386a72`.
+This checks the installed bootstrap; it does not activate a runtime or exercise
+live services.
+
+## First phase execution and harness correction
+
+The paired semantics case passed **1 test in 27.48 seconds** on the corrected
+commit. Image, classifier and logical Parquet observations match exactly.
+Single-file Parquet physical hashes differ between Polars versions, while
+batched Parquet hashes match. Both physical observations remain in the original
+receipts; no existing artifact or fingerprint was overwritten.
+The comparison receipt SHA-256 is
+`d3cd7dbc7074ddbaa08f9f6df5a606d676cb2ce9a62a1c4f0d99b9fb17c28fb1`.
+
+The real resource case passed **1 test in 23.34 seconds**. With 4 MB engine
+memory and 64 MB disk, the streaming sort succeeded and 82 spill files were
+observed. With 16 MB disk, it created two observed spill files and raised the
+required disk-budget error (expected worker exit 7). Both private scratch
+directories were removed and process cleanup passed. These are engine-budget
+observations, not process-RSS or aggregate limits.
+The qualification receipt SHA-256 is
+`b65347e7333ac0cce6e9670b515580a1ad8105abbd9bfa1f47c73d9861845a99`.
+
+The full suite then reported **11 failed, 3,083 passed in 138.29 seconds**.
+All eleven failures rejected the operator's temporary directory, which was
+outside `/tmp` and the repository's `.native-runtime` root. The production
+output policy remains unchanged. The failed log SHA-256 is
+`5979cd13138027602d522824587d5c388c04d052cb1f0fc1fe49f48ca5b33e24`.
+The supervisor returned 125 after cleaning descendants; no phase candidate
+or push handshake was published.
+
+A revised external operator creates a unique private directory under `/tmp`.
+Its actual emitted launcher passed **77 native-runtime tests in 5.36 seconds**,
+but still returned 125. This isolates the temporary-path repair from the
+remaining descendant-accounting failure. The preserved handoff is
+`phase3/operator-gate-prep-v3/handoff.json`, SHA-256
+`044ab4affd3721b3092052a2b3757cc1125fa83c1790281f28ef4e57fb0733ec`.
+The supervisor failure requires separate diagnosis and a clean rerun.
+
+The bounded diagnostic then reproduced the actual native timeout test:
+pytest passed, but supervision returned 125. All three descendant observations
+identified the same directly adopted child in state `Z` (already exited).
+The observer recorded process state without changing the original ownership
+result. Its receipt, `phase3/supervisor-correction-1/diagnostic-receipt.json`,
+has SHA-256
+`d826b509a0de479a50af80e8c38211f623a8630c673de83433e80558dfea2fd3`.
+This establishes the cause of that reproduced failure; it does not imply that
+arbitrary descendant-cleanup failures may be ignored.
+
+## Task 3.3 correction: collect exited adopted children
+
+After collecting the direct subprocess, the supervisor now uses nonblocking
+`waitpid` to collect already-exited adopted children before its existing
+descendant check. It preserves the direct subprocess's exit status. Live
+descendants still cause exit 125 and cleanup; timeouts still cause exit 124
+and cleanup.
+
+Real subprocess regressions reproduced two false failures before the repair.
+Afterward, all five behavior cases passed: parent exits 0 and 7 with an
+already-exited child, a live detached child, and both timeout variants.
+The supervised qualification, gate and native-runtime suites passed
+**176 tests in 13.62 seconds**, with outer exit 0. The focused receipt is
+`phase3/supervisor-correction-1/green-focused.json`, SHA-256
+`79312067a87900be77e5784aa00fd604540a4b67d9d5788836411b99d54c4eb3`.
+
+GitHits source review of Tini and dumb-init corroborated nonblocking child
+collection while preserving the primary exit status. Both inspected sources
+are MIT licensed; no upstream implementation was copied. Returning success
+without collecting exited children, or suppressing live-leak failures, was
+rejected.
+
+This is another additive task-3.3 corrective commit. The original attempts
+remain evidence; a fresh pair and complete phase gate must bind the corrected
+source before phase 3 can be pushed.

@@ -187,6 +187,47 @@ time.sleep(60)
     assert b"descendants cleaned up" in result.stdout
 
 
+@pytest.mark.parametrize("parent_exit", [0, 7])
+def test_exited_adopted_child_preserves_parent_result(tmp_path, parent_exit):
+    script = """
+import json, os, sys
+child = os.fork()
+if child == 0:
+    os._exit(0)
+os.waitid(os.P_PID, child, os.WEXITED | os.WNOWAIT)
+print(json.dumps({'parent': os.getpid(), 'child': child}), flush=True)
+raise SystemExit(int(sys.argv[1]))
+"""
+    result = qualification.run_test(
+        [sys.executable, "-c", script, str(parent_exit)],
+        tmp_path, dict(os.environ), 5,
+    )
+    assert result.returncode == parent_exit, result.stdout
+    pids = json.loads(result.stdout.splitlines()[0])
+    assert not Path(f"/proc/{pids['parent']}").exists()
+    assert not Path(f"/proc/{pids['child']}").exists()
+    assert b"left descendant processes" not in result.stdout
+
+
+def test_live_adopted_child_blocks_success_and_is_reaped(tmp_path):
+    script = """
+import json, os, subprocess, sys
+child = subprocess.Popen(
+    [sys.executable, '-c', 'import time; time.sleep(60)'],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL, start_new_session=True)
+print(json.dumps({'parent': os.getpid(), 'child': child.pid}), flush=True)
+"""
+    result = qualification.run_test(
+        [sys.executable, "-c", script], tmp_path, dict(os.environ), 5,
+    )
+    assert result.returncode == 125, result.stdout
+    pids = json.loads(result.stdout.splitlines()[0])
+    assert not Path(f"/proc/{pids['parent']}").exists()
+    assert not Path(f"/proc/{pids['child']}").exists()
+    assert b"left descendant processes; cleaned up" in result.stdout
+
+
 @pytest.mark.parametrize("damage", ["missing", "wrong_profile", "wrong_generation", "wrong_case"])
 def test_passing_pytest_without_bound_native_observation_is_rejected(scenario, monkeypatch, damage):
     def changed(*args):
