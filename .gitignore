@@ -1,5 +1,6 @@
 .env
 secrets.env
+/prod-ca-2021.crt
 AGENTS.md
 .agents/
 skills-lock.json
@@ -34,6 +35,7 @@ reports/*
 __pycache__/
 .pytest_cache/
 .venv*/
+/.venv
 .venv-bioclip-py312/
 *.egg-info/
 =*

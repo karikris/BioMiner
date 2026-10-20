@@ -112,16 +112,104 @@ evidence are under
 Independent source, build-artifact and regression reviews were performed by
 the separate native-review agent; this is not a human review claim.
 
+## Task 2.2: development cutover and old entrypoints
+
+Starting commit: `cf99ca1a75e313cf7e08f944292a9f27674821c4`.
+The new development environment was built at its permanent path,
+`.native-runtime/development/security-baseline-20261021-1/env`, before activation.
+Locked ordinary dependencies are installed first, the four exact custom native
+wheels next, and the editable BioMiner checkout last, with setuptools 84.2.0
+as the build constraint. A private cache and copy mode avoid changing shared
+cache permissions. All five native checks, package consistency, editable origin,
+permanent parent/child interpreter identity and CLI help passed.
+
+The dependency tree is read-only, with a separately pinned development receipt:
+`246b4be1dc59e27c8bd59284797082bcd1cbadbe97f50830f57900b3aa7b1e3f`.
+Its 8,264 inventory entries bind modes, links and file bytes. This is an editable
+development contract; production application-wheel verification is unchanged.
+Three real disposable `uv` attempts—sync, automatic run synchronization and
+interpreter replacement—failed without changing dependency bytes, lock bytes
+or the environment alias. A read-only `.lock` alone is insufficient: upstream
+uv warns and continues when that lock cannot be acquired.
+
+There are 46 installed distributions: BioMiner and 45 third-party packages.
+The four test additions match the previous pinned advisory coverage. Metadata
+discovery also sees two existing checkout `egg-info` records, including the
+legacy `flickr-bio-occurrence` name; these are not extra installed dependencies
+and were preserved. Independent inspection matched all 47 native files across
+the four custom wheels and passed eleven fresh lxml feature checks.
+
+Immediately before cutover, repeated scans found no eligible `.venv` consumers.
+The operator-owned `.venv` directory's device/inode was checked before moving it
+under `.native-runtime/quarantine/shared-venv-20261021-1/env`; the quarantine
+parent then received mode `000`. Only then was `.venv` published as a link to
+the new environment. The cutover does not automatically restore unsafe bytes
+after a failure.
+
+Two unreadable system bootstrap processes were excluded through an explicit,
+reviewed scope option. Independent systemd observations bind exactly the user
+manager and its PAM helper to root-controlled executable/unit hashes,
+MainPID, UID, parent PID, start ticks, arguments and `init.scope` membership.
+The pinned scope hash is
+`2f12abe3aab7bbe088ad290af1cca2d39dede308868edba4ac45e74c5086ad1d`.
+Activation regenerated that evidence before switching. This excludes no
+descendants, services, queued jobs or future launches. Their private mappings
+and environment remain unreadable; other-user processes, external schedulers
+and remote hosts remain outside coverage. Visible systemd timers, unit files
+and the current user's crontab contained no BioMiner launchers.
+
+The previous approved generation's `env` directory was separately changed to
+mode `000` after a fresh clear consumer scan and a check that the replacements
+do not reference it. Its original directory identity, mode, complete inventory
+and unchanged generation receipt are retained. Actual execution attempts through
+both old entrypoints failed with `PermissionError`; subsequent scans were clear
+within the stated scope. No process was killed or restarted and no scientific
+workload needed draining. Historical bytes remain preserved, and the owner/root
+can deliberately restore permissions; they are not an allowed fallback.
+
+The old-entrypoint retirement receipt SHA-256 is
+`4b217081bf31472d22a9d880986cd15e7cc82832f0eedf4d57a83692b7e54f63`.
+The actual build used archived builder bytes with SHA-256
+`5e263fc037ee6f4c2392ad6ca0beb5e9667c3c4324996582b2b5e109a9b3c394`;
+activation used the finalized scope-capable script with SHA-256
+`28476d02d9fe5a5881d5719b1296a2f3f39dcf3598f423302974f5fd064b963a`.
+The new shared entrypoint actually reports Python 3.14.7, OpenSSL 3.5.9,
+AnyIO 4.15.1 and the qualified native packages. Its console script points to the
+permanent development interpreter. Long-running jobs must use permanent paths:
+invoking Python through `.venv` preserves that alias in child launches.
+
+The focused development suite passed **30 tests**; the development and
+neighboring native suites passed **135 tests**. Independent source and
+cutover-scope review passed. Build, inspection, activation, negative-launch and
+post-cutover observations are retained in the phase evidence directory.
+
+## PostgreSQL certificate preflight
+
+The supplied Supabase CA file is present locally and excluded by the anchored
+`/prod-ca-2021.crt` Git ignore rule. Its PEM SHA-256 is
+`700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7`.
+The existing credential configuration uses the project pooler. Authentication
+and a read-only query now succeed with `sslmode=verify-full`; libpq confirms
+TLS on that client connection and the server reports PostgreSQL 17.6.
+No namespace or table was created.
+
+Earlier preflight failures remain preserved: the first guard expected the
+direct hostname, and the second incorrectly required TLS on the pooler's
+server-side backend connection. The corrected check inspects the actual client
+connection through `PQsslInUse`. The backend TLS field was false and is retained
+separately; client verification does not attest that internal transport.
+Successful preflight receipt SHA-256:
+`f874056ac4fa426ea4066ae5782b4e97a8778c87cecf68b73e74e367e225d778`.
+
 ## Remaining phase work
 
-Tasks 2.2 and 2.3 remain pending at this task boundary. The shared development
-environment has not been replaced, and the phase 2 push/handshake has not run.
-The latest readable process scan found no shared-environment consumer, but
-that scan must be repeated immediately before cutover. Unreadable processes,
-other hosts and external schedulers remain outside the inventory.
+The final security report retains all nine original finding IDs/scopes and the
+replacement-attestation gap. They are resolved for the registered local
+entrypoints, with the inventory and retained-artifact limitations above.
+Report SHA-256:
+`b2a21033ee83061fd3448d818f2c6455c1c6d01af07d6cf3b02495a6aa8824c2`.
 
-The nine phase 1 security findings and its coverage gap are not globally
-closed by building this fallback. Their exact scopes and remaining affected
-entrypoints must be reconciled in the phase security receipt. The hosted
-PostgreSQL test still needs the project CA certificate; TLS verification
-remains enabled. No hosted PostgreSQL/S3 namespace has been created here.
+Task 2.3, full phase regression and the phase 2 push/handshake remain pending
+at this task boundary. Complete hosted
+PostgreSQL/S3 behavior and cleanup tests remain for phase 5. No scientific
+production promotion or general host security clearance is claimed.

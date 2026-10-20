@@ -12,8 +12,26 @@ controls in `.native-runtime/snapshots/security-baseline-20261021-1`.
 It replaces the lxml wheel's affected embedded libraries and retains the
 previous Arrow/Polars baseline. Use the frozen invocation and exact hashes in
 the [phase 2 report](research/upgrade_phase_2_2026-10-21.md).
-Development-environment migration and the rest of phase 2 remain pending;
-hosted PostgreSQL/S3 qualification is still unrun.
+The shared `.venv` now points to the separately qualified development environment
+at `.native-runtime/development/security-baseline-20261021-1/env`.
+Its dependencies are read-only; only the checkout's application source is editable.
+Use `.venv/bin/python -m pytest` for development tests. Ordinary `uv sync` or
+automatic `uv run` synchronization must not replace its qualified native wheels.
+Dependency changes require a new reviewed environment through
+`scripts/development_runtime.py`, followed by a stopped-consumer cutover.
+
+Long-running jobs must use a permanent generation path. Python invoked through
+the `.venv` alias retains that alias in `sys.executable`, including child launches.
+Development console scripts already name their permanent environment.
+The development receipt is not production-generation admission.
+
+The old shared environment is preserved beneath an inaccessible quarantine.
+The old approved generation's `env` directory is also inaccessible to ordinary
+user launches; neither is an allowed rollback. The frozen patched fallback
+remains available. Phase 2's final qualification and push remain pending.
+PostgreSQL authentication now passes with certificate verification through the
+configured project pooler; the complete hosted PostgreSQL/S3 qualification is
+still unrun.
 
 The 20 October dependency renewal retains the original profile and generation
 as historical evidence. Their repository configuration and script references
