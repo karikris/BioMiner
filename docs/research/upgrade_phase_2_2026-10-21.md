@@ -209,7 +209,26 @@ entrypoints, with the inventory and retained-artifact limitations above.
 Report SHA-256:
 `b2a21033ee83061fd3448d818f2c6455c1c6d01af07d6cf3b02495a6aa8824c2`.
 
-Task 2.3, full phase regression and the phase 2 push/handshake remain pending
+Task 2.3 starts at `cb9f5e148eb16e90deac164c17e912e715b21b5b`.
+`scripts/qualify_native_runtime.py` now runs five separate opt-in native cases
+through the frozen launcher: artifact admission, actual loaded versions,
+certificate-verifying TLS fixtures, forward/reverse import orders and enabled
+features. Each case binds its command, pytest result, source commit/digest,
+profile, generation and retained observations. The default suite tests the
+orchestration with explicit doubles; it does not claim those are native runs.
+
+The feature case also stops a synthetic Parquet writer after a durable
+checkpoint, then resumes in a fresh process. It checks source/profile hashes,
+unchanged original-part bytes, row order and permanent child-interpreter
+identity. This qualifies bounded native restart behavior, not scientific
+workload recovery. A Linux subreaper supervisor cleans up owned descendants,
+including those starting new sessions, if a case times out or leaves children.
+Two real subprocess regressions cover that cleanup.
+
+The qualification and gate suites passed **95 tests**; independent source
+spec/quality review and **26 qualification tests** passed. Actual native cases
+and full phase regression will run from the committed clean source snapshot.
+Their results, the final phase summary and push handshake remain pending
 at this task boundary. Complete hosted
 PostgreSQL/S3 behavior and cleanup tests remain for phase 5. No scientific
 production promotion or general host security clearance is claimed.
