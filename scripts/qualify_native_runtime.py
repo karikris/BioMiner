@@ -45,6 +45,13 @@ def executable_ref(path):
     return {"path": str(path), "sha256": digest}
 
 
+def source_bytes(path):
+    """Read hash-bound source without interpreting expressions as output data."""
+    path = Path(path)
+    gate.require(path.is_file(), "qualification source is missing")
+    return path.read_bytes()
+
+
 def validate_context(context):
     repo = Path(context["repo"]).resolve()
     commit = context["tested_commit"]
@@ -65,10 +72,10 @@ def validate_context(context):
             capture_output=True, timeout=60,
         )
         gate.require(committed.returncode == 0 and gate.digest(committed.stdout) == expected, "committed qualification source mismatch")
-        gate.require(gate.digest(gate.read_bytes(cwd / name)) == expected, "execution qualification source mismatch")
+        gate.require(gate.digest(source_bytes(cwd / name)) == expected, "execution qualification source mismatch")
     for name in ("qualify_native_runtime.py", "check_upgrade_phase.py"):
         gate.require(
-            gate.digest(gate.read_bytes(Path(__file__).with_name(name))) == sources[f"scripts/{name}"],
+            gate.digest(source_bytes(Path(__file__).with_name(name))) == sources[f"scripts/{name}"],
             "loaded qualification code differs from tested source",
         )
     return cwd

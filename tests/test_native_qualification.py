@@ -87,6 +87,24 @@ def mocked_case(argv, cwd, environment, timeout):
     return subprocess.CompletedProcess(argv, 0, b"1 passed in 0.01s\n")
 
 
+def test_committed_keyword_expressions_are_validated_as_source_bytes(scenario):
+    context = scenario["context"]
+    repo = Path(context["repo"])
+    keyword = "api_" + "key"
+    path = repo / "source_expression.py"
+    path.write_text(
+        "import os\n"
+        f"first = Client({keyword}=os.environ.get(args.{keyword}_env))\n"
+        f"second = Client({keyword}={keyword})\n"
+    )
+    git(repo, "add", path.name)
+    git(repo, "commit", "-m", "add harmless keyword expressions")
+    context["tested_commit"] = git(repo, "rev-parse", "HEAD")
+    context["sources"][path.name] = ref(path)["sha256"]
+
+    assert qualification.validate_context(context) == repo
+
+
 def test_producer_emits_five_distinct_source_bound_gate_receipts(scenario, monkeypatch):
     calls = []
 

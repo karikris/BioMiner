@@ -137,3 +137,65 @@ Changing dependency configuration does not activate a target runtime. The
 previous development receipt no longer verifies against the updated main
 configuration; its environment remains untouched. The frozen phase-2 fallback
 uses its own preserved configuration and remains independent of this change.
+
+Task 3.3 commit: `1d2b176a348dcfb528af100e2bd45c662e07390d`.
+
+## First committed-source runtime pair
+
+The external builder completed 29 commands successfully in 180.435 seconds.
+Both fresh isolated generations and separate development environments passed
+their runtime verification. The two application wheels contain 331 identical
+application members. Wheel comparison permits only the Polars requirement in
+package metadata and the resulting `RECORD` entries to differ.
+
+Evidence lives under `phase3/pair-1/` in the external evidence root.
+The `built-pair.json` SHA-256 is
+`5a19fd3bffdfad8bad7f4eb99ff1a692cd64c165c28cfad7642461a24e444acf`.
+The runtimes remain unactivated. This verifies isolated test runtimes; the
+profile and development metadata do not claim production promotion.
+
+| Pair member | Profile SHA-256 | Development receipt SHA-256 |
+|---|---|---|
+| Polars 1.44.2 / custom Arrow 25 | `aec002589809ac6778407e96c1922900e8fccfc5d87b9f7a405621aec6961df2` | `cd4e39b8abdd49fb9f2ce3ac8bb20114974d5aa8465cefeb067c3fab2675b04e` |
+| Polars 2.0.0 / custom Arrow 25 | `f131fcff442daa75f91b35380198fd7977d692f4e4b707edc40cf07675e8b06d` | `710a047e1b98ff89d9a7a0db97ff8704985d51a8fb4419f1ba409d521a65d33f` |
+
+This first pair is preserved as historical build evidence. The source preflight
+below superseded it for phase qualification; no phase checks ran against it.
+
+The pair's scoped security audit checked all 47 native wheel members in each
+of four generation/development environments, plus the 101 declared native files
+per environment. Actual imports retain Python 3.14.7, OpenSSL 3.5.9, AnyIO 4.15.1,
+libxml2 2.15.4, libxslt 1.1.45 and libiconv 1.19; pip is absent. The patched zlib
+claim rests on matching compiled bytes and source/object provenance, not its
+version string. Only the two Polars distributions differ between pair members.
+
+`phase3/security-pair-1/security-final-v2.json`, SHA-256
+`8597555ee21dcb9fe5d81c151e692c1f86b1c9f59cefb5169315963bed250e19`,
+preserves all nine finding IDs/scopes and the separate lxml attestation gap.
+Its predecessor-aware security validation passed. Native-SBOM limits,
+unassessed package metadata and the zlib vendor-catalog discrepancy remain
+explicit; this does not repeat the earlier process inventory or qualify live
+services.
+
+## Task 3.3 correction: distinguish source from output
+
+Before phase execution, the full source-context preflight rejected ordinary
+API-key variable expressions in four production files. The output credential
+regex was being applied to code bytes that were only read for hash validation.
+The failure receipt is `phase3/source-validation-preflight-failure.json`,
+SHA-256 `d616292e7c79cc9d2d8f4eb31c3ac0b0390adcd31c373c28928f845860a49b3b`.
+
+The qualifier now reads source bytes for exact committed/execution/helper hash
+comparison without interpreting expressions as output. File existence, safe
+paths, commit identity and all hash checks remain enforced. Credential filtering
+for actual logs, manifests and reports is unchanged.
+
+A committed-source regression failed before the correction and passed after it;
+the existing secret-output rejection still passes. The qualification and phase
+gate suites passed **96 tests in 9.12 seconds** in the retained reviewed run.
+Its receipt SHA-256 is
+`32f44e03eccd951035d2c546f9cc07676242913adfd21cc58d5765623851bae4`.
+A corrective task-3.3 commit
+preserves the original history rather than amending it. The phase must build
+and qualify a fresh pair bound to that corrected commit; the first pair and
+unexecuted gate preparation remain preserved.
