@@ -34,6 +34,36 @@ PostgreSQL authentication now passes with certificate verification through the
 configured project pooler; the complete hosted PostgreSQL/S3 qualification is
 still unrun.
 
+Newly built runtimes use `biominer.polars_runtime` before importing the requested
+Python workload. Polars 2 qualification is still in progress; this does not
+retrofit spill behavior into the frozen Polars 1 fallback. The supervisor
+preserves explicit job budgets. Otherwise it selects four threads, a 1 GiB
+engine memory budget and a 4 GiB spill budget, rounded down to Polars' decimal
+MB units (1073 and 4294 MB). These are per-process engine accounting limits,
+not process RSS or aggregate worker limits.
+
+`POLARS_OOC_SPILL_DIR` names a requested parent directory. Each invocation uses
+its own private child and removes it only after its worker and descendants stop.
+An explicit memory fraction alone does not gain an additional default absolute
+cap. Invalid settings fail before a worker starts. Started/finished receipts
+retain applied budgets, exit and cleanup outcomes without recording raw command
+arguments, credentials or worker output.
+
+For explicit use, invoke the permanent environment interpreter:
+
+```bash
+/absolute/permanent/environment/bin/python -I -B -m biominer.polars_runtime \
+  --scratch-parent /var/tmp --report-dir /absolute/new/report-directory \
+  -- -m biominer.cli --help
+```
+
+The current installed console script has not yet moved to the new bootstrap;
+that requires the next qualified environment. Direct Python scripts and library
+imports require this wrapper. The supervisor requires Linux, a single Python
+thread and no existing child processes. It cannot clean scratch after its own
+SIGKILL or host failure; retained started receipts identify those interrupted
+runs for ownership-checked recovery.
+
 The 20 October dependency renewal retains the original profile and generation
 as historical evidence. Their repository configuration and script references
 are mutable: changing those files invalidates their verification. The host has

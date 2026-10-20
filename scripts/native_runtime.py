@@ -690,7 +690,7 @@ def execute(profile: str | Path, generation: str | Path, args: list[str]) -> Non
     if not args:
         raise ProfileError('exec requires Python arguments, for example -m biominer.cli')
     python = str(Path(generation).resolve() / 'env/bin/python')
-    os.execve(python, [python, '-I', '-B', *args], environment)
+    os.execve(python, [python, '-I', '-B', '-m', 'biominer.polars_runtime', '--', *args], environment)
 
 
 def main(argv: list[str] | None = None) -> int:

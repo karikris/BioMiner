@@ -44,7 +44,72 @@ Receipts are retained beneath
 | Polars 2 test receipt | `a775d1d55c5e99626a67259e7e494a3dd8db90cf393683a091b5f9ddf7523d75` |
 | Six-file source hash inventory | `0a2eeb17efc6204d67fc2c060fea4b33469564c031ba0f6f357357360b912fed` |
 
-These are focused working-tree checks. The Polars 2 environment is exploratory,
-not admitted for production. Task 3.2 resource/schema checks, task 3.3 locked
-runtime qualification, clean-snapshot full regression and the phase push
-handshake remain pending.
+Task 3.1 commit: `18bc040d4dcabfbfc26b3c575cb6380bed86460c`.
+
+## Task 3.2: membership, artifact contracts and resource controls
+
+Task starts at the task-3.1 commit above. Shard merging now explicitly treats
+successful photo IDs as a collection with `Series.implode()`. Public tests
+preserve sorted, disjoint success/failure IDs and terminal operational failures.
+They exposed the previous deprecation warning before the repair.
+
+Storage regressions preserve nullable lists, duplicate IDs, source order,
+UTC timestamps, missing-column null insertion and explicit empty schemas.
+Strict cast failures retain the previous artifact byte-for-byte; interrupted
+batch ingestion publishes no partial artifact. The 56 storage/shard checks
+passed on both Polars versions (1.17/1.27 seconds). Another 81 existing workload,
+enrichment and translation checks passed on both (7.84/7.89 seconds).
+
+The source audit reviewed lazy collection ordering and the full upstream
+migration-guide headings/removals. Relevant production paths already sort
+species/context/provenance outputs explicitly or use ordered streaming batches.
+Timestamp parsing uses `str.to_datetime`, not removed temporal casts.
+An AST audit of 329 committed production Python files found no direct Polars
+CSV, SQLContext, Enum, cut/qcut or entropy calls; a second bounded scan found
+none of the inspected removed method/parameter names. Dynamic lookup and
+assignment aliases are outside that absence claim.
+
+An all-terminal-failure shard run already produces a zero-column result frame
+and rejects sorting under both Polars majors. The regression preserves its
+fail-closed behavior and verifies absence of final merged artifacts. This
+pre-existing limitation is not successful all-failure handling or a schema fix.
+
+The new standard-library supervisor establishes budgets before a fresh Python
+worker imports Polars. Defaults are four threads, 1073 decimal MB of engine
+memory and 4294 decimal MB of spill, rounded down from the approved GiB limits.
+Explicit positive budgets and thread counts are retained; an explicit memory
+fraction alone does not receive an extra default absolute cap. Each run owns a
+private spill directory. Linux child supervision includes detached descendants,
+and cleanup precedes a finished receipt. Timeouts, signals, worker failures,
+changed scratch ownership and receipt/cleanup failures remain visible.
+
+The supervisor/native-launcher tests passed **111 tests in 7.05 seconds**.
+Independent specification and quality review found an initial-receipt failure
+could leave scratch behind; a regression reproduced it and the correction
+was independently rechecked. Both the supervisor and compatibility subset
+are now approved by automated review, without a human-review claim.
+The coordinator's combined run of all eight focused modules then passed
+**248 tests in 12.85 seconds**. Its receipt SHA-256 is
+`31615417514d26748b74973d5c1a6d23b25095a15b9649b95568a5785c2c8965`.
+
+Exploratory real Polars 2 probes used a 200,000-row streaming sort. With an
+explicit 4 MB memory/64 MB disk budget, IPC spill files were observed and
+the query succeeded. A 16 MB disk budget created files then rejected the query
+with the expected budget error; both runs removed their private scratch.
+These probes establish local behavior, not RSS limits or final admission.
+
+The root compatibility report is
+`phase3/task3.2-root/report.json` under the external evidence root, SHA-256
+`6ea6ab293717fa318d0167c7df39c76d60c9f87dcdcb36251fc3a9fd5756bcc9`.
+Source-audit SHA-256 values are
+`a354a2eb30e61873736d6b34877e98f4f5f1963e5a4944ff9b7f3834e41d4272`
+and `1ee124a01ae551a4e0ed8e5493f8b40f1295e5de43026173a4b6c8de16ca11e3`.
+Supervisor probes and receipts are retained under `phase3/task3.2/`.
+
+## Remaining phase work
+
+These are focused working-tree and exploratory checks. Task 3.3 must install
+the console bootstrap, lock Polars 2, build distinct same-source Polars 1/2
+profiles and run admitted resource/paired-artifact checks plus clean-snapshot
+full regression. The phase push handshake remains pending. No existing
+runtime generation or scientific output was replaced in these two tasks.

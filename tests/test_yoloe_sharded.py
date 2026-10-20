@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from biominer.detection.detector_base import DecodedImage, DetectionCandidate
 from biominer.detection.yoloe26_detector import yoloe26_prompt_set_fingerprint
@@ -182,3 +183,63 @@ def test_sharded_run_restarts_a_failed_sidecar_without_publishing_negatives(
     assert all(model.closed for model in models)
     assert result.report["counts"]["classified"] == 3
     assert result.report["counts"]["terminal_operational_failures"] == 0
+
+
+@pytest.mark.parametrize("successful_ids", [{"1"}, {"1", "3"}])
+def test_sharded_terminal_failures_retain_sorted_disjoint_source_ids(
+    tmp_path: Path, monkeypatch, recwarn, successful_ids: set[str],
+) -> None:
+    source = tmp_path / "source.sqlite"
+    _source_db(source, 4)
+    monkeypatch.setattr(yoloe_sharded, "YoloE26SidecarObjectDetector", _FakeSidecar)
+
+    def download(row, config):
+        if str(row["flickr_photo_id"]) not in successful_ids:
+            raise RuntimeError("synthetic unavailable media")
+        return DecodedImage(1, 1, "RGB", b"\0\0\0")
+
+    monkeypatch.setattr(yoloe_pilot, "_download_decode", download)
+    config = ShardedYoloeConfig(
+        state_db=source,
+        output_dir=tmp_path / "output",
+        reports_dir=tmp_path / "reports",
+        expected_images=4,
+        shard_count=2,
+        checkpoint="fake.pt",
+        max_attempts=1,
+    )
+
+    result = run_sharded_yoloe(config)
+
+    classified = pl.read_parquet(result.results_path)
+    failures = pl.read_parquet(result.failures_path)
+    assert classified["flickr_photo_id"].to_list() == sorted(successful_ids)
+    assert failures["flickr_photo_id"].to_list() == sorted({"0", "1", "2", "3"} - successful_ids)
+    assert failures["attempts"].to_list() == [1] * (4 - len(successful_ids))
+    assert result.report["counts"]["terminal_operational_failures"] == 4 - len(successful_ids)
+    assert not [warning for warning in recwarn if issubclass(warning.category, DeprecationWarning)]
+
+
+def test_sharded_zero_result_schema_failure_does_not_publish_merged_outputs(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    # Existing limitation in both Polars majors: an all-failure pilot has no
+    # result columns. Keep this fail-closed until its schema is separately fixed.
+    source = tmp_path / "source.sqlite"
+    _source_db(source, 2)
+    monkeypatch.setattr(yoloe_sharded, "YoloE26SidecarObjectDetector", _FakeSidecar)
+
+    def unavailable(row, config):
+        raise RuntimeError("synthetic unavailable media")
+
+    monkeypatch.setattr(yoloe_pilot, "_download_decode", unavailable)
+    config = ShardedYoloeConfig(
+        state_db=source, output_dir=tmp_path / "output", reports_dir=tmp_path / "reports",
+        expected_images=2, shard_count=1, checkpoint="fake.pt", max_attempts=1,
+    )
+
+    with pytest.raises(pl.exceptions.ColumnNotFoundError, match="flickr_photo_id"):
+        run_sharded_yoloe(config)
+
+    assert not (config.output_dir / "image_level_routes.parquet").exists()
+    assert not (config.output_dir / "failures.parquet").exists()

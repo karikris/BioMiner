@@ -420,7 +420,7 @@ def _merge_shard_outputs(
     results = pl.concat(result_frames, how="diagonal_relaxed").sort("flickr_photo_id")
     failures = pl.concat(failure_frames, how="diagonal_relaxed")
     if not failures.is_empty():
-        failures = failures.filter(~pl.col("flickr_photo_id").is_in(results["flickr_photo_id"])).sort(
+        failures = failures.filter(~pl.col("flickr_photo_id").is_in(results["flickr_photo_id"].implode())).sort(
             "flickr_photo_id"
         )
     if results["flickr_photo_id"].n_unique() != results.height:

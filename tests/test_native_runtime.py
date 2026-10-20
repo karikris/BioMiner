@@ -12,6 +12,22 @@ import pytest
 from scripts import native_runtime as runtime
 
 
+def test_execute_verifies_then_uses_the_installed_policy_supervisor(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(runtime, "verify", lambda *args: events.append("verified"))
+    monkeypatch.setattr(runtime, "launch_environment", lambda: {"POLARS_MAX_THREADS": "2"})
+    def execve(path, argv, env):
+        events.append((path, argv, env))
+    monkeypatch.setattr(runtime.os, "execve", execve)
+    generation = tmp_path / "generation"
+    runtime.execute(tmp_path / "profile", generation, ["-m", "biominer.cli", "--help"])
+    python = str(generation / "env/bin/python")
+    assert events == ["verified", (
+        python, [python, "-I", "-B", "-m", "biominer.polars_runtime", "--",
+                 "-m", "biominer.cli", "--help"], {"POLARS_MAX_THREADS": "2"},
+    )]
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
