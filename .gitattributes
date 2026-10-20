@@ -1,0 +1,2 @@
+# Preserve upstream patch context lines and the reviewed exact-byte digest.
+scripts/native_patches/arrow25-a769c291.patch whitespace=-blank-at-eol

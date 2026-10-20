@@ -25,6 +25,15 @@ def _context():
     context = json.loads(Path(path).read_bytes())
     for key in ("snapshot_manifest", "runtime_profile", "launcher", "approved_python", "generation_receipt"):
         _checked(context[key])
+    manifest = json.loads(_checked(context["snapshot_manifest"]))
+    admission_name = "scripts/native_runtime.py"
+    admission_hash = hashlib.sha256(
+        Path(__file__).resolve().parents[1].joinpath("native_runtime.py").read_bytes()
+    ).hexdigest()
+    assert manifest["files"].get(admission_name) == admission_hash, (
+        "snapshot admission policy differs from tested source"
+    )
+    _checked({"path": str(Path(context["snapshot"]) / admission_name), "sha256": admission_hash})
     return context
 
 
@@ -164,6 +173,90 @@ with (work / 'checkpoint-2.json').open('x') as target:
 print(json.dumps(result))
 """
 
+ARROW_BOOLEAN_ALLOCATION = """
+import hashlib, json
+import pyarrow as pa
+import pyarrow.compute as pc
+
+observations = []
+
+def expected_fill(values, forward):
+    result = list(values)
+    indices = range(len(result)) if forward else range(len(result) - 1, -1, -1)
+    last = None
+    for index in indices:
+        if result[index] is None:
+            result[index] = last
+        else:
+            last = result[index]
+    return result
+
+def observe(name, result, expected, chunk_lengths):
+    assert isinstance(result, pa.ChunkedArray)
+    result.validate(full=True)
+    assert result.to_pylist() == expected, name
+    assert [len(chunk) for chunk in result.chunks] == chunk_lengths, name
+    buffers = []
+    for chunk in result.chunks:
+        buffer = chunk.buffers()[1]
+        minimum = ((chunk.offset + len(chunk)) * result.type.bit_width + 7) // 8
+        if len(chunk):
+            assert buffer is not None and buffer.size >= minimum, (name, minimum)
+        buffers.append(None if buffer is None else buffer.size)
+    observations.append({
+        'case': name, 'type': str(result.type), 'length': len(result),
+        'chunk_lengths': chunk_lengths, 'null_count': result.null_count,
+        'data_buffer_bytes': buffers,
+        'values_sha256': hashlib.sha256(json.dumps(expected).encode()).hexdigest(),
+    })
+
+def check_fills(name, values):
+    original = values.to_pylist()
+    lengths = [len(chunk) for chunk in values.chunks]
+    observe(name + '.forward', pc.fill_null_forward(values),
+            expected_fill(original, True), lengths)
+    observe(name + '.backward', pc.fill_null_backward(values),
+            expected_fill(original, False), lengths)
+    assert values.to_pylist() == original
+
+def check_replace(name, values, mask, replacement):
+    original = values.to_pylist()
+    flags = mask.to_pylist() if isinstance(mask, pa.Array) else [mask.as_py()] * len(values)
+    expected = [
+        None if flag is None else replacement.as_py() if flag else value
+        for value, flag in zip(original, flags, strict=True)
+    ]
+    observe(name + '.replace', pc.replace_with_mask(values, mask, replacement),
+            expected, [len(chunk) for chunk in values.chunks if len(chunk)])
+    assert values.to_pylist() == original
+
+# Bounded regressions for all three upstream GH-45086 allocation sites.
+check_fills('large_boolean', pa.chunked_array(
+    [[None] * 4096, [True], [None] * 4096], type=pa.bool_()))
+check_replace('large_boolean', pa.chunked_array(
+    [[False] * 4096] * 3, type=pa.bool_()), pa.scalar(True), pa.scalar(True))
+
+sliced = pa.chunked_array([
+    pa.array([True, None, False, None, True, False, None, True, None, False, True]).slice(1, 9),
+    pa.array([False, None, True, None]).slice(1, 3),
+], type=pa.bool_())
+check_fills('sliced_boolean', sliced)
+check_replace('sliced_boolean', sliced, pa.array([True, False, None] * 4), pa.scalar(True))
+
+empty = pa.chunked_array([[], []], type=pa.bool_())
+check_fills('empty_boolean', empty)
+check_replace('empty_boolean', empty, pa.scalar(True), pa.scalar(True))
+nulls = pa.chunked_array([[None] * 9, []], type=pa.bool_())
+check_fills('null_boolean', nulls)
+check_replace('null_boolean', nulls, pa.scalar(True), pa.scalar(False))
+
+numeric = pa.chunked_array([[None, 3, None], [], [None, -2, None]], type=pa.int16())
+check_fills('numeric_control', numeric)
+check_replace('numeric_control', numeric, pa.scalar(True), pa.scalar(9, type=pa.int16()))
+assert len(observations) == 15
+print(json.dumps({'pyarrow': pa.__version__, 'cases': observations}, sort_keys=True))
+"""
+
 
 def test_features():
     context = _context()
@@ -187,7 +280,13 @@ def test_features():
     assert Path(identity["prefix"]).absolute() == generation / "env"
     profile = json.loads(_checked(context["runtime_profile"]))
     assert identity["versions"] == {item["name"]: item["version"] for item in profile["artifacts"]}
+    allocation = _run(context, [
+        "exec", "--generation", context["generation"], "--", "-c", ARROW_BOOLEAN_ALLOCATION,
+    ])
+    assert allocation["pyarrow"] == identity["versions"]["pyarrow"]
+    assert len(allocation["cases"]) == 15
     _record(context, "features", {
         "capability": capability, "compiled_policy": policy,
         "controlled_stop_exit": 75, "checkpoint": interrupted, "resume": resumed,
+        "arrow_boolean_allocation": allocation,
     })

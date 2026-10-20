@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from test_native_runtime import wheel as native_wheel
+from test_native_runtime import arrow_fixture_pins, wheel as native_wheel
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "freeze_native_profile.py"
 
@@ -57,6 +57,13 @@ def candidate(tmp_path):
         lambda match: match[1] + repr(patch["sha256"]),
         source,
     )
+    # Frozen subprocesses need the same explicitly synthetic input pins as
+    # their tiny wheel fixtures. Real source/patch/recipe bytes stay unmodified.
+    fixture_assignments = '\n'.join(
+        f'{name} = {value!r}' for name, value in arrow_fixture_pins().items()
+    )
+    source = source.replace('\nRUNTIME_CHECKS =',
+                            '\n' + fixture_assignments + '\nRUNTIME_CHECKS =', 1)
     launcher = blob(repo / "scripts" / "native_runtime.py", source)
     policy = types.ModuleType("fixture_native_policy")
     policy.__file__ = launcher["path"]

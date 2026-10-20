@@ -27,7 +27,6 @@ SUPERVISOR_MODULE = "src/biominer/polars_runtime.py"
 SUPERVISOR_SHA256 = "461bc3c4c412679090291fa8968781307c9c685c7b2576e9fffbfed301f3b171"
 VERSIONS = {
     "polars": "2.0.0", "polars-runtime-32": "2.0.0",
-    "pyarrow": "25.0.1+biominer.f918dfd84c8c",
 }
 
 
@@ -119,7 +118,7 @@ def _verify(context, output, cwd, name):
     return development, checkout
 
 
-def _worker(output):
+def _worker(output, profile_reference):
     """Run only under the installed supervisor; observe actual synthetic spills."""
     import importlib.metadata
     import biominer
@@ -127,9 +126,11 @@ def _worker(output):
     import polars as pl
     import pyarrow
 
-    versions = {name: importlib.metadata.version(name) for name in VERSIONS}
-    assert versions == VERSIONS
-    assert pl.__version__ == VERSIONS["polars"] and pyarrow.__version__ == VERSIONS["pyarrow"]
+    arrow_version, arrow_wheel_sha256 = native.arrow25_identity(_checked(profile_reference))
+    expected_versions = {**VERSIONS, "pyarrow": arrow_version}
+    versions = {name: importlib.metadata.version(name) for name in expected_versions}
+    assert versions == expected_versions
+    assert pl.__version__ == VERSIONS["polars"] and pyarrow.__version__ == arrow_version
     assert pl.thread_pool_size() == 4
     assert _reference(supervisor.__file__)["sha256"] == SUPERVISOR_SHA256
     root = Path(os.environ["POLARS_OOC_SPILL_DIR"])
@@ -162,6 +163,7 @@ def _worker(output):
     result = {
         "schema": "biominer-polars-resource-observation/v1",
         "versions": versions, "threads": pl.thread_pool_size(),
+        "arrow_wheel": {"version": arrow_version, "sha256": arrow_wheel_sha256},
         "python": sys.executable, "prefix": sys.prefix,
         "application": str(Path(biominer.__file__).resolve()),
         "supervisor": _reference(supervisor.__file__), "probe": _reference(__file__),
@@ -206,6 +208,8 @@ def test_polars_engine_spill_and_disk_exhaustion():
     output = native.gate.outside_git(context["output"], context["repo"])
     output.mkdir(mode=0o700)
     development, checkout = _verify(context, output, cwd, "before-verify")
+    arrow_version, arrow_wheel_sha256 = native.arrow25_identity(_checked(context["runtime"]["profile"]))
+    expected_versions = {**VERSIONS, "pyarrow": arrow_version}
     python = str(Path(development["root"]) / "env/bin/python")
     observations = {}
     scratch_paths = set()
@@ -221,11 +225,13 @@ def test_polars_engine_spill_and_disk_exhaustion():
             python, "-I", "-B", "-m", "biominer.polars_runtime",
             "--scratch-parent", str(output), "--report-dir", str(report_dir),
             "--timeout", "60", "--", str(cwd / CASE_MODULE), "--worker", str(observation),
+            json.dumps(context["runtime"]["profile"], sort_keys=True),
         ]
         _command(argv, output, label, cwd, environment, expected_exit)
         observed = json.loads(observation.read_bytes())
         finished = json.loads((report_dir / "finished.json").read_bytes())
-        assert observed["versions"] == VERSIONS and observed["threads"] == 4
+        assert observed["versions"] == expected_versions and observed["threads"] == 4
+        assert observed["arrow_wheel"] == {"version": arrow_version, "sha256": arrow_wheel_sha256}
         assert observed["python"] == python and observed["prefix"] == str(Path(development["root"]) / "env")
         assert Path(observed["application"]).is_relative_to(checkout / "src/biominer")
         assert observed["supervisor"] == {
@@ -279,5 +285,5 @@ def test_polars_engine_spill_and_disk_exhaustion():
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) == 3 and sys.argv[1] == "--worker", "explicit synthetic worker invocation required"
-    raise SystemExit(_worker(Path(sys.argv[2])))
+    assert len(sys.argv) == 4 and sys.argv[1] == "--worker", "explicit synthetic worker invocation required"
+    raise SystemExit(_worker(Path(sys.argv[2]), json.loads(sys.argv[3])))

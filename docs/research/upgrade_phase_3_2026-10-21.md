@@ -287,3 +287,87 @@ rejected.
 This is another additive task-3.3 corrective commit. The original attempts
 remain evidence; a fresh pair and complete phase gate must bind the corrected
 source before phase 3 can be pushed.
+
+The supervisor correction was committed as
+`81ac71e79e029ba79d8c441d52d38ea871d76a03`. Its fresh third pair completed all
+29 build commands in 179.315 seconds, and both 714-file context validations
+passed. `phase3/pair-3/built-pair.json` has SHA-256
+`4cebd06db5ce3cbff7d06e12f8ec89be2e894a8ba2585f4b34ca35759906c4fe`.
+All four installed console checks also passed; their receipt SHA-256 is
+`6ccdf4a584f82b50a9a7d46c5aef0962fb1ac6180c4587d0210f87bc86e6fae0`.
+No new phase gate ran against this pair.
+
+## Newly established Arrow 25 security blocker
+
+While reviewing Arrow 26's changes, primary upstream
+[PR 50843](https://github.com/apache/arrow/pull/50843) established a heap
+overwrite in three enabled compute kernels: chunked boolean forward fill,
+backward fill, and masked replacement. The exact Arrow 25 source used by the
+existing custom wheel contains all three faulty allocations. The upstream
+fix uses the existing fixed-width allocation helper, which handles bit-packed
+boolean data correctly.
+
+An independent review confirmed that the exact upstream patch applies to both
+the Arrow 25 implementation and its regression tests without unrelated Arrow 26
+changes. The installed Arrow 25 library remains affected even though the
+bounded BioMiner call-site audit found no direct use of these functions.
+No CVE/GHSA identifier is claimed from the primary issue/PR evidence.
+
+This invalidates the plan's assumption that the existing Arrow 25 fallback
+needs no further security repair. The plan now requires an exact backport,
+fresh native build and qualification, a safe replacement fallback, and a new
+paired Polars comparison before phase 3 can pass. The third pair and earlier
+receipts remain historical evidence. No gate was relaxed, no new phase push
+occurred, and the previously retained fallback is no longer described as
+currently safe for this defect.
+
+## Task 3.3 correction: require the Arrow 25 backport
+
+The builder now applies the exact Apache Arrow upstream patch
+`a769c291e01093b73d03a075179cf7a09bf92ad8` to the pinned Arrow 25 archive.
+Both changed files are verified before and after patching; the original license,
+authorship and notice remain. No unrelated Arrow 26 source is substituted.
+The captured recipe, patch application and resulting sources are retained in
+immutable build inputs. Their digest defines the wheel's local version.
+
+Admission requires that complete reviewed chain, including the exact recipe
+SHA-256 `dfb95a9f94962bfbc1b2b48d16cba5670f52dc6aa5f195d0f08c0dc76c828541`.
+Relocated evidence resolves through retained checked bytes without rewriting
+historical manifests. Missing, tampered or relabelled receipts fail closed.
+Resume also rejects changed source inventories, output symlinks and completed
+artifacts, preserving previous attempts. Outer compilation is bounded to four
+jobs and nested CMake/Make work is serial.
+
+Qualification now requires a snapshot containing the current admission helper
+before any runtime subprocess. Fifteen native observations are defined across
+the three affected kernels: large boolean chunks, sliced offsets and nullable
+masks, empty chunks, all-null chunks and numeric controls. They independently
+check values, buffer capacity, chunk behavior and unchanged inputs. These
+actual kernel checks have **not yet run**. The Polars comparison reads the
+exact Arrow version and wheel digest from verified profiles and requires both
+sides to use identical Arrow bytes.
+
+The final combined builder, admission, snapshot, assembly, qualification and
+phase-gate unit suites passed **287 tests in 21.45 seconds**, outer exit 0.
+Source hashes were captured before execution and remained unchanged afterward.
+The receipt is `phase3/arrow25-backport-combined/checks.json`, SHA-256
+`6c37a7507edaa0e9dcdbf26d54b1ac62cba2a3de9e37e5407d0caa45a4797b11`.
+The exact full-archive source preparation and strict resume also passed,
+without compiling or executing Arrow. Independent specification and quality
+reviews approved the final source changes.
+
+A fresh isolated build environment retains all 2,321 file hashes and twelve
+exact package pins. GitHits metadata, batched upgrade reviews and changelogs
+support the setuptools 84.2.0 and scikit-build-core 1.1.1 selections. The
+builder receipt is `phase3/arrow25-backport-builder/builder.json`, SHA-256
+`9c6d8d2485ba5c37a88228771bcc7a614bedefdf1fcf1fb5fe5a5c834f18dc9f`.
+Catalog/deprecation gaps remain explicit. This source commit does not close
+the Arrow security finding: compilation, actual native behavior, replacement
+fallback qualification, registered-entrypoint migration and the fresh paired
+phase gate are still required.
+
+The unchanged upstream patch contains four blank context lines prefixed with
+the unified-diff space marker. `.gitattributes` disables only end-of-line
+blank checks for that exact patch path so `git diff --check` accepts its
+required bytes; whitespace checks remain enabled for implementation files.
+The patch digest remains unchanged.

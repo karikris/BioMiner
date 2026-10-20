@@ -1,0 +1,197 @@
+From a769c291e01093b73d03a075179cf7a09bf92ad8 Mon Sep 17 00:00:00 2001
+From: Tony Roberts <tony@pyxll.com>
+Date: Tue, 1 Sep 2026 03:23:43 +0100
+Subject: [PATCH] =?UTF-8?q?GH-45086:=20[C++]=20Fix=20heap=20buffer=20overf?=
+ =?UTF-8?q?low=20in=20FillNullForward/Backward=20=E2=80=A6=20(#50843)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+### Rationale for this change
+
+Fixes issue #45086 by fixing a heap heap buffer overflow in
+FillNullForward/Backward on chunked boolean arrays.
+
+### What changes are included in this PR?
+
+FillNullForwardChunked and FillNullBackwardChunked sized each output
+chunk's data buffer as `type->byte_width() * chunk->length()`. For
+BooleanType, byte_width() returns 0 (bit_width() / 8, truncated by
+integer division), so the buffer was allocated with 0 bytes while the
+chunk's declared length was unchanged, and filling it wrote real bit
+data past the end of the allocation.
+
+~~Add DataType::bytes_required(num_elements), a virtual method alongside
+byte_width()/bit_width() that correctly rounds up for bit-packed types,
+and use it at both call sites instead of the byte_width()-based
+calculation. Add regression tests exercising fill-null-forward and
+fill-null-backward on a chunked boolean array with a chunk large enough
+to reproduce the crash.~~
+
+This change uses `arrow::util::internal::PreallocateFixedWidthArrayData`
+to allocate the correct sized buffer.
+
+### Are these changes tested?
+
+Yes, and new unit tests have been added.
+
+### Are there any user-facing changes?
+
+No ~~breaking changes. A new method,
+DataType::bytes_required(num_elements), was added.~~
+
+### AI Disclosure
+
+Claude was used to help fix this issue, but all the code has been
+reviewed and tested locally (on Windows only, built using gcc).
+* GitHub Issue: #45086
+
+---------
+
+Co-authored-by: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ .../arrow/compute/kernels/vector_replace.cc   | 24 ++++----
+ .../compute/kernels/vector_replace_test.cc    | 60 +++++++++++++++++++
+ 2 files changed, 71 insertions(+), 13 deletions(-)
+
+diff --git a/cpp/src/arrow/compute/kernels/vector_replace.cc b/cpp/src/arrow/compute/kernels/vector_replace.cc
+index 6a9abfc03960..313fbd53c8b0 100644
+--- a/cpp/src/arrow/compute/kernels/vector_replace.cc
++++ b/cpp/src/arrow/compute/kernels/vector_replace.cc
+@@ -22,6 +22,7 @@
+ #include "arrow/compute/kernels/util_internal.h"
+ #include "arrow/compute/registry_internal.h"
+ #include "arrow/util/bitmap_ops.h"
++#include "arrow/util/fixed_width_internal.h"
+ #include "arrow/util/logging_internal.h"
+ 
+ namespace arrow {
+@@ -422,12 +423,10 @@ struct ReplaceMaskChunked {
+       ExecResult chunk_result;
+       if (is_fixed_width(out->type()->id())) {
+         auto chunk_out = std::make_shared<ArrayData>(chunk->type(), chunk->length());
+-        chunk_out->buffers.resize(2);
+-        ARROW_ASSIGN_OR_RAISE(chunk_out->buffers[0],
+-                              ctx->AllocateBitmap(chunk->length()));
+-        const int64_t slot_width = out->type()->byte_width();
+-        ARROW_ASSIGN_OR_RAISE(chunk_out->buffers[1],
+-                              ctx->Allocate(slot_width * chunk->length()));
++        ArrayData* chunk_out_arr = chunk_out.get();
++        RETURN_NOT_OK(util::internal::PreallocateFixedWidthArrayData(
++            ctx, chunk->length(), /*source=*/*chunk->data(),
++            /*allocate_validity=*/true, chunk_out_arr));
+         chunk_result.value = chunk_out;
+       }
+       if (batch[1].is_scalar()) {
+@@ -696,10 +695,9 @@ struct FillNullForwardChunked {
+       for (const std::shared_ptr<Array>& chunk : values.chunks()) {
+         if (is_fixed_width(out->type()->id())) {
+           ArrayData* output = out->mutable_array();
+-          ARROW_ASSIGN_OR_RAISE(output->buffers[0], ctx->AllocateBitmap(chunk->length()));
+-          ARROW_ASSIGN_OR_RAISE(
+-              output->buffers[1],
+-              ctx->Allocate(out->type()->byte_width() * chunk->length()));
++          RETURN_NOT_OK(util::internal::PreallocateFixedWidthArrayData(
++              ctx, chunk->length(), /*source=*/*chunk->data(),
++              /*allocate_validity=*/true, output));
+         }
+         ExecResult chunk_result;
+         chunk_result.value = out->array();
+@@ -780,9 +778,9 @@ struct FillNullBackwardChunked {
+         const auto& chunk = chunks[i];
+         if (is_fixed_width(out->type()->id())) {
+           ArrayData* output = out->mutable_array();
+-          auto data_bytes = output->type->byte_width() * chunk->length();
+-          ARROW_ASSIGN_OR_RAISE(output->buffers[0], ctx->AllocateBitmap(chunk->length()));
+-          ARROW_ASSIGN_OR_RAISE(output->buffers[1], ctx->Allocate(data_bytes));
++          RETURN_NOT_OK(util::internal::PreallocateFixedWidthArrayData(
++              ctx, chunk->length(), /*source=*/*chunk->data(),
++              /*allocate_validity=*/true, output));
+         }
+         ExecResult chunk_result;
+         chunk_result.value = out->array();
+diff --git a/cpp/src/arrow/compute/kernels/vector_replace_test.cc b/cpp/src/arrow/compute/kernels/vector_replace_test.cc
+index 9dc8e70ab6a2..dc63bae39a54 100644
+--- a/cpp/src/arrow/compute/kernels/vector_replace_test.cc
++++ b/cpp/src/arrow/compute/kernels/vector_replace_test.cc
+@@ -545,6 +545,24 @@ TEST_F(TestReplaceBoolean, ReplaceWithMask) {
+   }
+ }
+ 
++// Regression test: ReplaceMaskChunked (the ChunkedArray path of replace_with_mask)
++// sized each output chunk's data buffer via byte_width(), which is 0 for boolean
++// (bit-packed), the same GH-45086 buffer-overflow pattern fixed elsewhere in this
++// file. A chunk needs to be large enough to write past the buffer's small built-in
++// padding to reliably reproduce the crash.
++TEST_F(TestReplaceBoolean, ReplaceWithMaskChunkedArray) {
++  constexpr int64_t kChunkLength = 4096;
++  auto all_false = ConstantArrayGenerator::Boolean(kChunkLength, /*value=*/false);
++  auto all_true = ConstantArrayGenerator::Boolean(kChunkLength, /*value=*/true);
++  auto input = std::make_shared<ChunkedArray>(
++      ArrayVector{all_false, all_false, all_false}, boolean());
++  auto expected = std::make_shared<ChunkedArray>(
++      ArrayVector{all_true, all_true, all_true}, boolean());
++
++  this->Assert(ReplaceWithMask, Datum(input), this->mask_scalar(true),
++               this->scalar("true"), Datum(expected));
++}
++
+ TEST_F(TestReplaceNull, ReplaceWithMask) {
+   std::vector<ReplaceWithMaskCase> cases = {
+       {this->array("[]"), this->mask_scalar(false), this->array("[]"), this->array("[]")},
+@@ -1117,6 +1135,13 @@ class TestFillNullType : public TestReplaceKernel<NullType> {
+   std::shared_ptr<DataType> type() override { return default_type_instance<NullType>(); }
+ };
+ 
++class TestFillNullBoolean : public TestReplaceKernel<BooleanType> {
++ protected:
++  std::shared_ptr<DataType> type() override {
++    return TypeTraits<BooleanType>::type_singleton();
++  }
++};
++
+ TYPED_TEST_SUITE(TestFillNullNumeric, NumericBasedTypes);
+ TYPED_TEST_SUITE(TestFillNullDecimal, DecimalArrowTypes);
+ TYPED_TEST_SUITE(TestFillNullBinary, BaseBinaryArrowTypes);
+@@ -2092,6 +2117,41 @@ TYPED_TEST(TestFillNullBinary, FillBackwardChunkedArray) {
+                            R"(["qup"])", R"(["qup", "mnz"])"}));
+ }
+ 
++// Regression test for GH-45086: FillNullForwardChunked/FillNullBackwardChunked
++// size each output chunk's data buffer as `type->byte_width() * chunk->length()`.
++// For BooleanType, byte_width() returns 0 (it is bit-packed, not byte-addressable),
++// so the buffer was allocated with 0 bytes while the chunk's declared length stayed
++// the same, and filling the chunk wrote past the end of the (near-)empty buffer.
++// The corruption/crash only reliably manifests once a chunk is large enough to
++// write past the buffer's small built-in padding, hence the large pad length here.
++TEST_F(TestFillNullBoolean, FillNullForwardChunkedArray) {
++  constexpr int64_t kPadLength = 4096;
++  ASSERT_OK_AND_ASSIGN(auto null_pad, MakeArrayOfNull(boolean(), kPadLength));
++  auto all_true = ConstantArrayGenerator::Boolean(kPadLength, /*value=*/true);
++  auto single_true = ConstantArrayGenerator::Boolean(1, /*value=*/true);
++
++  auto input = std::make_shared<ChunkedArray>(
++      ArrayVector{null_pad, single_true, null_pad}, boolean());
++  auto expected = std::make_shared<ChunkedArray>(
++      ArrayVector{null_pad, single_true, all_true}, boolean());
++
++  this->AssertFillNullChunkedArray(FillNullForward, input, expected);
++}
++
++TEST_F(TestFillNullBoolean, FillNullBackwardChunkedArray) {
++  constexpr int64_t kPadLength = 4096;
++  ASSERT_OK_AND_ASSIGN(auto null_pad, MakeArrayOfNull(boolean(), kPadLength));
++  auto all_true = ConstantArrayGenerator::Boolean(kPadLength, /*value=*/true);
++  auto single_true = ConstantArrayGenerator::Boolean(1, /*value=*/true);
++
++  auto input = std::make_shared<ChunkedArray>(
++      ArrayVector{null_pad, single_true, null_pad}, boolean());
++  auto expected = std::make_shared<ChunkedArray>(
++      ArrayVector{all_true, single_true, null_pad}, boolean());
++
++  this->AssertFillNullChunkedArray(FillNullBackward, input, expected);
++}
++
+ TEST_F(TestFillNullType, TestFillOnNullType) {
+   this->AssertFillNullArray(FillNullForward, this->array(R"([null, null, null, null])"),
+                             this->array(R"([null, null, null, null])"));

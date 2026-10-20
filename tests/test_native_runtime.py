@@ -38,7 +38,63 @@ def blob(root, name, text='input'):
     return {'path': str(path), 'sha256': digest(path)}
 
 
+def arrow_fixture_pins():
+    """Tiny synthetic inputs; never substitute these pins in a real profile."""
+    return {
+        'ARROW_ARCHIVE_SHA256': hashlib.sha256(b'fixture Arrow archive').hexdigest(),
+        'ARROW_RECIPE_SHA256': hashlib.sha256(b'fixture Arrow recipe').hexdigest(),
+        'ARROW_SECURITY_PATCH_SHA256': hashlib.sha256(b'fixture Arrow patch').hexdigest(),
+        'ARROW_SECURITY_FILES': {
+            'cpp/src/arrow/compute/kernels/vector_replace.cc': {
+                'original_sha256': 'a' * 64,
+                'patched_sha256': hashlib.sha256(b'fixture patched kernel').hexdigest(),
+            },
+            'cpp/src/arrow/compute/kernels/vector_replace_test.cc': {
+                'original_sha256': 'b' * 64,
+                'patched_sha256': hashlib.sha256(b'fixture patched regression').hexdigest(),
+            },
+        },
+    }
+
+
+def arrow_build_fixture(root):
+    archive = blob(root, 'arrow-source.tar', 'fixture Arrow archive')
+    recipe = blob(root, 'build-recipe.py', 'fixture Arrow recipe')
+    patch = blob(root, 'arrow-security.patch', 'fixture Arrow patch')
+    files = arrow_fixture_pins()['ARROW_SECURITY_FILES']
+    sources = [blob(root, 'vector_replace.cc', 'fixture patched kernel'),
+               blob(root, 'vector_replace_test.cc', 'fixture patched regression')]
+    application = {
+        'schema_version': 1,
+        'source_revision': 'beccec0d0c451b7aa3e4530416ac431b3c035c69',
+        'patches': [{
+            'commit': 'a769c291e01093b73d03a075179cf7a09bf92ad8',
+            'patch': patch,
+            'files': [{'relative': name, **pins} for name, pins in files.items()],
+        }],
+    }
+    patch_application = blob(root, 'arrow-security-patches.json', json.dumps(application))
+    build = {
+        'schema_version': 1, 'arrow_commit': application['source_revision'],
+        'arrow_archive_sha256': archive['sha256'], 'source_archive': archive,
+        'recipe': recipe, 'security_patches': application,
+        'patch_application': patch_application, 'patched_sources': sources,
+    }
+    build_inputs = blob(root, 'build-inputs.json',
+                        json.dumps(build, sort_keys=True, separators=(',', ':')) + '\n')
+    version = '25.0.1+biominer.' + build_inputs['sha256'][:12]
+    return {
+        'source_revision': application['source_revision'],
+        'recipe': recipe, 'patch_application': patch_application, 'build_inputs': build_inputs,
+        'version': version, 'effective_versions': {'pyarrow': version, 'openssl': '3.6.5'},
+        'inputs': [archive, recipe, patch, patch_application, build_inputs, *sources],
+    }
+
+
 def wheel(root, name, version):
+    arrow = arrow_build_fixture(root) if name == 'pyarrow' else None
+    if arrow:
+        version = arrow['version']
     stem = name.replace('-', '_')
     path = root / f'{stem}-{version}-cp314-cp314-linux_x86_64.whl'
     with zipfile.ZipFile(path, 'w') as archive:
@@ -50,6 +106,11 @@ def wheel(root, name, version):
         overlay.mkdir()
         inputs.append(blob(overlay, 'pyproject.toml', (root / 'pyproject.toml').read_text()))
     receipt = blob(root, name + '.receipt.json', json.dumps({'wheel_sha256': digest(path), 'source_revision': 'a' * 40, 'toolchain': {'compiler': blob(root, name + '.compiler')}, 'inputs': inputs, 'inputs_sha256': hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), 'native_link_artifacts': [blob(root, name + '.link-map')], 'effective_versions': {'openssl': '3.6.5'}}))
+    if arrow:
+        value = json.loads(Path(receipt['path']).read_text()) | arrow
+        value['inputs_sha256'] = hashlib.sha256(json.dumps(
+            value['inputs'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        receipt = blob(root, name + '.receipt.json', json.dumps(value))
     if name == 'lxml':
         patch = blob(root, 'zlib-fix.patch', 'reviewed patch fixture')
         value = json.loads(Path(receipt['path']).read_text())
@@ -96,6 +157,8 @@ def wheel(root, name, version):
 def profile(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, 'LXML_ZLIB_PATCH_SHA256',
                         hashlib.sha256(b'reviewed patch fixture').hexdigest())
+    for name, value in arrow_fixture_pins().items():
+        monkeypatch.setattr(runtime, name, value, raising=False)
     doc = {
         'schema_version': 1,
         'platform': {'system': 'Linux', 'machine': 'x86_64'},
@@ -126,6 +189,128 @@ def test_valid_artifact_inventory_is_candidate_not_ready(profile):
     result = runtime.verify_artifacts(profile[0])
     assert result['status'] == 'candidate'
     assert result['ready'] is False
+
+
+def test_arrow25_receipt_requires_reviewed_security_patch(profile):
+    # The historical build has the expected version and OpenSSL but no
+    # evidence that the vulnerable chunked-boolean source was corrected.
+    artifact = profile[1]['artifacts'][1]
+    receipt = json.loads(Path(artifact['source_receipt']['path']).read_text())
+    receipt.pop('patch_application')
+    replace_arrow_receipt(profile, receipt)
+    with pytest.raises(runtime.ProfileError, match='Arrow|arrow'):
+        runtime.verify_artifacts(profile[0])
+
+
+def replace_arrow_receipt(profile, receipt):
+    artifact = profile[1]['artifacts'][1]
+    path = Path(artifact['source_receipt']['path'])
+    receipt['inputs_sha256'] = hashlib.sha256(json.dumps(
+        receipt['inputs'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    path.write_text(json.dumps(receipt))
+    artifact['source_receipt']['sha256'] = digest(path)
+    rewrite(profile)
+
+
+@pytest.mark.parametrize('damage', [
+    'source_revision', 'patch_commit', 'patch_digest', 'original_source',
+    'patched_source', 'missing_kernel', 'duplicate_kernel', 'patch_not_retained',
+    'source_not_retained', 'recipe_not_retained', 'unreviewed_recipe',
+    'build_inputs_not_retained', 'build_source_revision', 'build_archive',
+    'build_recipe', 'build_patch', 'build_sources', 'malformed_build_source',
+    'build_version', 'effective_version',
+])
+def test_arrow25_security_evidence_cannot_be_relabelled(profile, damage):
+    artifact = profile[1]['artifacts'][1]
+    receipt = json.loads(Path(artifact['source_receipt']['path']).read_text())
+    application_path = Path(receipt['patch_application']['path'])
+    application = json.loads(application_path.read_text())
+    build_path = Path(receipt['build_inputs']['path'])
+    build = json.loads(build_path.read_text())
+    patch = application['patches'][0]
+
+    if damage == 'source_revision':
+        receipt['source_revision'] = 'f' * 40
+    elif damage == 'patch_commit':
+        patch['commit'] = 'f' * 40
+    elif damage == 'patch_digest':
+        patch['patch'] = receipt['recipe']
+    elif damage in ('original_source', 'patched_source'):
+        patch['files'][0][damage.replace('_source', '_sha256')] = 'f' * 64
+    elif damage == 'missing_kernel':
+        patch['files'].pop(0)
+    elif damage == 'duplicate_kernel':
+        patch['files'].append(patch['files'][0])
+    elif damage.endswith('_not_retained'):
+        key = {'patch': patch['patch'], 'source': build['patched_sources'][0],
+               'recipe': receipt['recipe'], 'build_inputs': receipt['build_inputs']}[
+                   damage.removesuffix('_not_retained')]
+        receipt['inputs'] = [item for item in receipt['inputs']
+                             if item['sha256'] != key['sha256']]
+    elif damage == 'unreviewed_recipe':
+        receipt['recipe'] = patch['patch']
+    elif damage == 'build_source_revision':
+        build['arrow_commit'] = 'f' * 40
+    elif damage == 'build_archive':
+        build['source_archive'] = receipt['recipe']
+    elif damage == 'build_recipe':
+        build['recipe'] = patch['patch']
+    elif damage == 'build_patch':
+        build['security_patches'] = {}
+    elif damage == 'build_sources':
+        build['patched_sources'] = []
+    elif damage == 'malformed_build_source':
+        build['patched_sources'][0]['sha256'] = ['not-a-digest']
+    elif damage == 'build_version':
+        receipt['version'] = '25.0.1+biominer.' + 'f' * 12
+    elif damage == 'effective_version':
+        receipt['effective_versions']['pyarrow'] = '25.0.1'
+
+    # Refresh envelopes and wheel metadata so each rejection exercises the
+    # changed policy field, rather than an incidental stale envelope/version.
+    def refresh(descriptor, path, value):
+        old = descriptor['sha256']
+        path.write_text(json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n')
+        descriptor['sha256'] = digest(path)
+        for item in receipt['inputs']:
+            if item['sha256'] == old:
+                item['sha256'] = descriptor['sha256']
+    refresh(receipt['patch_application'], application_path, application)
+    build['patch_application'] = receipt['patch_application']
+    if damage != 'build_patch':
+        build['security_patches'] = application
+    refresh(receipt['build_inputs'], build_path, build)
+    version = '25.0.1+biominer.' + receipt['build_inputs']['sha256'][:12]
+    artifact['version'] = version
+    if damage != 'build_version':
+        receipt['version'] = version
+    if damage != 'effective_version':
+        receipt['effective_versions']['pyarrow'] = version
+    wheel_path = Path(artifact['path'])
+    with zipfile.ZipFile(wheel_path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    with zipfile.ZipFile(wheel_path, 'w') as archive:
+        for name, data in members.items():
+            if name.endswith('.dist-info/METADATA'):
+                data = f'Metadata-Version: 2.1\nName: pyarrow\nVersion: {version}\n'.encode()
+            archive.writestr(name, data)
+    artifact['sha256'] = receipt['wheel_sha256'] = digest(wheel_path)
+    replace_arrow_receipt(profile, receipt)
+    with pytest.raises(runtime.ProfileError, match='Arrow|arrow'):
+        runtime.verify_artifacts(profile[0])
+
+
+def test_arrow_security_materials_survive_input_preservation(profile, tmp_path):
+    from scripts import assemble_native_profile
+
+    artifact = profile[1]['artifacts'][1]
+    receipt = json.loads(Path(artifact['source_receipt']['path']).read_text())
+    preserved = assemble_native_profile.preserve_inputs(receipt, tmp_path / 'retained')
+    for item in receipt['inputs']:
+        Path(item['path']).unlink()
+    replace_arrow_receipt(profile, preserved)
+
+    assert runtime.verify_artifacts(profile[0])['ready'] is False
 
 
 def test_unpatched_registry_lxml_is_not_an_admitted_native_runtime(profile):

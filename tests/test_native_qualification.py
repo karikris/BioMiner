@@ -105,6 +105,47 @@ def test_committed_keyword_expressions_are_validated_as_source_bytes(scenario):
     assert qualification.validate_context(context) == repo
 
 
+def test_native_cases_reject_stale_admission_before_execution(scenario, monkeypatch):
+    from scripts.upgrade_checks import test_native_qualification_cases as cases
+
+    snapshot = scenario["snapshot"]
+    admission = snapshot / "scripts/native_runtime.py"
+    admission.write_text("# historical admission policy\n")
+    manifest_path = snapshot / "snapshot.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["files"]["scripts/native_runtime.py"] = ref(admission)["sha256"]
+    manifest_ref = write_json(manifest_path, manifest)
+    configuration = qualification.runtime_configuration(
+        snapshot, manifest_ref["sha256"], scenario["generation"],
+    )
+    config = snapshot.parent / "case-context.json"
+    write_json(config, configuration)
+    monkeypatch.setenv("BIOMINER_NATIVE_QUALIFICATION_CONTEXT", str(config))
+    monkeypatch.setattr(cases, "_run", lambda *args: pytest.fail("stale runtime must not execute"))
+
+    with pytest.raises(AssertionError, match="snapshot admission policy differs"):
+        cases.test_features()
+
+
+def test_arrow_pair_identity_comes_from_the_pinned_profile():
+    artifact = {"name": "pyarrow", "version": "25.0.1+biominer.012345abcdef", "sha256": "a" * 64}
+    assert qualification.arrow25_identity({"artifacts": [artifact]}) == (
+        artifact["version"], artifact["sha256"],
+    )
+
+
+@pytest.mark.parametrize("artifacts", [
+    [],
+    [{"name": "pyarrow", "version": "26.0.0+biominer.012345abcdef", "sha256": "a" * 64}],
+    [{"name": "pyarrow", "version": "25.0.1", "sha256": "a" * 64}],
+    [{"name": "pyarrow", "version": "25.0.1+biominer.012345abcdef", "sha256": "changed"}],
+    [{"name": "pyarrow", "version": "25.0.1+biominer.012345abcdef", "sha256": "a" * 64}] * 2,
+])
+def test_arrow_pair_identity_rejects_missing_ambiguous_or_wrong_builds(artifacts):
+    with pytest.raises(qualification.gate.GateError, match="custom Arrow 25"):
+        qualification.arrow25_identity({"artifacts": artifacts})
+
+
 def test_producer_emits_five_distinct_source_bound_gate_receipts(scenario, monkeypatch):
     calls = []
 

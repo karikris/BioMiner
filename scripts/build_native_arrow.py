@@ -24,12 +24,221 @@ import zipfile
 
 ARROW_COMMIT = "beccec0d0c451b7aa3e4530416ac431b3c035c69"
 ARROW_ARCHIVE_SHA256 = "a2cb8711cb74251ae8c7e9051f4a85b5034fd689867e202d774e417d532bdcf7"
+SECURITY_PATCH_COMMIT = "a769c291e01093b73d03a075179cf7a09bf92ad8"
+SECURITY_PATCH_SHA256 = "d51722f4ddb3934a0c846b691a60a730cb77d5a814d7077cab1c5d145c54aaa1"
+SECURITY_PATCH_PATH = Path(__file__).parent / "native_patches" / "arrow25-a769c291.patch"
+SECURITY_PATCH_FILES = {
+    "cpp/src/arrow/compute/kernels/vector_replace.cc": {
+        "original_sha256": "201ee04949830bdd07c1f2f87efda6201b39e6aad2d6a76d8dd868e77d6f156e",
+        "patched_sha256": "ddd28a89eb41b79e3dc5ecec4cc0e26eb7cec535516a05831b625c8b598afd13",
+    },
+    "cpp/src/arrow/compute/kernels/vector_replace_test.cc": {
+        "original_sha256": "24fdcfad027471f6833dc6efd1f07ba04a3adab7f1edb7aa485c9d2175a28e73",
+        "patched_sha256": "2f926df7f6fbce5f7c9c0a32575e4eda39f6c446fa25ff0fa083046b63bb4360",
+    },
+}
 FEATURES = ("ACERO", "AZURE", "COMPUTE", "CSV", "DATASET", "FILESYSTEM", "FLIGHT", "GCS", "HDFS", "JSON", "ORC", "PARQUET", "S3", "SUBSTRAIT")
+TOOLCHAIN_PATCHES = (
+    ("list(APPEND AWSSDK_PRODUCTS aws-lc s2n-tls)",
+     "list(APPEND AWSSDK_PRODUCTS s2n-tls)\n    add_library(crypto ALIAS OpenSSL::Crypto)"),
+    ("  fetchcontent_makeavailable(cares)",
+     "  fetchcontent_makeavailable(cares)\n  set_target_properties(c-ares PROPERTIES UNITY_BUILD OFF)"),
+    ("  fetchcontent_makeavailable(grpc)",
+     "  set(CMAKE_UNITY_BUILD OFF)\n  fetchcontent_makeavailable(grpc)"),
+    ('set(MAKE_BUILD_ARGS "-j${NPROC}")', 'set(MAKE_BUILD_ARGS "-j1")'),
+)
 
 
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def file_record(path: Path) -> dict:
+    return {"path": str(path.absolute()), "sha256": sha256(path)}
+
+
+def preserve_recipe(work: Path, source_bytes: bytes, *, resume: bool) -> dict:
+    """Capture the executing recipe once; a resume must use identical bytes."""
+    path = work / "build-recipe.py"
+    if resume:
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != source_bytes:
+            raise ValueError("recipe changed since build preparation")
+    else:
+        with path.open("xb") as stream:
+            stream.write(source_bytes)
+    return file_record(path)
+
+
+def preserve_build_inputs(work: Path, inputs: dict, *, resume: bool) -> tuple:
+    """The exact immutable manifest bytes determine the custom wheel suffix."""
+    path = work / "build-inputs.json"
+    data = (json.dumps(inputs, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if resume:
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != data:
+            raise ValueError("build inputs changed since preparation")
+    else:
+        with path.open("xb") as stream:
+            stream.write(data)
+    record = file_record(path)
+    return record, "25.0.1+biominer." + record["sha256"][:12]
+
+
+def build_environment(jobs: int) -> dict:
+    if not 1 <= jobs <= 4:
+        raise ValueError("--jobs must be between 1 and 4")
+    # The explicit outer Ninja limit is jobs. Each ExternalProject is serial:
+    # otherwise four outer edges could each start four more compilers.
+    return dict(os.environ, CMAKE_BUILD_PARALLEL_LEVEL="1", MAKEFLAGS="-j1")
+
+
+def verify_source_layout(source: Path, members: list) -> None:
+    """Require exactly the archive paths, types and symlink targets."""
+    expected = {}
+    for member in members:
+        relative = Path(member.name).relative_to(source.name)
+        if relative == Path("."):
+            continue
+        if not (member.isdir() or member.isfile() or member.issym()):
+            raise ValueError("unsupported Arrow archive member")
+        expected[relative] = member
+        for parent in relative.parents:
+            if parent != Path("."):
+                expected.setdefault(parent, None)
+    actual = set()
+    for directory, folders, files in os.walk(source, followlinks=False):
+        actual.update((Path(directory) / name).relative_to(source)
+                      for name in folders + files)
+    if actual != set(expected):
+        raise ValueError("source layout changed since extraction")
+    for relative, member in expected.items():
+        path = source / relative
+        if member is not None and member.issym():
+            valid = path.is_symlink() and os.readlink(path) == member.linkname
+        elif member is None or member.isdir():
+            valid = not path.is_symlink() and path.is_dir()
+        else:
+            valid = not path.is_symlink() and path.is_file()
+        if not valid:
+            raise ValueError(f"source layout changed since extraction: {relative}")
+
+
+def prepare_source(archive: Path, work: Path, patch: Path, *, resume: bool) -> tuple:
+    """Accept only the original archive plus every exact reviewed transformation."""
+    if sha256(archive) != ARROW_ARCHIVE_SHA256:
+        raise ValueError("Arrow source archive checksum mismatch")
+    patch_bytes = patch.read_bytes()
+    if hashlib.sha256(patch_bytes).hexdigest() != SECURITY_PATCH_SHA256:
+        raise ValueError("Arrow security patch checksum mismatch")
+    work = work.absolute()
+    if any(path.is_symlink() for path in (work, *work.parents)):
+        raise ValueError("work path contains a symlink")
+    if work.exists() and (not work.is_dir() or (not resume and any(work.iterdir()))):
+        raise ValueError("work directory already exists and is not empty")
+    if resume:
+        for name in ("build-receipt.json", "cpp-build", "arrow-prefix", "wheelhouse",
+                     "wheel-inventory", "configure.log", "cpp-build.log", "python-build.log"):
+            if (work / name).is_symlink():
+                raise ValueError(f"resume output path is a symlink: {name}")
+        receipt = work / "build-receipt.json"
+        if receipt.exists() or receipt.is_symlink():
+            if receipt.is_symlink() or not receipt.is_file():
+                raise ValueError("resume cannot modify completed or unrecognized build receipt")
+            previous = json.loads(receipt.read_bytes())
+            if not isinstance(previous, dict) or previous.get("status") not in {"building", "failed"}:
+                raise ValueError("resume cannot modify completed or unrecognized build receipt")
+        wheels = work / "wheelhouse"
+        if wheels.is_symlink() or (wheels.exists() and any(wheels.glob("*.whl"))):
+            raise ValueError("resume cannot modify completed wheel output")
+    source = work / f"arrow-{ARROW_COMMIT}"
+    if source.exists() and not resume:
+        raise ValueError("source directory already exists; use --resume or a fresh build generation")
+    if resume and (source.is_symlink() or not source.is_dir()):
+        raise ValueError("resume requires an existing source directory")
+    work.mkdir(parents=True, exist_ok=True)
+    preserved_patch = work / "arrow-a769c291.patch"
+    if resume:
+        if preserved_patch.is_symlink() or not preserved_patch.is_file() or preserved_patch.read_bytes() != patch_bytes:
+            raise ValueError("preserved security patch changed since extraction")
+    else:
+        with preserved_patch.open("xb") as stream:
+            stream.write(patch_bytes)
+    toolchain_relative = "cpp/cmake_modules/ThirdpartyToolchain.cmake"
+    original_toolchain = None
+    patched_toolchain = None
+    found_security_files = set()
+    with tarfile.open(archive) as bundle:
+        if not resume:
+            bundle.extractall(work, filter="data")
+        verify_source_layout(source, bundle.getmembers())
+        for member in bundle.getmembers():
+            if not member.isfile():
+                continue
+            relative = Path(member.name).relative_to(source.name).as_posix()
+            stream = bundle.extractfile(member)
+            assert stream is not None
+            expected = stream.read()
+            if relative == toolchain_relative:
+                original_toolchain = expected
+                patched_toolchain = expected
+                for before, after in TOOLCHAIN_PATCHES:
+                    if patched_toolchain.count(before.encode()) != 1:
+                        raise ValueError("Arrow toolchain patch context mismatch")
+                    patched_toolchain = patched_toolchain.replace(before.encode(), after.encode())
+                if resume:
+                    expected = patched_toolchain
+            current = source / relative
+            if current.is_symlink() or not current.is_file():
+                raise ValueError(f"source changed since extraction: {relative}")
+            if relative in SECURITY_PATCH_FILES:
+                found_security_files.add(relative)
+                pins = SECURITY_PATCH_FILES[relative]
+                if hashlib.sha256(expected).hexdigest() != pins["original_sha256"]:
+                    raise ValueError(f"original security source checksum mismatch: {relative}")
+                expected_hash = pins["patched_sha256" if resume else "original_sha256"]
+                valid = sha256(current) == expected_hash
+            else:
+                valid = current.read_bytes() == expected
+            if not valid:
+                raise ValueError(f"source changed since extraction: {relative}")
+    if found_security_files != set(SECURITY_PATCH_FILES) or original_toolchain is None:
+        raise ValueError("reviewed source files missing from Arrow archive")
+    if not resume:
+        (source / toolchain_relative).write_bytes(patched_toolchain)
+        result = subprocess.run(
+            ["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", str(preserved_patch)],
+            cwd=source, capture_output=True, text=True,
+        )
+        output = result.stdout + result.stderr
+        if result.returncode or any(word in output.lower() for word in ("offset", "fuzz", "failed", "reversed")):
+            raise ValueError("Arrow security patch did not apply exactly")
+    for relative, pins in SECURITY_PATCH_FILES.items():
+        if sha256(source / relative) != pins["patched_sha256"]:
+            raise ValueError(f"patched security source checksum mismatch: {relative}")
+    toolchain_record = {
+        "file": toolchain_relative,
+        "original_sha256": hashlib.sha256(original_toolchain).hexdigest(),
+        "patched_sha256": sha256(source / toolchain_relative),
+        "before": TOOLCHAIN_PATCHES[0][0], "after": TOOLCHAIN_PATCHES[0][1],
+        "build_workarounds": [{"before": before, "after": after}
+                             for before, after in TOOLCHAIN_PATCHES[1:]],
+    }
+    security_record = {
+        "schema_version": 1, "source_revision": ARROW_COMMIT,
+        "patches": [{
+            "commit": SECURITY_PATCH_COMMIT, "patch": file_record(preserved_patch),
+            "files": [{"relative": relative, **pins} for relative, pins in SECURITY_PATCH_FILES.items()],
+        }],
+    }
+    receipt = work / "arrow-security-patches.json"
+    if resume:
+        if receipt.is_symlink() or not receipt.is_file() or json.loads(receipt.read_bytes()) != security_record:
+            raise ValueError("security patch receipt changed since extraction")
+    else:
+        with receipt.open("x") as stream:
+            json.dump(security_record, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+    return source, toolchain_record, security_record
 
 
 
@@ -56,6 +265,10 @@ def completed_receipt(work: Path, archive: Path, prefix: Path, python: str, buil
             wheel_elfs[path.resolve()] = path.relative_to(unpack).as_posix()
     if not wheel_elfs:
         raise RuntimeError("wheel contains no native ELF")
+    if version != build_record.get("wheel_version"):
+        raise RuntimeError("wheel version does not match immutable build inputs")
+    if file_record(work / "build-inputs.json") != build_record.get("build_inputs"):
+        raise RuntimeError("build input manifest changed during compilation")
     linkage = {}
     for path, member in wheel_elfs.items():
         native_files[str(path)] = {"path": "{generation}/env/lib/python3.14/site-packages/" + member,
@@ -79,7 +292,11 @@ def completed_receipt(work: Path, archive: Path, prefix: Path, python: str, buil
             native_files[str(resolved)] = file_record(resolved) | {"owner": "dpkg:" + package}
     input_files = [archive, prefix / "include/openssl/opensslv.h",
                    prefix / "lib/libcrypto.a", prefix / "lib/libssl.a",
-                   work / f"arrow-{ARROW_COMMIT}/cpp/cmake_modules/ThirdpartyToolchain.cmake"]
+                   work / f"arrow-{ARROW_COMMIT}/cpp/cmake_modules/ThirdpartyToolchain.cmake",
+                   work / "build-recipe.py", work / "arrow-a769c291.patch",
+                   work / "arrow-security-patches.json", work / "build-inputs.json"]
+    input_files.extend(work / f"arrow-{ARROW_COMMIT}" / relative
+                       for relative in SECURITY_PATCH_FILES)
     openssl_receipt = prefix.parent / "openssl-build-receipt.json"
     if not openssl_receipt.is_file():
         raise RuntimeError("OpenSSL source build receipt missing")
@@ -106,6 +323,9 @@ def completed_receipt(work: Path, archive: Path, prefix: Path, python: str, buil
         "python_build_distributions": distributions,
         "inputs": input_records,
         "inputs_sha256": hashlib.sha256(json.dumps(input_records, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "recipe": file_record(work / "build-recipe.py"),
+        "patch_application": file_record(work / "arrow-security-patches.json"),
+        "build_inputs": file_record(work / "build-inputs.json"),
         "native_link_artifacts": [file_record(path) for path in maps],
         "effective_versions": {"pyarrow": version, "openssl": "3.6.5"},
         "native_files": list(native_files.values()), "linkage": linkage, "build": build_record,
@@ -114,17 +334,19 @@ def completed_receipt(work: Path, archive: Path, prefix: Path, python: str, buil
 
 
 def main() -> int:
+    recipe_bytes = Path(__file__).read_bytes()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--openssl-prefix", required=True, type=Path)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--work", type=Path)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--security-patch", type=Path, default=SECURITY_PATCH_PATH)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--resume", action="store_true", help="reuse a verified source/build generation")
     args = parser.parse_args()
-    if not 1 <= args.jobs <= 8:
-        parser.error("--jobs must be between 1 and 8")
+    if not 1 <= args.jobs <= 4:
+        parser.error("--jobs must be between 1 and 4")
     prefix = args.openssl_prefix.resolve()
     header = prefix / "include/openssl/opensslv.h"
     if not header.is_file() or '"OpenSSL 3.6.5 ' not in header.read_text():
@@ -137,78 +359,14 @@ def main() -> int:
     if args.archive is None or args.work is None:
         parser.error("--archive and --work required for a build")
     archive = args.archive.resolve()
-    if sha256(archive) != ARROW_ARCHIVE_SHA256:
-        parser.error("Arrow source archive checksum mismatch")
-    work = args.work.resolve()
-    work.mkdir(parents=True, exist_ok=True)
-    source = work / f"arrow-{ARROW_COMMIT}"
-    if source.exists() and not args.resume:
-        parser.error("source directory already exists; use --resume or a fresh build generation")
-    with tarfile.open(archive) as bundle:
-        if source.exists():
-            # Compare every original source file, permitting only our exact
-            # recorded crypto patch. This prevents an unreviewed tree on resume.
-            for member in bundle.getmembers():
-                if not member.isfile():
-                    continue
-                stream = bundle.extractfile(member)
-                assert stream is not None
-                expected = stream.read()
-                if member.name.endswith("cpp/cmake_modules/ThirdpartyToolchain.cmake"):
-                    expected = expected.replace(
-                        b"list(APPEND AWSSDK_PRODUCTS aws-lc s2n-tls)",
-                        b"list(APPEND AWSSDK_PRODUCTS s2n-tls)\n    add_library(crypto ALIAS OpenSSL::Crypto)",
-                    )
-                current = work / member.name
-                variants = [expected]
-                if member.name.endswith("cpp/cmake_modules/ThirdpartyToolchain.cmake"):
-                    variants.append(expected.replace(
-                        b"  fetchcontent_makeavailable(cares)",
-                        b"  fetchcontent_makeavailable(cares)\n  set_target_properties(c-ares PROPERTIES UNITY_BUILD OFF)",
-                    ))
-                if member.name.endswith("cpp/cmake_modules/ThirdpartyToolchain.cmake"):
-                    variants.append(variants[-1].replace(
-                        b"  fetchcontent_makeavailable(grpc)",
-                        b"  set(CMAKE_UNITY_BUILD OFF)\n  fetchcontent_makeavailable(grpc)",
-                    ))
-                if not current.is_file() or current.read_bytes() not in variants:
-                    parser.error(f"source changed since extraction: {member.name}")
-        else:
-            bundle.extractall(work, filter="data")
-    toolchain = source / "cpp/cmake_modules/ThirdpartyToolchain.cmake"
-    original = toolchain.read_text()
-    # Linux upstream bundles AWS-LC for s2n. Bind that crypto target to our
-    # approved archive instead; aws-c-cal already selects OpenSSL explicitly.
-    before = "list(APPEND AWSSDK_PRODUCTS aws-lc s2n-tls)"
-    after = "list(APPEND AWSSDK_PRODUCTS s2n-tls)\n    add_library(crypto ALIAS OpenSSL::Crypto)"
-    if args.resume:
-        if original.count(after) != 1:
-            parser.error("Arrow AWS crypto patch context mismatch")
-    else:
-        if original.count(before) != 1:
-            parser.error("Arrow AWS crypto patch context mismatch")
-        toolchain.write_text(original.replace(before, after))
-    cares_before = "  fetchcontent_makeavailable(cares)"
-    cares_after = cares_before + "\n  set_target_properties(c-ares PROPERTIES UNITY_BUILD OFF)"
-    patched = toolchain.read_text()
-    if cares_after not in patched:
-        if patched.count(cares_before) != 1:
-            parser.error("c-ares unity workaround context mismatch")
-        toolchain.write_text(patched.replace(cares_before, cares_after))
-    grpc_before = "  fetchcontent_makeavailable(grpc)"
-    grpc_after = "  set(CMAKE_UNITY_BUILD OFF)\n" + grpc_before
-    patched = toolchain.read_text()
-    if grpc_after not in patched:
-        if patched.count(grpc_before) != 1:
-            parser.error("gRPC unity workaround context mismatch")
-        toolchain.write_text(patched.replace(grpc_before, grpc_after))
-    patch_receipt = {
-        "file": "cpp/cmake_modules/ThirdpartyToolchain.cmake",
-        "before": before, "after": after,
-        "patched_sha256": sha256(toolchain),
-        "build_workarounds": [{"before": cares_before, "after": cares_after},
-                              {"before": grpc_before, "after": grpc_after}],
-    }
+    work = args.work.absolute()
+    try:
+        source, patch_receipt, security_patches = prepare_source(
+            archive, work, args.security_patch.resolve(), resume=args.resume,
+        )
+        recipe = preserve_recipe(work, recipe_bytes, resume=args.resume)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     install = work / "arrow-prefix"
     build = work / "cpp-build"
     approved_python = str(Path(args.python).absolute())
@@ -230,8 +388,7 @@ def main() -> int:
         "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-Map,%",
         "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,-Map,%",
     ]
-    # All nested builds inherit the same bound, including Make ExternalProjects.
-    env = dict(os.environ, CMAKE_BUILD_PARALLEL_LEVEL=str(args.jobs), MAKEFLAGS=f"-j{args.jobs}")
+    env = build_environment(args.jobs)
     # Archive builds must not discover BioMiner's enclosing Git checkout.
     env["GIT_CEILING_DIRECTORIES"] = str(work)
     env["OPENSSL_ROOT_DIR"] = str(prefix)
@@ -243,6 +400,15 @@ def main() -> int:
     inputs = {
         "schema_version": 1, "status": "building", "jobs": args.jobs, "arrow_commit": ARROW_COMMIT,
         "arrow_archive_sha256": ARROW_ARCHIVE_SHA256, "features": FEATURES,
+        "recipe": recipe, "security_patches": security_patches,
+        "source_archive": file_record(archive),
+        "patch_application": file_record(work / "arrow-security-patches.json"),
+        "patched_sources": [file_record(source / relative) for relative in SECURITY_PATCH_FILES],
+        "compiler_budget": {
+            "maximum_jobs": args.jobs, "outer_ninja_jobs": args.jobs,
+            "nested_cmake_jobs": 1, "nested_make_jobs": 1,
+            "make_override": 'set(MAKE_BUILD_ARGS "-j1")',
+        },
         "openssl_archives": {name: sha256(prefix / "lib" / name) for name in ("libcrypto.a", "libssl.a")},
         "cmake_flags": flags, "commands": commands, "crypto_patch": patch_receipt,
         "platform": platform.platform(), "machine": platform.machine(),
@@ -251,6 +417,12 @@ def main() -> int:
         "python": subprocess.check_output([args.python, "-c", "import sys,ssl; print(sys.version); print(ssl.OPENSSL_VERSION)"], text=True),
         "qualification": "unverified host-specific build; runtime admission required",
     }
+    try:
+        build_inputs, wheel_version = preserve_build_inputs(work, inputs, resume=args.resume)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    inputs["build_inputs"] = build_inputs
+    inputs["wheel_version"] = wheel_version
     receipt = work / "build-receipt.json"
     receipt.write_text(json.dumps(inputs, indent=2) + "\n")
     try:
@@ -267,8 +439,7 @@ def main() -> int:
             env[f"PYARROW_WITH_{feature}"] = "ON"
         env["PYARROW_WITH_PARQUET_ENCRYPTION"] = "ON"
         env["LDFLAGS"] = "-Wl,-Map,%"
-        input_digest = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:12]
-        env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYARROW"] = f"25.0.1+biominer.{input_digest}"
+        env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYARROW"] = wheel_version
         command = [args.python, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(work / "wheelhouse"), str(source / "python")]
         inputs["commands"].append(command)
         with (work / "python-build.log").open("w") as log:

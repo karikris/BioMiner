@@ -35,7 +35,7 @@ outside Git; append curated provenance to `provenance/githits.jsonl`.
 | 2 | 2.3 | Verify actual loaded versions, fresh admission, TLS/subprocess/resume and independent fallback operation |
 | 3 | 3.1 | Explicit explode semantics preserving candidate provenance rejection and report label counts |
 | 3 | 3.2 | Resolve relevant schema/coercion/order/ingestion changes; explicit bounded per-run spill configuration |
-| 3 | 3.3 | Paired Polars 1/2 tests with Arrow 25; lock Polars 2 and run full regression |
+| 3 | 3.3 | Repair the newly confirmed Arrow 25 boolean-allocation defect; qualify a safe patched fallback, then run paired Polars 1/2 tests with that Arrow 25 build, lock Polars 2 and run full regression |
 | 4 | 4.1 | Pinned Arrow 26 recipe, reviewed crypto/build patches and static dependencies; four compiler jobs maximum |
 | 4 | 4.2 | Audit stricter/removed Arrow APIs; reader-depth and malformed-input rejection tests |
 | 4 | 4.3 | Custom Arrow 26 wheel and native receipts; lock/admission changes and new verified generation |
@@ -70,6 +70,33 @@ create-only post-push receipt binds the final phase commit and observed remote
 SHA, avoiding circular hashes.
 
 ## Compatibility and security contracts
+
+### Execution correction: Arrow 25 security prerequisite
+
+During phase 3, primary upstream PR 50843 and the exact installed Arrow 25
+source confirmed a heap overwrite in `FillNullForwardChunked`,
+`FillNullBackwardChunked`, and `ReplaceMaskChunked`. These belong to the enabled
+compute library. Absence of direct BioMiner calls does not establish that the
+installed library is unaffected. No CVE/GHSA assignment is asserted from the
+issue/PR evidence alone.
+
+The original plan assumed that the phase-2 Arrow 25 fallback needed no further
+native correction before the Polars comparison. That assumption conflicts with
+the newly established defect and the strict phase-3 security gate. Resolve it
+by adding corrective work within task 3.3: backport the exact reviewed upstream
+allocation fix, build a new isolated Arrow 25 wheel with bound source and build
+evidence, qualify a replacement fallback, and rebuild the Polars pair against
+that same patched Arrow version. Record the newly applicable finding and its
+actual resolution. Preserve old receipts and failed/blocked attempts, without
+continuing to describe the old fallback as currently safe.
+
+Do not relax the gate, suppress the finding, or begin phase-4 implementation
+before the phase-3 push handshake. Additional corrective task-3.3 commits remain
+in the ancestry; its final commit binds the actual qualified source. Preserve
+active workloads and replace registered entrypoints only after the new fallback
+passes verification and checkpoint/ownership checks.
+
+### Required target behavior
 
 - Targets: Polars 2.0.0 (`>=2.0.0,<3`) and custom Arrow
   `26.0.0+biominer.<input-digest>` (`>=26.0.0,<27`), after refreshed review.

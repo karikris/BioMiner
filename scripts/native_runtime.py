@@ -36,6 +36,21 @@ LXML_FEATURES = {'catalog', 'html', 'iconv', 'regexp', 'schematron',
                  'xmlschema', 'xpath', 'zlib'}
 LXML_ZLIB_PATCH_COMMIT = 'df84af25dc1942490e1d1c899a07619152a46148'
 LXML_ZLIB_PATCH_SHA256 = '110ff14375733173d8aa54574473424fbd7dfe4b81f1ca34a759c6fe14b15b14'
+ARROW_SOURCE_REVISION = 'beccec0d0c451b7aa3e4530416ac431b3c035c69'
+ARROW_ARCHIVE_SHA256 = 'a2cb8711cb74251ae8c7e9051f4a85b5034fd689867e202d774e417d532bdcf7'
+ARROW_RECIPE_SHA256 = 'dfb95a9f94962bfbc1b2b48d16cba5670f52dc6aa5f195d0f08c0dc76c828541'
+ARROW_SECURITY_PATCH_COMMIT = 'a769c291e01093b73d03a075179cf7a09bf92ad8'
+ARROW_SECURITY_PATCH_SHA256 = 'd51722f4ddb3934a0c846b691a60a730cb77d5a814d7077cab1c5d145c54aaa1'
+ARROW_SECURITY_FILES = {
+    'cpp/src/arrow/compute/kernels/vector_replace.cc': {
+        'original_sha256': '201ee04949830bdd07c1f2f87efda6201b39e6aad2d6a76d8dd868e77d6f156e',
+        'patched_sha256': 'ddd28a89eb41b79e3dc5ecec4cc0e26eb7cec535516a05831b625c8b598afd13',
+    },
+    'cpp/src/arrow/compute/kernels/vector_replace_test.cc': {
+        'original_sha256': '24fdcfad027471f6833dc6efd1f07ba04a3adab7f1edb7aa485c9d2175a28e73',
+        'patched_sha256': '2f926df7f6fbce5f7c9c0a32575e4eda39f6c446fa25ff0fa083046b63bb4360',
+    },
+}
 RUNTIME_CHECKS = {'effective_versions', 'native_inventory', 'extension_policy'}
 INSTALL_CHECKS = RUNTIME_CHECKS | {'tls', 'geometry'}
 BLOCKED_ENV = {'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONUSERBASE', 'GDAL_DRIVER_PATH', 'OPENSSL_MODULES', 'OPENSSL_CONF'}
@@ -180,6 +195,76 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
     return value
 
 
+def _arrow_security(receipt: dict[str, Any], base: Path, version: str) -> None:
+    """Bind this Arrow25 candidate to the reviewed source, patch and recipe.
+
+    Retained inputs may have moved during profile assembly. Nested manifests
+    remain byte-identical, so resolve their descriptors by retained SHA256.
+    These operator-reviewed receipts still require actual runtime qualification.
+    """
+    def retained(record, label, expected=None):
+        if not isinstance(record, dict) or not isinstance(record.get('path'), str):
+            raise ProfileError(f'Arrow receipt requires {label}')
+        digest = _hash(record.get('sha256'), f'Arrow {label}')
+        if expected is not None and digest != expected:
+            raise ProfileError(f'Arrow {label} differs from the reviewed input')
+        matches = [item for item in receipt['inputs'] if item.get('sha256') == digest]
+        if not matches:
+            raise ProfileError(f'Arrow {label} must be a retained checksummed input')
+        return _file(matches[0], base, f'Arrow {label}')
+
+    if receipt['source_revision'] != ARROW_SOURCE_REVISION:
+        raise ProfileError('Arrow receipt source revision differs from the reviewed source')
+    retained(receipt.get('recipe'), 'recipe', ARROW_RECIPE_SHA256)
+    application = _read_json(retained(receipt.get('patch_application'), 'patch application'))
+    patches = application.get('patches')
+    if (type(application.get('schema_version')) is not int
+            or application['schema_version'] != 1
+            or application.get('source_revision') != ARROW_SOURCE_REVISION
+            or not isinstance(patches, list) or len(patches) != 1
+            or not isinstance(patches[0], dict)):
+        raise ProfileError('Arrow patch application requires the reviewed source and patch')
+    patch = patches[0]
+    if patch.get('commit') != ARROW_SECURITY_PATCH_COMMIT:
+        raise ProfileError('Arrow security patch commit differs from the reviewed fix')
+    retained(patch.get('patch'), 'security patch', ARROW_SECURITY_PATCH_SHA256)
+    files = patch.get('files')
+    expected_files = [{'relative': relative, **pins}
+                      for relative, pins in ARROW_SECURITY_FILES.items()]
+    if (not isinstance(files, list) or len(files) != len(expected_files)
+            or any(not isinstance(item, dict) for item in files)
+            or any(files.count(item) != 1 for item in expected_files)):
+        raise ProfileError('Arrow patch application lacks the exact reviewed source hashes')
+    for item in expected_files:
+        retained({'path': item['relative'], 'sha256': item['patched_sha256']},
+                 'patched source')
+
+    build = _read_json(retained(receipt.get('build_inputs'), 'build inputs'))
+    if (type(build.get('schema_version')) is not int or build['schema_version'] != 1
+            or build.get('arrow_commit') != ARROW_SOURCE_REVISION
+            or build.get('arrow_archive_sha256') != ARROW_ARCHIVE_SHA256):
+        raise ProfileError('Arrow build inputs differ from the reviewed source archive')
+    retained(build.get('source_archive'), 'source archive', ARROW_ARCHIVE_SHA256)
+    retained(build.get('recipe'), 'build recipe', ARROW_RECIPE_SHA256)
+    retained(build.get('patch_application'), 'build patch application',
+             receipt['patch_application']['sha256'])
+    if build.get('security_patches') != application:
+        raise ProfileError('Arrow build inputs do not bind the security patch application')
+    sources = build.get('patched_sources')
+    expected_hashes = {item['patched_sha256'] for item in expected_files}
+    if (not isinstance(sources, list) or len(sources) != len(expected_hashes)
+            or any(not isinstance(item, dict) for item in sources)
+            or {_hash(item.get('sha256'), 'Arrow build source') for item in sources}
+            != expected_hashes):
+        raise ProfileError('Arrow build inputs do not bind every patched source')
+    for item in sources:
+        retained(item, 'build patched source')
+    expected_version = '25.0.1+biominer.' + receipt['build_inputs']['sha256'][:12]
+    if (version != expected_version or receipt.get('version') != expected_version
+            or receipt['effective_versions'].get('pyarrow') != expected_version):
+        raise ProfileError('Arrow wheel version does not match the retained build inputs')
+
+
 def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Path:
     path = _file(artifact, base, f'wheel {artifact.get("name")}')
     try:
@@ -246,6 +331,8 @@ def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Pat
         version = receipt['effective_versions'].get('openssl')
         if not isinstance(version, str) or not re.fullmatch(r'3\.6\.(?:[5-9]|[1-9][0-9]+)', version):
             raise ProfileError(f'{name} receipt requires patched OpenSSL 3.6.5+ on the approved line')
+    if name == 'pyarrow':
+        _arrow_security(receipt, receipt_path.parent, artifact['version'])
     if name == 'lxml':
         if any(receipt['effective_versions'].get(key) != value
                for key, value in LXML_NATIVE_VERSIONS.items()):

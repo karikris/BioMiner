@@ -69,10 +69,14 @@ def test_paired_polars_versions_and_public_artifacts():
     assert required <= context["sources"].keys()
     assert Path(__file__).resolve() == cwd / CASE_MODULE
 
+    profiles = {label: _checked(runtime["profile"]) for label, runtime in context["runtimes"].items()}
+    arrow_identities = {native.arrow25_identity(profile) for profile in profiles.values()}
+    assert len(arrow_identities) == 1, "paired runtimes must use the exact same Arrow wheel"
+    arrow_version, arrow_wheel_sha256 = arrow_identities.pop()
     observations = {}
     for label, expected_polars in (("p1a25", "1.44.2"), ("p2a25", "2.0.0")):
         runtime = context["runtimes"][label]
-        profile = _checked(runtime["profile"])
+        profile = profiles[label]
         development = _checked(runtime["development_receipt"])
         assert development["profile_sha256"] == runtime["profile"]["sha256"]
         assert development["production_ready"] is False
@@ -90,10 +94,11 @@ def test_paired_polars_versions_and_public_artifacts():
         assert json.loads(verification)["production_ready"] is False
         identity = json.loads(_command([
             python, "-I", "-B", "-c",
-            "import biominer,importlib.metadata as m,json,sys;"
+            "import biominer,importlib.metadata as m,json,polars,pyarrow,sys;"
             "print(json.dumps({'python':sys.executable,'prefix':sys.prefix,"
             "'application':biominer.__file__,'versions':{n:m.version(n) "
             "for n in ('polars','polars-runtime-32','pyarrow')},"
+            "'imported':{'polars':polars.__version__,'pyarrow':pyarrow.__version__},"
             "'installed':{d.metadata['Name'].lower().replace('_','-'):d.version "
             "for d in m.distributions()}}))",
         ], output, f"{label}-identity", cwd))
@@ -102,8 +107,9 @@ def test_paired_polars_versions_and_public_artifacts():
         assert Path(identity["application"]).resolve().is_relative_to(checkout / "src/biominer")
         assert identity["versions"] == {
             "polars": expected_polars, "polars-runtime-32": expected_polars,
-            "pyarrow": "25.0.1+biominer.f918dfd84c8c",
+            "pyarrow": arrow_version,
         }
+        assert identity["imported"] == {"polars": expected_polars, "pyarrow": arrow_version}
         arguments = [
             python, "-I", "-B", str(cwd / "scripts/probe_upgrade_compatibility.py"),
             "--root", str(output / "paired"), "--label", label,
@@ -155,6 +161,7 @@ def test_paired_polars_versions_and_public_artifacts():
                 ).hexdigest() == expected
     report = {
         "tested_commit": context["tested_commit"], "observations": observations,
+        "arrow_wheel": {"version": arrow_version, "sha256": arrow_wheel_sha256},
         "logical_differences": [],
         "fixture": [_reference(p) for p in sorted((output / "paired/fixtures").iterdir())],
     }

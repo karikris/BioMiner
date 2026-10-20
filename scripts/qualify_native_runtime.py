@@ -32,7 +32,7 @@ CASES = ("artifacts", "loaded_versions", "tls", "import_order", "features")
 CASE_MODULE = "scripts/upgrade_checks/test_native_qualification_cases.py"
 REQUIRED_SOURCES = {
     "scripts/qualify_native_runtime.py", "scripts/check_upgrade_phase.py",
-    CASE_MODULE, "pyproject.toml", "uv.lock",
+    "scripts/native_runtime.py", CASE_MODULE, "pyproject.toml", "uv.lock",
 }
 
 
@@ -50,6 +50,20 @@ def source_bytes(path):
     path = Path(path)
     gate.require(path.is_file(), "qualification source is missing")
     return path.read_bytes()
+
+
+def arrow25_identity(profile):
+    """Select the exact custom wheel identity from an already hash-bound profile."""
+    artifacts = [item for item in profile["artifacts"] if item.get("name") == "pyarrow"]
+    gate.require(len(artifacts) == 1, "one exact custom Arrow 25 artifact required")
+    artifact = artifacts[0]
+    version, wheel_hash = artifact.get("version"), artifact.get("sha256")
+    gate.require(
+        isinstance(version, str) and re.fullmatch(r"25\.0\.1\+biominer\.[0-9a-f]{12}", version)
+        and isinstance(wheel_hash, str) and gate.SHA.fullmatch(wheel_hash),
+        "custom Arrow 25 version and wheel hash required",
+    )
+    return version, wheel_hash
 
 
 def validate_context(context):
