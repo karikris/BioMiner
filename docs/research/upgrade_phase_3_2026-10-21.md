@@ -106,10 +106,34 @@ Source-audit SHA-256 values are
 and `1ee124a01ae551a4e0ed8e5493f8b40f1295e5de43026173a4b6c8de16ca11e3`.
 Supervisor probes and receipts are retained under `phase3/task3.2/`.
 
-## Remaining phase work
+Task 3.2 commit: `6255b0a26a88139a240e3790129f6813ead7ac34`.
 
-These are focused working-tree and exploratory checks. Task 3.3 must install
-the console bootstrap, lock Polars 2, build distinct same-source Polars 1/2
-profiles and run admitted resource/paired-artifact checks plus clean-snapshot
-full regression. The phase push handshake remains pending. No existing
-runtime generation or scientific output was replaced in these two tasks.
+## Task 3.3: locked target and paired qualification
+
+Task starts at the task-3.2 commit above. The dependency requirement is now
+`polars>=2.0.0,<3`, and the lock changes only `polars` and `polars-runtime-32`
+from 1.44.2 to 2.0.0. The installed `biominer` console entry point now invokes
+the resource supervisor before importing the CLI. Offline `uv --no-config lock
+--check --offline` passes without changing an existing environment.
+
+Two opt-in qualification cases require explicit, hashed runtime contexts;
+missing context fails rather than skips. The semantics case checks identical
+application sources, all installed distribution versions, image/classifier
+behavior and logical Parquet artifacts across the two Polars versions. Only
+declared version labels and physical Parquet encoding hashes are excluded from
+logical comparison; original physical hashes remain recorded. The resource
+case binds the loaded supervisor and synthetic worker to committed sources,
+observes actual spills, requires the specific disk-budget error, and verifies
+scratch removal plus development-runtime integrity before and after execution.
+
+Both cases collect successfully. The preflight receipt is
+`phase3/task3.3-preflight/report.json` under the external evidence root, SHA-256
+`5fbdafc3e04d9efd5424275b89921b1e15289f67150749fdad25db399a77da32`.
+Collection is not qualification. Actual same-source runtime builds, paired
+execution, clean-snapshot full regression and the phase push handshake remain
+pending at this implementation commit.
+
+Changing dependency configuration does not activate a target runtime. The
+previous development receipt no longer verifies against the updated main
+configuration; its environment remains untouched. The frozen phase-2 fallback
+uses its own preserved configuration and remains independent of this change.
