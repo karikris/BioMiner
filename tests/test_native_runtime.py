@@ -839,6 +839,124 @@ def test_build_timeout_preserves_failed_candidate(profile, tmp_path, monkeypatch
     assert json.loads((output / 'FAILED.json').read_text())['ready'] is False
 
 
+@pytest.fixture
+def timeout_process(profile, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    path, doc = profile
+    monkeypatch.setattr(runtime, '_python', lambda doc, base: Path(sys.executable))
+    doc['recipes'] = [{'script': blob(tmp_path, 'worker.py', 'pass'), 'args': [], 'timeout_seconds': 1}]
+    rewrite(profile)
+    output = tmp_path / 'bounded-fake-children'
+    observed = SimpleNamespace(states=['R', 'Z'], reads=[], kills=[], waits=[],
+                               elapsed=0.0, leader_delay=0.0, leader_timeout=False,
+                               original=runtime.subprocess.TimeoutExpired(['worker'], 1),
+                               build=lambda: runtime.build(path, output), output=output)
+
+    class Process:
+        pid = 4242
+        returncode = None
+
+        def communicate(self, timeout=None):
+            observed.waits.append(timeout)
+            if len(observed.waits) == 1:
+                raise observed.original
+            observed.elapsed += observed.leader_delay
+            if observed.leader_timeout:
+                raise runtime.subprocess.TimeoutExpired(['worker'], timeout)
+            self.returncode = -9
+            return '', None
+
+    def sleep(seconds):
+        observed.elapsed += seconds
+
+    original_iterdir, original_read = Path.iterdir, Path.read_text
+
+    def iterdir(path):
+        if path == Path('/proc'):
+            return iter([Path('/proc/4243'), Path('/proc/9000')])
+        return original_iterdir(path)
+
+    def read_text(path, *args, **kwargs):
+        if path == Path('/proc/9000/stat'):
+            pytest.fail('unrelated process stat must not be inspected')
+        if path == Path('/proc/4243/stat'):
+            state = observed.states[0]
+            if len(observed.states) > 1:
+                observed.states.pop(0)
+            observed.reads.append(state)
+            if isinstance(state, Exception):
+                raise state
+            if state == 'malformed':
+                return 'unparseable'
+            group = 9999 if state == 'moved' else 4242
+            return f'4243 (child ) name) {"R" if state == "moved" else state} 1 {group} {group} 0'
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.subprocess, 'Popen', lambda *args, **kwargs: Process())
+    monkeypatch.setattr(runtime.os, 'killpg', lambda group, sig: observed.kills.append((group, sig)))
+    monkeypatch.setattr(runtime.os, 'getpgid', lambda pid: 4242 if pid == 4243 else 9000)
+    monkeypatch.setattr(runtime.os, 'getsid', lambda pid: 4242 if pid == 4243 else 9000)
+    monkeypatch.setattr(runtime, 'time', SimpleNamespace(monotonic=lambda: observed.elapsed, sleep=sleep), raising=False)
+    monkeypatch.setattr(Path, 'iterdir', iterdir)
+    monkeypatch.setattr(Path, 'read_text', read_text)
+    return observed
+
+
+@pytest.mark.parametrize('terminal', ['Z', 'X'])
+def test_timeout_waits_for_descendants_after_leader_reaped(timeout_process, tmp_path, terminal):
+    timeout_process.states = ['R', terminal]
+    with pytest.raises(runtime.ProfileError, match='command timed out'):
+        timeout_process.build()
+    assert timeout_process.reads == ['R', terminal]
+    assert timeout_process.kills == [(4242, runtime.signal.SIGKILL)]
+    assert timeout_process.waits == [1, 5.0]
+    assert timeout_process.elapsed > 0
+    assert not (timeout_process.output / 'build-receipt.json').exists()
+    assert json.loads((timeout_process.output / 'FAILED.json').read_text())['ready'] is False
+
+
+def test_timeout_refuses_live_descendant_at_shared_cleanup_deadline(timeout_process, tmp_path):
+    timeout_process.states = ['R']
+    timeout_process.leader_delay = 4.9
+    with pytest.raises(runtime.ProfileError, match='cleanup.*terminal'):
+        timeout_process.build()
+    assert timeout_process.reads
+    assert timeout_process.elapsed == pytest.approx(5.0)
+    assert timeout_process.kills == [(4242, runtime.signal.SIGKILL)]
+
+
+@pytest.mark.parametrize('state', [PermissionError('owned stat denied'), 'malformed'])
+def test_timeout_refuses_unverifiable_owned_descendant(timeout_process, tmp_path, state):
+    timeout_process.states = [state]
+    with pytest.raises(runtime.ProfileError, match='cleanup.*inspect'):
+        timeout_process.build()
+    assert timeout_process.reads == [state]
+
+
+@pytest.mark.parametrize('state', [FileNotFoundError(), 'moved'])
+def test_timeout_allows_disappeared_or_reclassified_process(timeout_process, tmp_path, state):
+    timeout_process.states = [state]
+    with pytest.raises(runtime.ProfileError, match='command timed out'):
+        timeout_process.build()
+    assert timeout_process.reads == [state]
+
+
+def test_timeout_bounds_leader_cleanup_communication(timeout_process, tmp_path):
+    timeout_process.leader_timeout = True
+    with pytest.raises(runtime.ProfileError, match='cleanup.*leader'):
+        timeout_process.build()
+    assert timeout_process.waits == [1, 5.0]
+
+
+def test_interrupt_preserved_after_terminal_cleanup(timeout_process, tmp_path):
+    timeout_process.original = KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt) as caught:
+        timeout_process.build()
+    assert caught.value is timeout_process.original
+    assert timeout_process.reads == ['R', 'Z']
+
+
 def test_python_runtime_native_owner_is_bound_to_approved_prefix(profile, tmp_path):
     path, doc = profile
     doc['python']['source_build'] = 'Astral20260929'

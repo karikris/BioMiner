@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -418,18 +419,63 @@ def launch_environment(source: dict[str, str] | None = None) -> dict[str, str]:
     return environment
 
 
+def _process_group_live(group: int, session: int) -> bool:
+    """Observe only the original group/session; deliberately escaped sessions are outside this contract."""
+    live = False
+    try:
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdecimal():
+                continue
+            pid = int(entry.name)
+            try:
+                # Avoid reading stat for unrelated processes, including private
+                # service managers. A disappearing process is already terminal.
+                observed_group, observed_session = os.getpgid(pid), os.getsid(pid)
+                if observed_group != group and observed_session != session:
+                    continue
+                fields = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+                state, current_group, current_session = fields[0], int(fields[2]), int(fields[3])
+                if len(state) != 1:
+                    raise ValueError('invalid process state')
+                # Membership can change between the syscalls and stat read.
+                if current_group != group and current_session != session:
+                    continue
+                live |= state not in {'Z', 'X'}
+            except (ProcessLookupError, FileNotFoundError):
+                continue
+    except (OSError, ValueError, IndexError) as exc:
+        raise ProfileError('command cleanup cannot inspect original process group/session') from exc
+    return live
+
+
 def _bounded_process(argv: list[str], *, cwd: Path | None, env: dict[str, str], timeout: int, output: Any = subprocess.PIPE) -> str:
     process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    # start_new_session makes the original PID both process-group and session
+    # leader. Keep those identities even after communicate reaps that leader.
+    group = session = process.pid
     try:
         stdout, _ = process.communicate(timeout=timeout)
     except BaseException:
         # The recipe may have spawned pip/CMake/compiler workers. Killing just
         # its interpreter would leave those workers modifying failed outputs.
+        deadline = time.monotonic() + 5.0
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(group, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.communicate()
+        except OSError as exc:
+            raise ProfileError('command cleanup cannot signal original process group') from exc
+        try:
+            process.communicate(timeout=max(0.0, deadline - time.monotonic()))
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise ProfileError('command cleanup could not finish leader communication') from exc
+        # Reaping the leader does not wait for file-log writers in its group.
+        # Share one deadline with communicate rather than renewing the budget.
+        while _process_group_live(group, session):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProfileError('command cleanup did not establish terminal process group/session')
+            time.sleep(min(0.01, remaining))
         raise
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, argv)

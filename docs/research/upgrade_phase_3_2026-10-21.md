@@ -587,3 +587,79 @@ The review is `phase3/arrow25-sliced-source-review/final-source-operator-review.
 SHA-256 `5214f19686716ce63fc36f7f5b9360d98935d5cd5b3663d393cf0aaf8eb92c3a`.
 These results authorize the fresh build; they do not assert native kernel
 qualification, migration or phase completion.
+
+## Two-patch native qualification and build-cleanup race
+
+At `08af8fbf2514d26f381ba1f7b3949b2bfdcf8565`, the fresh Arrow build completed
+in 1,112.137 seconds, with at most four compiler frontends observed and no
+budget, monitor or cleanup error. The wheel is
+`25.0.1+biominer.d601668ee1b9`, SHA-256
+`2f7c85d9049f130870bb71a4c719d144f67eae79b8b32c76521f33b25df24112`.
+Independent artifact review binds both ordered patches, three final source
+files, both shared-header consumers through their objects and linked libraries,
+37 wheel ELF members and seven exact prefix copies. Its receipt is
+`phase3/arrow25-sliced-artifact-audit-actual-1/independent-actual-artifact-review.json`,
+SHA-256 `5cd84a848ecb838c03812318f724adb5ded0cf2234660fd84ffdfbed68d29d99`.
+
+Pair 4 completed all 30 build commands and its outer process exited 0. The
+pair receipt is `phase3/arrow25-pair-4/built-pair.json`, SHA-256
+`932599e6c19cd29ea1ab65fda001fdd6001827451e4b30e5971242c3562bc4e5`.
+Both runtimes passed all five native checks, including all 30 Boolean/control
+observations across the pair and the previously failing sliced-array values.
+The actual native report is
+`phase3/patched25-pair-4-native/paired-native-qualification.json`, SHA-256
+`718d0dbc89df539f3cde0f8d8a4bf005636c7bfa682c695801b5009e97afa394`;
+its outer supervisor and runner both exited 0 without interruption.
+The four-environment identity audit and all four installed console smoke
+checks also passed. These are local qualification results, not migration or
+hosted-service evidence.
+
+The paired Polars semantics and bounded spill checks passed in 29.38 and
+24.56 seconds. Full regression then reported **1 failed, 3,209 passed in
+96.90 seconds**. `test_timed_out_build_terminates_compiler_descendants`
+observed a compiler child in state `R` immediately after the native build
+timeout handler returned. Its unchanged assertion requires absent or exited
+children. The full-suite log is
+`phase3/patched25-pair-4-prechecks/full_suite.log`, SHA-256
+`013d30bf9ce1ab148da87e40b7ff055b38516f4d0c94d6f0c4bdfd990e477090`.
+The outer precheck receipt records supervisor/runner exit 1 and no completed
+precheck report; it remains a failed prerequisite.
+
+Source inspection established that `_bounded_process` sends `SIGKILL` to the
+recipe's process group, then `communicate()` waits only for the direct child.
+With file-backed logs, the leader can exit before a signalled compiler child
+finishes. [Python's subprocess contract](https://docs.python.org/3.14/library/subprocess.html#subprocess.Popen.communicate)
+and GitHits inspection of
+[psutil's bounded process waiting](https://github.com/giampaolo/psutil/blob/d094fd6c/psutil/__init__.py#L1949)
+support treating signal delivery and completed termination separately.
+No psutil code or dependency is added. The correction must observe the owned
+process group until its members are absent or terminal, fail closed at its
+cleanup deadline, and retain the real descendant regression. A test-only
+delay or accepting runnable children would not repair the lifecycle contract.
+
+The independent blocked review is
+`phase3/patched25-pair-4-independent-review/prerequisite-blocked-review.json`,
+SHA-256 `a92ecafc6e218648a09cd0aa1087b4076dbf3ac84c69f4697991684e5130714f`.
+Pair 4 has not replaced the shared runtime. A fresh source-bound pair and
+complete successful prerequisites are required after this correction; the
+verified Arrow wheel can be reused because its recipe and binaries are
+unchanged. Cutover, security closure and the phase-3 push remain pending.
+
+The correction now shares one five-second monotonic cleanup deadline between
+leader communication and observation of the original process group/session.
+It preserves the original timeout or interruption after successful cleanup,
+and reports a distinct cleanup failure for live or unverifiable members.
+No additional process group is signalled; escaped sessions remain under the
+separate qualification supervisor's existing ownership contract.
+
+Nine deterministic public-build regressions failed against the preserved
+original source. With the correction, `tests/test_native_runtime.py` passed
+**124 tests in 6.44 seconds**, including the unchanged real compiler-descendant
+test. The qualification, native-check, profile-assembly and host-refresh
+neighboring suites passed **115 tests in 6.88 seconds**. Both supervised runs
+exited 0 and retained unchanged tested source hashes under
+`phase3/native-timeout-cleanup-1/`. The native-runtime source SHA-256 is
+`33fc0e8ed8bf91770447a4731bcbd75e3b81e1b8c903f1ed7c187062969b5238`;
+its test SHA-256 is
+`67c170983cdc7f25c35351ca09bd98f7655b97e086240660f5e0bc9a9b20dca1`.
+These focused results do not replace the pending fresh full-suite prerequisite.
