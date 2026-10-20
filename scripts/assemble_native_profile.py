@@ -51,7 +51,14 @@ def preserve_inputs(receipt, directory):
             dependencies = json.loads(source.read_text())
             if not isinstance(dependencies, list):
                 raise ValueError('backend input manifest must contain file records')
-            receipt['inputs'].extend(dict(item, kind='backend-input') for item in dependencies)
+            for item in dependencies:
+                # A previously preserved receipt already binds these bytes at
+                # durable paths. Its original manifest intentionally retains
+                # historical paths, which may no longer exist.
+                retained = [entry for entry in receipt['inputs']
+                            if entry.get('sha256') == item.get('sha256')]
+                if not retained:
+                    receipt['inputs'].append(dict(item, kind='backend-input'))
     records = [*receipt['inputs'], *receipt['native_link_artifacts'], *receipt['toolchain'].values()]
     for item in records:
         source = Path(item['path'])
@@ -69,7 +76,8 @@ def preserve_inputs(receipt, directory):
     return receipt
 
 
-def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer_receipt=None):
+def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer_receipt=None,
+             lxml_receipt=None, psycopg_receipt=None, arrow_receipt=None):
     root, output, python = root.absolute(), output.absolute(), python.absolute()
     if output.exists() or output.is_symlink():
         raise FileExistsError(f'profile already exists; choose a new output path: {output}')
@@ -78,13 +86,21 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
         'psycopg-c': root / '.native-runtime/psycopg/receipt.json',
         'pyarrow': root / '.native-runtime/arrow/generation-1/build-receipt.json',
         'duckdb': root / '.native-runtime/duckdb/build-receipt.json',
+        'lxml': root / '.native-runtime/lxml/receipt.json',
     }
     if duckdb_receipt is not None:
         sources['duckdb'] = duckdb_receipt.absolute()
     if biominer_receipt is not None:
         sources['biominer'] = biominer_receipt.absolute()
+    if lxml_receipt is not None:
+        sources['lxml'] = lxml_receipt.absolute()
+    if psycopg_receipt is not None:
+        sources['psycopg-c'] = psycopg_receipt.absolute()
+    if arrow_receipt is not None:
+        sources['pyarrow'] = arrow_receipt.absolute()
     doc = {'schema_version': 1, 'status': 'candidate', 'ready': False,
            'platform': {'system': 'Linux', 'machine': 'x86_64'},
+           'generation_root': str(root / '.native-runtime/generations'),
            'base_lock': {}, 'project': {}, 'python': {}, 'uv': {},
            'inputs': [], 'artifacts': [], 'native_files': [],
            'host_packages': [], 'checks': [], 'recipes': [],
@@ -195,8 +211,8 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
     for name in ('openssl', 'libssl3t64', 'libssl-dev', 'libpq5'):
         policy = subprocess.run(['apt-cache', 'policy', name], capture_output=True, text=True, check=True).stdout
         doc['host_packages'].append({'name': name, 'architecture': 'amd64', 'origin': 'Ubuntu',
-            'minimum_version': '18.6-0ubuntu0.26.04.1' if name == 'libpq5' else '3.5.5-1ubuntu3.6',
-            'advisory': 'Ubuntu vendor package provenance' if name == 'libpq5' else 'USN-8847-1',
+            'minimum_version': '18.6-0ubuntu0.26.04.1' if name == 'libpq5' else '3.5.5-1ubuntu3.7',
+            'advisory': 'Ubuntu vendor package provenance' if name == 'libpq5' else 'USN-8861-1',
             'apt_policy_sha256': hashlib.sha256(policy.encode()).hexdigest()})
     checks = root / 'scripts/check_native_runtime.py'
     if checks.is_file():
@@ -204,7 +220,9 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
             doc['checks'].append({'name': name, 'script': file_record(checks),
                 'args': ['--check', name, '--profile', '{profile}', '--generation', '{generation}']})
     for script in ('native_runtime.py', 'check_native_runtime.py', 'check_native_tls.py',
-                   'build_native_psycopg.py', 'build_native_arrow.py', 'build_native_duckdb.py', 'build_native_project.py', 'attest_native_python.py', 'refresh_native_host.py', 'assemble_native_profile.py'):
+                   'build_native_psycopg.py', 'build_native_arrow.py', 'build_native_duckdb.py',
+                   'build_native_lxml.py', 'build_native_project.py', 'attest_native_python.py',
+                   'refresh_native_host.py', 'assemble_native_profile.py'):
         path = root / 'scripts' / script
         if path.is_file():
             doc['inputs'].append(file_record(path) | {'kind': 'check' if script.startswith('check_') else 'recipe'})
@@ -219,6 +237,9 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
                                   '--archive', str(build_root / 'arrow/downloads/arrow.tar.gz'),
                                   '--work', '{output}/arrow']),
         ('build_native_duckdb.py', ['--python', str(python), '--work-dir', '{output}/duckdb']),
+        ('build_native_lxml.py', ['--python', str(build_root / 'lxml/build-env/bin/python'),
+                                 '--sources', str(build_root / 'lxml/downloads'),
+                                 '--output', '{output}/lxml', '--jobs', '4']),
     ]
     for script, args in definitions:
         if (root / 'scripts' / script).is_file():
@@ -248,9 +269,16 @@ def main():
                         help='Explicit preserved production receipt after separate test-policy builds')
     parser.add_argument('--biominer-receipt', type=Path,
                         help='Explicit BioMiner build receipt for a new configuration generation')
+    parser.add_argument('--lxml-receipt', type=Path,
+                        help='Explicit lxml build receipt with its patched native closure')
+    parser.add_argument('--psycopg-receipt', type=Path,
+                        help='Explicit preserved Psycopg build receipt')
+    parser.add_argument('--arrow-receipt', type=Path,
+                        help='Explicit preserved or newly qualified Arrow build receipt')
     args = parser.parse_args()
     print(json.dumps(assemble(args.root, args.output, args.python, args.preserve_inputs,
-                              args.duckdb_receipt, args.biominer_receipt), sort_keys=True))
+                              args.duckdb_receipt, args.biominer_receipt, args.lxml_receipt,
+                              args.psycopg_receipt, args.arrow_receipt), sort_keys=True))
 
 
 if __name__ == '__main__':

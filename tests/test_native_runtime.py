@@ -34,22 +34,63 @@ def wheel(root, name, version):
         overlay.mkdir()
         inputs.append(blob(overlay, 'pyproject.toml', (root / 'pyproject.toml').read_text()))
     receipt = blob(root, name + '.receipt.json', json.dumps({'wheel_sha256': digest(path), 'source_revision': 'a' * 40, 'toolchain': {'compiler': blob(root, name + '.compiler')}, 'inputs': inputs, 'inputs_sha256': hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), 'native_link_artifacts': [blob(root, name + '.link-map')], 'effective_versions': {'openssl': '3.6.5'}}))
+    if name == 'lxml':
+        patch = blob(root, 'zlib-fix.patch', 'reviewed patch fixture')
+        value = json.loads(Path(receipt['path']).read_text())
+        value['inputs'].append(patch)
+        licenses = [blob(root, filename, filename + ' test content') for filename in (
+            'libiconv-COPYING.LIB', 'libcharset-COPYING.LIB', 'NOTICE.txt',
+            'zlib-LICENSE', 'libxml2-Copyright', 'libxslt-Copyright')]
+        extension = b'fixture native extension'
+        with zipfile.ZipFile(path, 'a') as archive:
+            archive.writestr('lxml/etree.cp314.so', extension)
+            for item in licenses:
+                archive.writestr('lxml-6.1.3.dist-info/licenses/' + Path(item['path']).name,
+                                 Path(item['path']).read_bytes())
+        value['wheel_sha256'] = digest(path)
+        value['license_manifest'] = blob(root, 'license-manifest.json', json.dumps(licenses))
+        value['relink'] = {
+            'bundle': blob(root, 'relink-materials.tar.gz', 'fixture bundle'),
+            'manifest': blob(root, 'relink-manifest.json', '{}'),
+            'qualification': blob(root, 'relink-qualification.json', json.dumps({
+                'status': 'passed', 'relocated_bundle': True,
+                'replacement_library_sha256': 'a' * 64,
+                'outputs': [{'name': 'etree.cp314.so',
+                             'original_sha256': hashlib.sha256(extension).hexdigest(),
+                             'relinked_sha256': hashlib.sha256(extension).hexdigest()}],
+            })),
+        }
+        value['inputs'].extend([*licenses, value['license_manifest'], *value['relink'].values()])
+        value['inputs_sha256'] = hashlib.sha256(json.dumps(value['inputs'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        value['effective_versions'] = {
+            'lxml': '6.1.3', 'libxml2': '2.15.4', 'libxslt': '1.1.45',
+            'libiconv': '1.19', 'zlib': '1.3.2',
+        }
+        value['native_policy'] = {
+            'zlib_patch_commit': 'df84af25dc1942490e1d1c899a07619152a46148',
+            'zlib_patch_sha256': patch['sha256'],
+            'libxml_features': ['catalog', 'html', 'iconv', 'regexp', 'schematron',
+                                'xmlschema', 'xpath', 'zlib'],
+        }
+        receipt = blob(root, name + '.receipt.json', json.dumps(value))
     return {'name': name, 'version': version, 'path': str(path), 'sha256': digest(path), 'source_receipt': receipt}
 
 
 @pytest.fixture
-def profile(tmp_path):
+def profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, 'LXML_ZLIB_PATCH_SHA256',
+                        hashlib.sha256(b'reviewed patch fixture').hexdigest())
     doc = {
         'schema_version': 1,
         'platform': {'system': 'Linux', 'machine': 'x86_64'},
         'base_lock': blob(tmp_path, 'uv.lock'),
         'project': blob(tmp_path, 'pyproject.toml', '[project]\nname="biominer"\nversion="0.1.0"\nrequires-python=">=3.14.7"\n'),
         'inputs': [dict(blob(tmp_path, 'sources.tar'), kind='source', source_revision='a' * 40)],
-        'artifacts': [wheel(tmp_path, 'psycopg-c', '3.3.6'), wheel(tmp_path, 'pyarrow', '25.0.1+biominer.1'), wheel(tmp_path, 'duckdb', '1.5.6+biominer.1'), wheel(tmp_path, 'biominer', '0.1.0')],
+        'artifacts': [wheel(tmp_path, 'psycopg-c', '3.3.6'), wheel(tmp_path, 'pyarrow', '25.0.1+biominer.1'), wheel(tmp_path, 'duckdb', '1.5.6+biominer.1'), wheel(tmp_path, 'biominer', '0.1.0'), wheel(tmp_path, 'lxml', '6.1.3')],
         'python': {'path': str(Path(sys.executable).resolve()), 'sha256': digest(Path(sys.executable).resolve()), 'version': '3.14.7', 'openssl_version': '3.5.9'},
         'uv': blob(tmp_path, 'uv'),
         'native_files': [],
-        'host_packages': [{'name': 'libssl3t64', 'minimum_version': '3.5.5-1ubuntu3.6', 'architecture': 'amd64', 'origin': 'Ubuntu'}],
+        'host_packages': [{'name': 'libssl3t64', 'minimum_version': '3.5.5-1ubuntu3.7', 'architecture': 'amd64', 'origin': 'Ubuntu'}],
         'extension_policy': {'policy_id': 'c' * 64, 'allowlist': []},
         'checks': [],
         'recipes': [],
@@ -69,6 +110,98 @@ def test_valid_artifact_inventory_is_candidate_not_ready(profile):
     result = runtime.verify_artifacts(profile[0])
     assert result['status'] == 'candidate'
     assert result['ready'] is False
+
+
+def test_unpatched_registry_lxml_is_not_an_admitted_native_runtime(profile):
+    # The lock's registry wheel is insufficient even when its Python version
+    # matches: the patched native closure must be admitted separately.
+    profile[1]['artifacts'] = [item for item in profile[1]['artifacts'] if item['name'] != 'lxml']
+    with pytest.raises(runtime.ProfileError, match='lxml'):
+        runtime.verify_artifacts(rewrite(profile))
+
+
+@pytest.mark.parametrize('damage', ['libxml2', 'libxslt', 'libiconv', 'zlib',
+                                   'patch_identity', 'patch_input', 'feature'])
+def test_lxml_receipt_cannot_claim_an_unbound_patch(profile, damage):
+    _, doc = profile
+    artifact = next(item for item in doc['artifacts'] if item['name'] == 'lxml')
+    receipt_path = Path(artifact['source_receipt']['path'])
+    receipt = json.loads(receipt_path.read_text())
+    if damage in receipt['effective_versions']:
+        receipt['effective_versions'][damage] = '0.0.0'
+    elif damage == 'patch_identity':
+        receipt['native_policy']['zlib_patch_commit'] = 'f' * 40
+    elif damage == 'patch_input':
+        receipt['inputs'] = [item for item in receipt['inputs']
+                             if Path(item['path']).name != 'zlib-fix.patch']
+    else:
+        receipt['native_policy']['libxml_features'].remove('schematron')
+    receipt['inputs_sha256'] = hashlib.sha256(json.dumps(receipt['inputs'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    receipt_path.write_text(json.dumps(receipt))
+    artifact['source_receipt']['sha256'] = digest(receipt_path)
+    with pytest.raises(runtime.ProfileError, match='lxml'):
+        runtime.verify_artifacts(rewrite(profile))
+
+
+@pytest.mark.parametrize('damage', ['missing_bundle', 'unbound_license', 'missing_license',
+                                   'not_relocated', 'different_extension',
+                                   'invalid_license_path', 'invalid_output_name'])
+def test_lxml_requires_retained_qualified_relink_materials(profile, damage):
+    artifact = next(item for item in profile[1]['artifacts'] if item['name'] == 'lxml')
+    path = Path(artifact['source_receipt']['path'])
+    receipt = json.loads(path.read_text())
+    if damage == 'missing_bundle':
+        receipt['inputs'].remove(receipt['relink']['bundle'])
+    elif damage == 'unbound_license':
+        receipt['inputs'].remove(receipt['license_manifest'])
+    elif damage in ('missing_license', 'invalid_license_path'):
+        manifest = receipt['license_manifest']
+        items = json.loads(Path(manifest['path']).read_text())
+        if damage == 'missing_license':
+            items.pop()
+        else:
+            items[0]['path'] = None
+        Path(manifest['path']).write_text(json.dumps(items))
+        for item in receipt['inputs']:
+            if item['path'] == manifest['path']:
+                item['sha256'] = digest(Path(item['path']))
+        manifest['sha256'] = digest(Path(manifest['path']))
+    else:
+        record = receipt['relink']['qualification']
+        data = json.loads(Path(record['path']).read_text())
+        if damage == 'not_relocated':
+            data['relocated_bundle'] = False
+        elif damage == 'invalid_output_name':
+            data['outputs'][0]['name'] = []
+        else:
+            data['outputs'][0]['relinked_sha256'] = 'f' * 64
+        Path(record['path']).write_text(json.dumps(data))
+        for item in receipt['inputs']:
+            if item['path'] == record['path']:
+                item['sha256'] = digest(Path(item['path']))
+        record['sha256'] = digest(Path(record['path']))
+    receipt['inputs_sha256'] = hashlib.sha256(json.dumps(receipt['inputs'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    path.write_text(json.dumps(receipt))
+    artifact['source_receipt']['sha256'] = digest(path)
+    with pytest.raises(runtime.ProfileError, match='lxml'):
+        runtime.verify_artifacts(rewrite(profile))
+
+
+def test_lxml_relink_materials_remain_valid_after_input_preservation(profile):
+    from scripts import assemble_native_profile as assembler
+
+    artifact = next(item for item in profile[1]['artifacts'] if item['name'] == 'lxml')
+    path = Path(artifact['source_receipt']['path'])
+    receipt = json.loads(path.read_text())
+    preserved = assembler.preserve_inputs(receipt, path.parent / 'retained')
+    originals = {item['path'] for item in (
+        *receipt['inputs'], *receipt['native_link_artifacts'], *receipt['toolchain'].values())}
+    for original in originals:
+        Path(original).unlink()
+    path.write_text(json.dumps(preserved))
+    artifact['source_receipt']['sha256'] = digest(path)
+
+    assert runtime.verify_artifacts(rewrite(profile))['status'] == 'candidate'
 
 
 def test_biominer_receipt_accepts_preserved_matching_project_overlay(profile):
@@ -141,6 +274,36 @@ def test_malformed_profile_has_useful_error(tmp_path, value):
 def test_absent_runtime_evidence_blocks_readiness(profile):
     with pytest.raises(runtime.ProfileError, match='generation'):
         runtime.verify(profile[0])
+
+
+@pytest.mark.parametrize('damage', ['outside', 'root_itself', 'symlink', 'invalid_root'])
+def test_profile_generation_root_cannot_escape_or_alias(tmp_path, damage):
+    root = tmp_path / '.native-runtime/generations'
+    root.mkdir(parents=True)
+    output = root / 'new'
+    if damage == 'outside':
+        output = tmp_path / 'outside'
+    elif damage == 'root_itself':
+        output = root
+    elif damage == 'symlink':
+        alias = tmp_path / 'alias'
+        alias.symlink_to(root, target_is_directory=True)
+        output = alias / 'new'
+    else:
+        root = tmp_path
+    with pytest.raises(runtime.ProfileError):
+        runtime._new_output(output, str(root))
+    assert not (tmp_path / 'outside').exists()
+    assert not (tmp_path / '.native-runtime/generations/new').exists()
+
+
+@pytest.mark.parametrize('option', ['--prof', '--prof='])
+def test_native_cli_rejects_abbreviated_profile_override(profile, option):
+    arguments = ['artifacts', '--profile', str(profile[0])]
+    arguments.extend([option + str(profile[0])] if option.endswith('=') else [option, str(profile[0])])
+    with pytest.raises(SystemExit) as error:
+        runtime.main(arguments)
+    assert error.value.code == 2
 
 
 def test_install_never_reuses_generation(profile, tmp_path):
@@ -240,7 +403,7 @@ if args[0]=='venv':
 elif args[0]=='sync':
     required=['--locked','--no-editable','--no-install-project','ml']
     assert all(value in args for value in required)
-    assert all(args.count(name)==1 for name in ['psycopg-c','pyarrow','duckdb'])
+    assert all(args.count(name)==1 for name in ['psycopg-c','pyarrow','duckdb','lxml'])
 else:
     assert all(value in args for value in ['--no-index','--no-deps','--require-hashes'])
     target=pathlib.Path(args[args.index('--python')+1]).parent.parent/'lib/python3.14/site-packages'
@@ -347,7 +510,7 @@ def test_compiled_policy_probe_mismatch_blocks_install(installable_profile, tmp_
 def test_host_gate_cannot_lower_reviewed_ssl_floor(profile, monkeypatch):
     _, doc = profile
     names = ['libssl3t64', 'libssl-dev', 'openssl', 'libpq5']
-    doc['host_packages'] = [{'name': name, 'minimum_version': '3.5.5-1ubuntu3.5', 'architecture': 'amd64', 'origin': 'Ubuntu', 'advisory': 'reviewed advisory'} for name in names]
+    doc['host_packages'] = [{'name': name, 'minimum_version': '3.5.5-1ubuntu3.6', 'architecture': 'amd64', 'origin': 'Ubuntu', 'advisory': 'reviewed advisory'} for name in names]
     original = runtime._run
     def command(argv, **kwargs):
         if argv[:2] == ['/usr/bin/apt-cache', 'policy']:

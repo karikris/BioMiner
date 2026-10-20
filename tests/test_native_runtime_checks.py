@@ -9,6 +9,40 @@ def test_runtime_checks_reject_binary_psycopg(checks):
         checks.check_psycopg_implementation('binary')
 
 
+@pytest.mark.parametrize('field', ['lxml_runtime', 'libxml_compiled', 'libxml_runtime',
+                                   'libxslt_compiled', 'libxslt_runtime',
+                                   'libiconv', 'zlib', 'compiled_features',
+                                   'runtime_features'])
+def test_lxml_loaded_native_mismatch_blocks_admission(checks, field):
+    observed = {
+        'lxml_runtime': '6.1.3',
+        'libxml_compiled': '2.15.4', 'libxml_runtime': '2.15.4',
+        'libxslt_compiled': '1.1.45', 'libxslt_runtime': '1.1.45',
+        'libiconv': '1.19', 'zlib': '1.3.2',
+        'compiled_features': ['catalog', 'html', 'iconv', 'regexp', 'schematron',
+                              'xmlschema', 'xpath', 'zlib'],
+        'runtime_features': ['catalog', 'html', 'iconv', 'regexp', 'schematron',
+                             'xmlschema', 'xpath', 'zlib'],
+    }
+    observed[field] = [] if field.endswith('features') else '0.0.0'
+    with pytest.raises(ValueError, match='lxml'):
+        checks.check_lxml_versions(observed)
+
+
+def test_lxml_patch_is_verified_by_receipt_and_loaded_versions(checks):
+    observed = {
+        'lxml_runtime': '6.1.3',
+        'libxml_compiled': '2.15.4', 'libxml_runtime': '2.15.4',
+        'libxslt_compiled': '1.1.45', 'libxslt_runtime': '1.1.45',
+        'libiconv': '1.19', 'zlib': '1.3.2',
+        'compiled_features': ['catalog', 'html', 'iconv', 'regexp', 'schematron',
+                              'xmlschema', 'xpath', 'zlib'],
+        'runtime_features': ['catalog', 'html', 'iconv', 'regexp', 'schematron',
+                             'xmlschema', 'xpath', 'zlib'],
+    }
+    checks.check_lxml_versions(observed)
+
+
 def test_native_tls_fixture_verifies_certificates(tmp_path):
     import sys
     import subprocess

@@ -19,7 +19,7 @@ def test_assembly_reports_missing_wheels_without_inventing_hashes(tmp_path):
     assert result.returncode == 0, result.stderr
     doc = json.loads((tmp_path / 'native-runtime.lock').read_text())
     assert doc['ready'] is False
-    assert set(doc['pending_artifacts']) == {'biominer', 'psycopg-c', 'pyarrow', 'duckdb'}
+    assert set(doc['pending_artifacts']) == {'biominer', 'psycopg-c', 'pyarrow', 'duckdb', 'lxml'}
     assert doc['artifacts'] == []
 
 
@@ -68,6 +68,23 @@ def test_preservation_retains_backend_manifest_dependencies(tmp_path):
     assert Path(nested[0]['path']).read_bytes() == b'actual build backend'
 
 
+def test_preserved_backend_inputs_do_not_require_retired_build_environment(tmp_path):
+    backend = tmp_path / 'backend.py'
+    backend.write_bytes(b'exact historical backend')
+    manifest = tmp_path / 'build-backend-inputs.json'
+    manifest.write_text(json.dumps([assembler.file_record(backend)]))
+    receipt = {'toolchain': {}, 'inputs': [assembler.file_record(manifest)],
+               'native_link_artifacts': []}
+    retained = assembler.preserve_inputs(receipt, tmp_path / 'first')
+    backend.unlink()
+    manifest.unlink()
+
+    again = assembler.preserve_inputs(retained, tmp_path / 'second')
+
+    assert all(Path(item['path']).is_file() for item in again['inputs'])
+    assert len(again['inputs']) == len(retained['inputs'])
+
+
 def test_new_assembly_preserves_previous_candidate_receipt(tmp_path):
     script = Path(__file__).parents[1] / 'scripts/assemble_native_profile.py'
     spec = importlib.util.spec_from_file_location('assembler_immutable', script)
@@ -82,16 +99,20 @@ def test_new_assembly_preserves_previous_candidate_receipt(tmp_path):
 
 
 @pytest.mark.parametrize('explicit_override', [False, True])
-def test_assembly_selects_biominer_build_receipt(tmp_path, explicit_override):
+@pytest.mark.parametrize('package', ['biominer', 'lxml', 'psycopg-c', 'pyarrow'])
+def test_assembly_selects_build_receipt(tmp_path, explicit_override, package):
     receipts = []
-    for name in ('biominer', 'biominer-upgrade'):
+    version = {'biominer': '0.1.0', 'lxml': '6.1.3', 'psycopg-c': '3.3.6',
+               'pyarrow': '25.0.1+biominer.1'}[package]
+    base = {'psycopg-c': 'psycopg', 'pyarrow': 'arrow/generation-1'}.get(package, package)
+    for name in (base, package + '-upgrade'):
         build = tmp_path / '.native-runtime' / name
         build.mkdir(parents=True)
-        wheel = build / 'biominer-0.1.0-py3-none-any.whl'
+        wheel = build / f'{package}-{version}-py3-none-any.whl'
         with zipfile.ZipFile(wheel, 'w') as archive:
-            archive.writestr('biominer/__init__.py', name)
-        receipt = build / 'receipt.json'
-        receipt.write_text(json.dumps({'version': '0.1.0', 'wheel': assembler.file_record(wheel)}))
+            archive.writestr(f'{package}/__init__.py', name)
+        receipt = build / ('build-receipt.json' if package == 'pyarrow' else 'receipt.json')
+        receipt.write_text(json.dumps({'version': version, 'wheel': assembler.file_record(wheel)}))
         receipts.append(receipt)
     output = tmp_path / 'new-profile.lock'
     command = [sys.executable, assembler.__file__, '--root', str(tmp_path),
@@ -99,12 +120,28 @@ def test_assembly_selects_biominer_build_receipt(tmp_path, explicit_override):
     selected = receipts[0]
     if explicit_override:
         selected = receipts[1]
-        command.extend(['--biominer-receipt', str(selected)])
+        option = {'psycopg-c': 'psycopg', 'pyarrow': 'arrow'}.get(package, package)
+        command.extend([f'--{option}-receipt', str(selected)])
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    artifact = next(item for item in json.loads(output.read_text())['artifacts'] if item['name'] == 'biominer')
+    artifact = next(item for item in json.loads(output.read_text())['artifacts'] if item['name'] == package)
     assert artifact['source_receipt'] == assembler.file_record(selected)
     assert artifact['sha256'] == json.loads(selected.read_text())['wheel']['sha256']
+
+
+def test_assembly_includes_bounded_lxml_recipe(tmp_path):
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    (scripts / 'build_native_lxml.py').write_text('raise SystemExit("fixture")\n')
+    output = tmp_path / 'candidate.lock'
+    assembler.assemble(tmp_path, output, tmp_path / 'absent-python')
+    recipe = json.loads(output.read_text())['recipes'][0]
+    assert Path(recipe['script']['path']).name == 'build_native_lxml.py'
+    assert recipe['args'] == [
+        '--python', str(tmp_path / '.native-runtime/lxml/build-env/bin/python'),
+        '--sources', str(tmp_path / '.native-runtime/lxml/downloads'),
+        '--output', '{output}/lxml', '--jobs', '4',
+    ]
 
 
 @pytest.mark.parametrize('existing_kind', ['file', 'dangling-symlink'])

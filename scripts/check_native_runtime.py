@@ -19,8 +19,8 @@ import tempfile
 
 
 IMPORT_ORDERS = (
-    ('pyarrow.flight', 'pyarrow.parquet.encryption', 'psycopg.pq', 'duckdb'),
-    ('duckdb', 'psycopg.pq', 'pyarrow.parquet.encryption', 'pyarrow.flight'),
+    ('pyarrow.flight', 'pyarrow.parquet.encryption', 'psycopg.pq', 'duckdb', 'lxml.etree'),
+    ('lxml.etree', 'duckdb', 'psycopg.pq', 'pyarrow.parquet.encryption', 'pyarrow.flight'),
 )
 BYPASS_SETTINGS = ('allow_unsigned_extensions', 'allow_extensions_metadata_mismatch')
 # CPython v3.14.7, Modules/clinic/_hashopenssl.c.h:1877-1888; GitHits
@@ -202,14 +202,55 @@ def check_crypto_versions(owner: str, versions: set[str]) -> None:
         raise ValueError(f'affected or wrong-line embedded crypto: {owner}: {versions}')
 
 
-def check_effective_versions(profile: dict) -> None:
+def observed_lxml_versions() -> dict:
+    from lxml import etree
+    library = ctypes.CDLL(etree.__file__)
+    library.zlibVersion.restype = ctypes.c_char_p
+    iconv = ctypes.c_int.in_dll(library, '_libiconv_version').value
+    return {
+        'lxml_runtime': etree.__version__,
+        'libxml_compiled': '.'.join(map(str, etree.LIBXML_COMPILED_VERSION)),
+        'libxml_runtime': '.'.join(map(str, etree.LIBXML_VERSION)),
+        'libxslt_compiled': '.'.join(map(str, etree.LIBXSLT_COMPILED_VERSION)),
+        'libxslt_runtime': '.'.join(map(str, etree.LIBXSLT_VERSION)),
+        'libiconv': f'{iconv >> 8}.{iconv & 255}',
+        'zlib': library.zlibVersion().decode('ascii'),
+        'compiled_features': sorted(etree.LIBXML_COMPILED_FEATURES),
+        'runtime_features': sorted(etree.LIBXML_FEATURES),
+    }
+
+
+def check_lxml_versions(observed: dict) -> None:
+    # The source receipt separately binds the zlib security patch: its upstream
+    # version string alone cannot distinguish patched and unpatched 1.3.2.
+    expected = {'lxml_runtime': '6.1.3',
+                'libxml_compiled': '2.15.4', 'libxml_runtime': '2.15.4',
+                'libxslt_compiled': '1.1.45', 'libxslt_runtime': '1.1.45',
+                'libiconv': '1.19', 'zlib': '1.3.2'}
+    for key, version in expected.items():
+        if observed.get(key) != version:
+            raise ValueError(f'lxml loaded native version differs: {key}')
+    required = {'catalog', 'html', 'iconv', 'regexp', 'schematron',
+                'xmlschema', 'xpath', 'zlib'}
+    for key in ('compiled_features', 'runtime_features'):
+        if not required <= set(observed.get(key, [])):
+            raise ValueError(f'lxml native features missing: {key}')
+
+
+def check_effective_versions(profile: dict) -> dict:
+    packages = {}
     for artifact in profile['artifacts']:
-        if importlib.metadata.version(artifact['name']) != artifact['version']:
+        packages[artifact['name']] = importlib.metadata.version(artifact['name'])
+        if packages[artifact['name']] != artifact['version']:
             raise ValueError(f'effective package version changed: {artifact["name"]}')
     import psycopg.pq
     check_psycopg_implementation(psycopg.pq.__impl__)
     if ssl.OPENSSL_VERSION.split()[1] != profile['python']['openssl_version']:
         raise ValueError('effective Python OpenSSL changed')
+    lxml_native = observed_lxml_versions()
+    check_lxml_versions(lxml_native)
+    return {'packages': packages, 'python_openssl': ssl.OPENSSL_VERSION,
+            'lxml_native': lxml_native}
 
 
 def check_native_inventory(profile: dict, generation: Path, order: tuple[str, ...]) -> list[dict]:
@@ -297,7 +338,7 @@ def profile_check(name: str, path: Path, generation: Path, *, native_order: tupl
     policy_id = profile['extension_policy']['policy_id']
     evidence = {}
     if name == 'effective_versions':
-        check_effective_versions(profile)
+        evidence['effective_versions'] = check_effective_versions(profile)
     elif name == 'native_inventory':
         if native_order is None:
             evidence['import_orders'] = check_import_orders(path, generation)

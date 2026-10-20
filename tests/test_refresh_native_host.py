@@ -12,6 +12,10 @@ from tests.test_native_runtime import profile  # shared valid artifact fixture
 
 def setup_host(profile, monkeypatch):
     path, doc = profile
+    # refresh loads its own hash-bound copy of native_runtime, while the shared
+    # fixture replaces only the test patch digest in the normal imported copy.
+    monkeypatch.setattr(runtime, 'LXML_ZLIB_PATCH_SHA256',
+                        hashlib.sha256(b'reviewed patch fixture').hexdigest())
     lib = path.parent / 'libssl.so'
     lib.write_bytes(b'old package bytes')
     doc['ready'] = True
@@ -24,10 +28,10 @@ def setup_host(profile, monkeypatch):
         if command[1] == '-S':
             return f'libssl3t64:amd64: {lib}\n'
         if command[1] == '-W':
-            return '3.5.5-1ubuntu3.6\tamd64\tinstall ok installed'
+            return '3.5.5-1ubuntu3.7\tamd64\tinstall ok installed'
         return 'official installed-version Ubuntu policy'
     monkeypatch.setattr(runtime, '_run', run)
-    monkeypatch.setattr(runtime, '_host', lambda doc: [{'name': 'libssl3t64', 'version': '3.5.5-1ubuntu3.6', 'architecture': 'amd64'}])
+    monkeypatch.setattr(runtime, '_host', lambda doc: [{'name': 'libssl3t64', 'version': '3.5.5-1ubuntu3.7', 'architecture': 'amd64'}])
     return path, doc, lib, old
 
 

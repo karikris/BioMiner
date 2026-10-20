@@ -6,6 +6,15 @@ host-specific artifact profile. Its supported target is Ubuntu 26.04, Linux
 x86_64, CPython 3.14.7 with the audited Astral 20260929 build/OpenSSL 3.5.9.
 It does not certify other hosts, containers, extension caches, or deployments.
 
+The 21 October security fallback is now qualified locally at
+`.native-runtime/generations/security-baseline-20261021-1`, using the frozen
+controls in `.native-runtime/snapshots/security-baseline-20261021-1`.
+It replaces the lxml wheel's affected embedded libraries and retains the
+previous Arrow/Polars baseline. Use the frozen invocation and exact hashes in
+the [phase 2 report](research/upgrade_phase_2_2026-10-21.md).
+Development-environment migration and the rest of phase 2 remain pending;
+hosted PostgreSQL/S3 qualification is still unrun.
+
 The 20 October dependency renewal retains the original profile and generation
 as historical evidence. Their repository configuration and script references
 are mutable: changing those files invalidates their verification. The host has
@@ -13,7 +22,7 @@ also advanced to Ubuntu OpenSSL package revision `3.5.5-1ubuntu3.7`; the earlier
 generation currently fails its recorded apt-origin check. Preserve its bytes
 and create a new profile and generation rather than editing its receipt.
 
-## Current 20 October qualification
+## Historical 20 October qualification
 
 The monthly dependency upgrade is qualified locally with
 `native-runtime-2026-10-20.lock` and
@@ -26,14 +35,15 @@ configuration. The three custom native wheels and their historical build
 receipts are unchanged. Host refresh records the currently installed Ubuntu
 libraries separately from their build-time evidence.
 
-All five installation checks passed; fresh verification, installed package
-consistency and launcher help also passed. Run through the checked launcher:
+At that qualification boundary all five installation checks, fresh verification,
+installed package consistency and launcher help passed. Its historical command
+was:
 
 ```bash
 .native-runtime/python-runtime/python/bin/python3.14 -I -B scripts/native_runtime.py exec --profile native-runtime-2026-10-20.lock --generation .native-runtime/generations/dependencies-20261020-1 -- -m biominer.cli --help
 ```
 
-The shared `.venv` and existing workers have not been migrated. Live PostgreSQL
+At that boundary the shared `.venv` and existing workers had not been migrated. Live PostgreSQL
 and hosted S3 checks, coordinated reboot and worker retirement remain unverified.
 See the [dependency review](research/backend_dependency_review_2026-10-20.md)
 for version decisions, security findings, compatibility evidence and exact

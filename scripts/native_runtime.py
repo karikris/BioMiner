@@ -28,7 +28,14 @@ class ProfileError(ValueError):
     """Missing, incompatible, or unverifiable native runtime evidence."""
 
 
-VERSIONS = {'psycopg-c': '3.3.6', 'pyarrow': '25.0.1+biominer.1', 'duckdb': '1.5.6+biominer.1'}
+VERSIONS = {'psycopg-c': '3.3.6', 'pyarrow': '25.0.1+biominer.1',
+            'duckdb': '1.5.6+biominer.1', 'lxml': '6.1.3'}
+LXML_NATIVE_VERSIONS = {'lxml': '6.1.3', 'libxml2': '2.15.4', 'libxslt': '1.1.45',
+                        'libiconv': '1.19', 'zlib': '1.3.2'}
+LXML_FEATURES = {'catalog', 'html', 'iconv', 'regexp', 'schematron',
+                 'xmlschema', 'xpath', 'zlib'}
+LXML_ZLIB_PATCH_COMMIT = 'df84af25dc1942490e1d1c899a07619152a46148'
+LXML_ZLIB_PATCH_SHA256 = '110ff14375733173d8aa54574473424fbd7dfe4b81f1ca34a759c6fe14b15b14'
 RUNTIME_CHECKS = {'effective_versions', 'native_inventory', 'extension_policy'}
 INSTALL_CHECKS = RUNTIME_CHECKS | {'tls', 'geometry'}
 BLOCKED_ENV = {'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONUSERBASE', 'GDAL_DRIVER_PATH', 'OPENSSL_MODULES', 'OPENSSL_CONF'}
@@ -113,6 +120,66 @@ def _inputs(doc: dict[str, Any], base: Path) -> None:
             raise ProfileError('source input requires exact source_revision')
 
 
+def _lxml_materials(receipt: dict[str, Any], base: Path, wheel: Path) -> None:
+    """Require retained, qualified relink material for the static native closure."""
+    def retained(record, label):
+        if not isinstance(record, dict):
+            raise ProfileError(f'lxml receipt requires {label}')
+        digest = _hash(record.get('sha256'), f'lxml {label} sha256')
+        matches = [item for item in receipt['inputs'] if item.get('sha256') == digest]
+        if not matches:
+            raise ProfileError(f'lxml {label} must be a checksummed retained input')
+        return _file(matches[0], base, f'lxml {label}')
+
+    licenses = _read_json_list(retained(receipt.get('license_manifest'), 'license_manifest'))
+    relink = receipt.get('relink')
+    if not isinstance(relink, dict):
+        raise ProfileError('lxml receipt requires relink materials')
+    for name in ('bundle', 'manifest'):
+        retained(relink.get(name), f'relink {name}')
+    result = _read_json(retained(relink.get('qualification'), 'relink qualification'))
+    if result.get('status') != 'passed' or result.get('relocated_bundle') is not True:
+        raise ProfileError('lxml relocated relink qualification did not pass')
+    _hash(result.get('replacement_library_sha256'), 'lxml replacement library sha256')
+    outputs = result.get('outputs')
+    if (not isinstance(outputs, list) or not outputs
+            or not all(isinstance(item, dict) and isinstance(item.get('name'), str)
+                       for item in outputs)):
+        raise ProfileError('lxml relink qualification requires extension outputs')
+    with zipfile.ZipFile(wheel) as archive:
+        members = [name for name in archive.namelist() if name.endswith('.so')]
+        native = {Path(name).name: hashlib.sha256(archive.read(name)).hexdigest() for name in members}
+        if (len(native) != len(members) or len(outputs) != len(native)
+                or {item['name'] for item in outputs} != set(native)):
+            raise ProfileError('lxml relink outputs differ from the wheel extensions')
+        for item in outputs:
+            if (item.get('original_sha256') != native[item['name']]
+                    or item.get('relinked_sha256') != native[item['name']]):
+                raise ProfileError('lxml relink output differs from the admitted wheel')
+        required = {'libiconv-COPYING.LIB', 'libcharset-COPYING.LIB', 'NOTICE.txt',
+                    'zlib-LICENSE', 'libxml2-Copyright', 'libxslt-Copyright'}
+        if (len(licenses) != len(required)
+                or not all(isinstance(item.get('path'), str) for item in licenses)
+                or {Path(item['path']).name for item in licenses} != required):
+            raise ProfileError('lxml native license manifest is incomplete')
+        for item in licenses:
+            retained(item, 'native license')
+            members = [name for name in archive.namelist()
+                       if name.endswith('/' + Path(item['path']).name)]
+            if len(members) != 1 or hashlib.sha256(archive.read(members[0])).hexdigest() != item['sha256']:
+                raise ProfileError('lxml native license differs from the wheel')
+
+
+def _read_json_list(path: Path) -> list[dict[str, Any]]:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ProfileError(f'lxml invalid native license manifest: {path}') from exc
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ProfileError('lxml native license manifest must contain file records')
+    return value
+
+
 def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Path:
     path = _file(artifact, base, f'wheel {artifact.get("name")}')
     try:
@@ -179,6 +246,23 @@ def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Pat
         version = receipt['effective_versions'].get('openssl')
         if not isinstance(version, str) or not re.fullmatch(r'3\.6\.(?:[5-9]|[1-9][0-9]+)', version):
             raise ProfileError(f'{name} receipt requires patched OpenSSL 3.6.5+ on the approved line')
+    if name == 'lxml':
+        if any(receipt['effective_versions'].get(key) != value
+               for key, value in LXML_NATIVE_VERSIONS.items()):
+            raise ProfileError('lxml receipt requires the reviewed patched native versions')
+        policy = receipt.get('native_policy')
+        if (not isinstance(policy, dict)
+                or policy.get('zlib_patch_commit') != LXML_ZLIB_PATCH_COMMIT
+                or policy.get('zlib_patch_sha256') != LXML_ZLIB_PATCH_SHA256
+                or not any(item.get('sha256') == LXML_ZLIB_PATCH_SHA256
+                           for item in receipt['inputs'])):
+            raise ProfileError('lxml receipt requires the checksummed zlib security patch')
+        features = policy.get('libxml_features')
+        if (not isinstance(features, list)
+                or not all(isinstance(item, str) for item in features)
+                or not LXML_FEATURES <= set(features)):
+            raise ProfileError('lxml receipt requires the reviewed libxml features')
+        _lxml_materials(receipt, receipt_path.parent, path)
     return path
 
 
@@ -195,12 +279,12 @@ def verify_artifacts(profile: str | Path) -> dict[str, Any]:
         seen.add(name)
         if name in VERSIONS:
             version = artifact.get('version')
-            accepted = version == VERSIONS[name] if name == 'psycopg-c' else isinstance(version, str) and re.fullmatch(re.escape(VERSIONS[name].split('+')[0]) + r'\+biominer\.(?:1|[0-9a-f]{12})', version)
+            accepted = version == VERSIONS[name] if name in ('psycopg-c', 'lxml') else isinstance(version, str) and re.fullmatch(re.escape(VERSIONS[name].split('+')[0]) + r'\+biominer\.(?:1|[0-9a-f]{12})', version)
             if not accepted:
                 raise ProfileError(f'unapproved native artifact version: {name}')
         _wheel(artifact, path.parent, doc['project'])
     if seen != set(VERSIONS) | {'biominer'}:
-        raise ProfileError('profile requires exactly psycopg-c, pyarrow, duckdb, biominer wheels')
+        raise ProfileError('profile requires exactly psycopg-c, pyarrow, duckdb, lxml, biominer wheels')
     return {'status': 'candidate', 'ready': False, 'profile_sha256': sha256(path), 'artifacts': sorted(seen)}
 
 
@@ -277,9 +361,9 @@ def _host(doc: dict[str, Any]) -> list[dict[str, str]]:
             raise ProfileError('host package requires minimum_version')
         if name in {'libssl3t64', 'libssl-dev', 'openssl'}:
             try:
-                _run(['/usr/bin/dpkg', '--compare-versions', minimum, 'ge', '3.5.5-1ubuntu3.6'])
+                _run(['/usr/bin/dpkg', '--compare-versions', minimum, 'ge', '3.5.5-1ubuntu3.7'])
             except ProfileError as exc:
-                raise ProfileError(f'host {name} profile minimum {minimum} is below reviewed 3.5.5-1ubuntu3.6 floor') from exc
+                raise ProfileError(f'host {name} profile minimum {minimum} is below reviewed 3.5.5-1ubuntu3.7 floor') from exc
         output = _run(['/usr/bin/dpkg-query', '-W', '-f=${Version}\t${Architecture}\t${Status}', name]).strip().split('\t')
         if len(output) != 3 or output[1] != 'amd64' or output[2] != 'install ok installed':
             raise ProfileError(f'host package unavailable: {name}')
@@ -365,13 +449,23 @@ def _write(path: Path, value: Any) -> None:
         target.write('\n')
 
 
-def _new_output(path: Path) -> None:
+def _new_output(path: Path, generation_root: str | None = None) -> None:
     if path.exists() or path.is_symlink():
         raise ProfileError(f'generation/output already exists: {path}')
     resolved = path.resolve()
-    repository_root = Path(__file__).resolve().parents[1]
-    if not (resolved.is_relative_to(Path('/tmp')) or resolved.is_relative_to(repository_root / '.native-runtime')):
-        raise ProfileError('outputs must be under /tmp or repository .native-runtime')
+    if generation_root is not None:
+        if not isinstance(generation_root, str):
+            raise ProfileError('profile generation_root must be an absolute directory')
+        root = Path(generation_root)
+        if (not root.is_absolute() or root.name != 'generations'
+                or root.parent.name != '.native-runtime' or root.resolve() != root):
+            raise ProfileError('profile generation_root must be an unaliased .native-runtime/generations directory')
+        if resolved == root or not resolved.is_relative_to(root) or path.absolute() != resolved:
+            raise ProfileError('generation must be below the profile generation_root without symlinks')
+    else:
+        repository_root = Path(__file__).resolve().parents[1]
+        if not (resolved.is_relative_to(Path('/tmp')) or resolved.is_relative_to(repository_root / '.native-runtime')):
+            raise ProfileError('outputs must be under /tmp or repository .native-runtime')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.mkdir(mode=0o700)
 
@@ -533,7 +627,7 @@ def install(profile: str | Path, generation: str | Path) -> dict[str, Any]:
     host = _host(doc)
     python = _python(doc, path.parent)
     uv = _file(doc['uv'], path.parent, 'uv')
-    _new_output(generation)
+    _new_output(generation, doc.get('generation_root'))
     try:
         project = generation / 'project'
         project.mkdir()
@@ -543,7 +637,7 @@ def install(profile: str | Path, generation: str | Path) -> dict[str, Any]:
         environment['UV_PROJECT_ENVIRONMENT'] = str(generation / 'env')
         environment['UV_CACHE_DIR'] = str(generation / 'cache')
         _run([str(uv), 'venv', '--python', str(python), str(generation / 'env')], env=environment)
-        _run([str(uv), 'sync', '--locked', '--no-editable', '--no-install-project', '--extra', 'postgres', '--extra', 'geo', '--extra', 'ml', '--no-install-package', 'psycopg-c', '--no-install-package', 'pyarrow', '--no-install-package', 'duckdb', '--project', str(project)], env=environment, timeout=3600)
+        _run([str(uv), 'sync', '--locked', '--no-editable', '--no-install-project', '--extra', 'postgres', '--extra', 'geo', '--extra', 'ml', '--no-install-package', 'psycopg-c', '--no-install-package', 'pyarrow', '--no-install-package', 'duckdb', '--no-install-package', 'lxml', '--project', str(project)], env=environment, timeout=3600)
         requirements = generation / 'native-wheels.txt'
         requirements.write_text('\n'.join(f'{_file(artifact, path.parent, "wheel").as_uri()} --hash=sha256:{artifact["sha256"]}' for artifact in doc['artifacts']) + '\n')
         _run([str(uv), 'pip', 'install', '--python', str(generation / 'env/bin/python'), '--no-index', '--no-deps', '--require-hashes', '-r', str(requirements)], env=environment)
@@ -600,10 +694,10 @@ def execute(profile: str | Path, generation: str | Path, args: list[str]) -> Non
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest='command', required=True)
     for command in ('build', 'install', 'verify', 'exec', 'artifacts'):
-        child = commands.add_parser(command)
+        child = commands.add_parser(command, allow_abbrev=False)
         child.add_argument('--profile', required=True, type=Path)
         child.add_argument('--generation', type=Path)
         child.add_argument('--output', type=Path)
