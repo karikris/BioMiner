@@ -38,7 +38,7 @@ LXML_ZLIB_PATCH_COMMIT = 'df84af25dc1942490e1d1c899a07619152a46148'
 LXML_ZLIB_PATCH_SHA256 = '110ff14375733173d8aa54574473424fbd7dfe4b81f1ca34a759c6fe14b15b14'
 ARROW_SOURCE_REVISION = 'beccec0d0c451b7aa3e4530416ac431b3c035c69'
 ARROW_ARCHIVE_SHA256 = 'a2cb8711cb74251ae8c7e9051f4a85b5034fd689867e202d774e417d532bdcf7'
-ARROW_RECIPE_SHA256 = 'dfb95a9f94962bfbc1b2b48d16cba5670f52dc6aa5f195d0f08c0dc76c828541'
+ARROW_RECIPE_SHA256 = '65077fc43ba4542eb051b0a07a53ba147614551d192e774e13773aef0567da83'
 ARROW_SECURITY_PATCH_COMMIT = 'a769c291e01093b73d03a075179cf7a09bf92ad8'
 ARROW_SECURITY_PATCH_SHA256 = 'd51722f4ddb3934a0c846b691a60a730cb77d5a814d7077cab1c5d145c54aaa1'
 ARROW_SECURITY_FILES = {
@@ -49,6 +49,18 @@ ARROW_SECURITY_FILES = {
     'cpp/src/arrow/compute/kernels/vector_replace_test.cc': {
         'original_sha256': '24fdcfad027471f6833dc6efd1f07ba04a3adab7f1edb7aa485c9d2175a28e73',
         'patched_sha256': '2f926df7f6fbce5f7c9c0a32575e4eda39f6c446fa25ff0fa083046b63bb4360',
+    },
+}
+ARROW_OFFSET_PATCH_COMMIT = '0efbdec7a10da1a4043fc1210c61e73c88bc9b4f'
+ARROW_OFFSET_PATCH_SHA256 = '6c64e115aa53621ae7e1992417b26ab7c6c51fb265d3e64216580f7dcae87d50'
+ARROW_OFFSET_FILES = {
+    'cpp/src/arrow/compute/kernels/copy_data_internal.h': {
+        'original_sha256': 'd1f2979d5a4d4f73f4ab0a40043d377962871f0d85ff3b4a494bcbf94c948c99',
+        'patched_sha256': '21b1f8acce63e0ca301a968339d731eddb5efd8e8eeb1a55638ffe665a046621',
+    },
+    'cpp/src/arrow/compute/kernels/vector_replace_test.cc': {
+        'original_sha256': '2f926df7f6fbce5f7c9c0a32575e4eda39f6c446fa25ff0fa083046b63bb4360',
+        'patched_sha256': 'c087392bbd8114e903608b36c1e4e88a087677cbcfda484cb270d227b385788e',
     },
 }
 RUNTIME_CHECKS = {'effective_versions', 'native_inventory', 'extension_policy'}
@@ -196,7 +208,7 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
 
 
 def _arrow_security(receipt: dict[str, Any], base: Path, version: str) -> None:
-    """Bind this Arrow25 candidate to the reviewed source, patch and recipe.
+    """Bind this Arrow25 candidate to both ordered fixes and the exact recipe.
 
     Retained inputs may have moved during profile assembly. Nested manifests
     remain byte-identical, so resolve their descriptors by retained SHA256.
@@ -221,23 +233,40 @@ def _arrow_security(receipt: dict[str, Any], base: Path, version: str) -> None:
     if (type(application.get('schema_version')) is not int
             or application['schema_version'] != 1
             or application.get('source_revision') != ARROW_SOURCE_REVISION
-            or not isinstance(patches, list) or len(patches) != 1
-            or not isinstance(patches[0], dict)):
-        raise ProfileError('Arrow patch application requires the reviewed source and patch')
-    patch = patches[0]
-    if patch.get('commit') != ARROW_SECURITY_PATCH_COMMIT:
-        raise ProfileError('Arrow security patch commit differs from the reviewed fix')
-    retained(patch.get('patch'), 'security patch', ARROW_SECURITY_PATCH_SHA256)
-    files = patch.get('files')
-    expected_files = [{'relative': relative, **pins}
-                      for relative, pins in ARROW_SECURITY_FILES.items()]
-    if (not isinstance(files, list) or len(files) != len(expected_files)
-            or any(not isinstance(item, dict) for item in files)
-            or any(files.count(item) != 1 for item in expected_files)):
-        raise ProfileError('Arrow patch application lacks the exact reviewed source hashes')
-    for item in expected_files:
-        retained({'path': item['relative'], 'sha256': item['patched_sha256']},
-                 'patched source')
+            or not isinstance(patches, list) or len(patches) != 2
+            or any(not isinstance(item, dict) for item in patches)):
+        raise ProfileError('Arrow patch application requires both ordered reviewed patches')
+    expected_stages = (
+        (ARROW_SECURITY_PATCH_COMMIT, ARROW_SECURITY_PATCH_SHA256, ARROW_SECURITY_FILES),
+        (ARROW_OFFSET_PATCH_COMMIT, ARROW_OFFSET_PATCH_SHA256, ARROW_OFFSET_FILES),
+    )
+    final_hashes = {}
+    for patch, (commit, patch_sha256, source_pins) in zip(patches, expected_stages):
+        if patch.get('commit') != commit:
+            raise ProfileError('Arrow security patch order or commit differs from the reviewed fixes')
+        retained(patch.get('patch'), 'security patch', patch_sha256)
+        files = patch.get('files')
+        expected_files = [{'relative': relative, **pins}
+                          for relative, pins in source_pins.items()]
+        if (not isinstance(files, list) or len(files) != len(expected_files)
+                or any(not isinstance(item, dict) for item in files)
+                or any(files.count(item) != 1 for item in expected_files)):
+            raise ProfileError('Arrow patch application lacks the exact reviewed source hashes')
+        for relative, pins in source_pins.items():
+            if relative in final_hashes and final_hashes[relative] != pins['original_sha256']:
+                raise ProfileError('Arrow reviewed patch source transitions do not join')
+            final_hashes[relative] = pins['patched_sha256']
+    final_sources = application.get('final_sources')
+    expected_final = [{'relative': relative, 'sha256': digest}
+                      for relative, digest in final_hashes.items()]
+    if (not isinstance(final_sources, list) or len(final_sources) != len(expected_final)
+            or any(not isinstance(item, dict) for item in final_sources)
+            or any(final_sources.count(item) != 1 for item in expected_final)):
+        raise ProfileError('Arrow patch application lacks the exact final source inventory')
+    # The overlapping regression file has an intermediate hash after stage1.
+    # It is historical evidence; only the final state must remain on disk.
+    for item in expected_final:
+        retained({'path': item['relative'], 'sha256': item['sha256']}, 'patched source')
 
     build = _read_json(retained(receipt.get('build_inputs'), 'build inputs'))
     if (type(build.get('schema_version')) is not int or build['schema_version'] != 1
@@ -251,7 +280,7 @@ def _arrow_security(receipt: dict[str, Any], base: Path, version: str) -> None:
     if build.get('security_patches') != application:
         raise ProfileError('Arrow build inputs do not bind the security patch application')
     sources = build.get('patched_sources')
-    expected_hashes = {item['patched_sha256'] for item in expected_files}
+    expected_hashes = set(final_hashes.values())
     if (not isinstance(sources, list) or len(sources) != len(expected_hashes)
             or any(not isinstance(item, dict) for item in sources)
             or {_hash(item.get('sha256'), 'Arrow build source') for item in sources}

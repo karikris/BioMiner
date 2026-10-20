@@ -35,7 +35,7 @@ outside Git; append curated provenance to `provenance/githits.jsonl`.
 | 2 | 2.3 | Verify actual loaded versions, fresh admission, TLS/subprocess/resume and independent fallback operation |
 | 3 | 3.1 | Explicit explode semantics preserving candidate provenance rejection and report label counts |
 | 3 | 3.2 | Resolve relevant schema/coercion/order/ingestion changes; explicit bounded per-run spill configuration |
-| 3 | 3.3 | Repair the newly confirmed Arrow 25 boolean-allocation defect; qualify a safe patched fallback, then run paired Polars 1/2 tests with that Arrow 25 build, lock Polars 2 and run full regression |
+| 3 | 3.3 | Repair the confirmed Arrow 25 boolean-allocation and sliced-boolean copy defects; qualify a safe patched fallback, then run paired Polars 1/2 tests with that Arrow 25 build, lock Polars 2 and run full regression |
 | 4 | 4.1 | Pinned Arrow 26 recipe, reviewed crypto/build patches and static dependencies; four compiler jobs maximum |
 | 4 | 4.2 | Audit stricter/removed Arrow APIs; reader-depth and malformed-input rejection tests |
 | 4 | 4.3 | Custom Arrow 26 wheel and native receipts; lock/admission changes and new verified generation |
@@ -95,6 +95,25 @@ before the phase-3 push handshake. Additional corrective task-3.3 commits remain
 in the ancestry; its final commit binds the actual qualified source. Preserve
 active workloads and replace registered entrypoints only after the new fallback
 passes verification and checkpoint/ownership checks.
+
+The allocation-only wheel subsequently failed the actual native regression:
+an offset-one Boolean array `[null, true, null]` forward-filled to
+`[null, false, false]`. A separate bounded reproduction confirmed the committed
+oracle and failures in all three affected operations; offset-zero Boolean and
+sliced integer controls passed. Upstream
+[PR 51240](https://github.com/apache/arrow/pull/51240), commit
+`0efbdec7a10da1a4043fc1210c61e73c88bc9b4f`, fixes the missing input-array
+offset in Boolean bitmap copying. Arrow 26 includes this fix. Its changelog
+entry alone and automated `no_impact` classification did not establish
+compatibility; exact source inspection and actual observations take precedence.
+
+Task 3.3 therefore requires this second exact backport after the unchanged
+allocation patch. Bind both ordered patch stages and the three final source
+files, including the test file modified by both stages. Build a fresh isolated
+wheel and pair, retaining the failing regression and all failed receipts.
+This is an established correctness defect; no additional CVE, GHSA or memory
+exploit is asserted. Identity checks passing for the allocation-only wheel do
+not satisfy native qualification or close the allocation security finding.
 
 ### Required target behavior
 

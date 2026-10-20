@@ -44,6 +44,7 @@ def arrow_fixture_pins():
         'ARROW_ARCHIVE_SHA256': hashlib.sha256(b'fixture Arrow archive').hexdigest(),
         'ARROW_RECIPE_SHA256': hashlib.sha256(b'fixture Arrow recipe').hexdigest(),
         'ARROW_SECURITY_PATCH_SHA256': hashlib.sha256(b'fixture Arrow patch').hexdigest(),
+        'ARROW_OFFSET_PATCH_SHA256': hashlib.sha256(b'fixture Arrow offset patch').hexdigest(),
         'ARROW_SECURITY_FILES': {
             'cpp/src/arrow/compute/kernels/vector_replace.cc': {
                 'original_sha256': 'a' * 64,
@@ -54,6 +55,16 @@ def arrow_fixture_pins():
                 'patched_sha256': hashlib.sha256(b'fixture patched regression').hexdigest(),
             },
         },
+        'ARROW_OFFSET_FILES': {
+            'cpp/src/arrow/compute/kernels/copy_data_internal.h': {
+                'original_sha256': 'c' * 64,
+                'patched_sha256': hashlib.sha256(b'fixture patched copy header').hexdigest(),
+            },
+            'cpp/src/arrow/compute/kernels/vector_replace_test.cc': {
+                'original_sha256': hashlib.sha256(b'fixture patched regression').hexdigest(),
+                'patched_sha256': hashlib.sha256(b'fixture final regression').hexdigest(),
+            },
+        },
     }
 
 
@@ -61,9 +72,12 @@ def arrow_build_fixture(root):
     archive = blob(root, 'arrow-source.tar', 'fixture Arrow archive')
     recipe = blob(root, 'build-recipe.py', 'fixture Arrow recipe')
     patch = blob(root, 'arrow-security.patch', 'fixture Arrow patch')
+    offset_patch = blob(root, 'arrow-offset.patch', 'fixture Arrow offset patch')
     files = arrow_fixture_pins()['ARROW_SECURITY_FILES']
+    offset_files = arrow_fixture_pins()['ARROW_OFFSET_FILES']
     sources = [blob(root, 'vector_replace.cc', 'fixture patched kernel'),
-               blob(root, 'vector_replace_test.cc', 'fixture patched regression')]
+               blob(root, 'vector_replace_test.cc', 'fixture final regression'),
+               blob(root, 'copy_data_internal.h', 'fixture patched copy header')]
     application = {
         'schema_version': 1,
         'source_revision': 'beccec0d0c451b7aa3e4530416ac431b3c035c69',
@@ -71,7 +85,13 @@ def arrow_build_fixture(root):
             'commit': 'a769c291e01093b73d03a075179cf7a09bf92ad8',
             'patch': patch,
             'files': [{'relative': name, **pins} for name, pins in files.items()],
+        }, {
+            'commit': '0efbdec7a10da1a4043fc1210c61e73c88bc9b4f',
+            'patch': offset_patch,
+            'files': [{'relative': name, **pins} for name, pins in offset_files.items()],
         }],
+        'final_sources': [{'relative': name, 'sha256': pins['patched_sha256']}
+                          for name, pins in (files | offset_files).items()],
     }
     patch_application = blob(root, 'arrow-security-patches.json', json.dumps(application))
     build = {
@@ -87,7 +107,7 @@ def arrow_build_fixture(root):
         'source_revision': application['source_revision'],
         'recipe': recipe, 'patch_application': patch_application, 'build_inputs': build_inputs,
         'version': version, 'effective_versions': {'pyarrow': version, 'openssl': '3.6.5'},
-        'inputs': [archive, recipe, patch, patch_application, build_inputs, *sources],
+        'inputs': [archive, recipe, patch, offset_patch, patch_application, build_inputs, *sources],
     }
 
 
@@ -191,6 +211,22 @@ def test_valid_artifact_inventory_is_candidate_not_ready(profile):
     assert result['ready'] is False
 
 
+def test_arrow_chain_keeps_intermediate_source_hash_historical(profile):
+    artifact = profile[1]['artifacts'][1]
+    receipt = json.loads(Path(artifact['source_receipt']['path']).read_text())
+    application = json.loads(Path(receipt['patch_application']['path']).read_text())
+    first, second = application['patches']
+    relative = 'cpp/src/arrow/compute/kernels/vector_replace_test.cc'
+    intermediate = next(row['patched_sha256'] for row in first['files']
+                        if row['relative'] == relative)
+    before = next(row['original_sha256'] for row in second['files']
+                  if row['relative'] == relative)
+    assert intermediate == before
+    assert intermediate not in {row['sha256'] for row in receipt['inputs']}
+    assert len(application['final_sources']) == 3
+    assert runtime.verify_artifacts(profile[0])['ready'] is False
+
+
 def test_arrow25_receipt_requires_reviewed_security_patch(profile):
     # The historical build has the expected version and OpenSSL but no
     # evidence that the vulnerable chunked-boolean source was corrected.
@@ -218,7 +254,11 @@ def replace_arrow_receipt(profile, receipt):
     'source_not_retained', 'recipe_not_retained', 'unreviewed_recipe',
     'build_inputs_not_retained', 'build_source_revision', 'build_archive',
     'build_recipe', 'build_patch', 'build_sources', 'malformed_build_source',
-    'build_version', 'effective_version',
+    'build_version', 'effective_version', 'allocation_only', 'offset_only',
+    'reversed_patches', 'duplicate_patch', 'offset_commit', 'offset_digest',
+    'offset_original_source', 'offset_patched_source', 'offset_not_retained',
+    'offset_source_not_retained', 'final_sources_missing', 'final_sources_duplicate',
+    'final_sources_wrong_path', 'final_sources_intermediate', 'build_sources_intermediate',
 ])
 def test_arrow25_security_evidence_cannot_be_relabelled(profile, damage):
     artifact = profile[1]['artifacts'][1]
@@ -241,6 +281,13 @@ def test_arrow25_security_evidence_cannot_be_relabelled(profile, damage):
         patch['files'].pop(0)
     elif damage == 'duplicate_kernel':
         patch['files'].append(patch['files'][0])
+    elif damage == 'offset_not_retained':
+        key = application['patches'][1]['patch']['sha256']
+        receipt['inputs'] = [item for item in receipt['inputs'] if item['sha256'] != key]
+    elif damage == 'offset_source_not_retained':
+        key = arrow_fixture_pins()['ARROW_OFFSET_FILES'][
+            'cpp/src/arrow/compute/kernels/copy_data_internal.h']['patched_sha256']
+        receipt['inputs'] = [item for item in receipt['inputs'] if item['sha256'] != key]
     elif damage.endswith('_not_retained'):
         key = {'patch': patch['patch'], 'source': build['patched_sources'][0],
                'recipe': receipt['recipe'], 'build_inputs': receipt['build_inputs']}[
@@ -265,6 +312,33 @@ def test_arrow25_security_evidence_cannot_be_relabelled(profile, damage):
         receipt['version'] = '25.0.1+biominer.' + 'f' * 12
     elif damage == 'effective_version':
         receipt['effective_versions']['pyarrow'] = '25.0.1'
+    elif damage == 'allocation_only':
+        application['patches'] = application['patches'][:1]
+        application.pop('final_sources', None)
+    elif damage == 'offset_only':
+        application['patches'] = application['patches'][1:]
+    elif damage == 'reversed_patches':
+        application['patches'].reverse()
+    elif damage == 'duplicate_patch':
+        application['patches'].append(application['patches'][1])
+    elif damage == 'offset_commit':
+        application['patches'][1]['commit'] = 'f' * 40
+    elif damage == 'offset_digest':
+        application['patches'][1]['patch'] = patch['patch']
+    elif damage in ('offset_original_source', 'offset_patched_source'):
+        # The overlap must continue from the first patch's exact output.
+        application['patches'][1]['files'][1][
+            damage.removeprefix('offset_').replace('_source', '_sha256')] = 'f' * 64
+    elif damage == 'final_sources_missing':
+        application.pop('final_sources')
+    elif damage == 'final_sources_duplicate':
+        application['final_sources'][2] = application['final_sources'][1]
+    elif damage == 'final_sources_wrong_path':
+        application['final_sources'][0]['relative'] = 'unreviewed/source.cc'
+    elif damage == 'final_sources_intermediate':
+        application['final_sources'][1]['sha256'] = patch['files'][1]['patched_sha256']
+    elif damage == 'build_sources_intermediate':
+        build['patched_sources'][1]['sha256'] = patch['files'][1]['patched_sha256']
 
     # Refresh envelopes and wheel metadata so each rejection exercises the
     # changed policy field, rather than an incidental stale envelope/version.

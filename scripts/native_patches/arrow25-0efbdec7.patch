@@ -1,0 +1,93 @@
+From 0efbdec7a10da1a4043fc1210c61e73c88bc9b4f Mon Sep 17 00:00:00 2001
+From: Abdul Azeem Makarim <114302821+A-makarim@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 14:35:43 +0100
+Subject: [PATCH] GH-51223: [C++] Fix copying sliced boolean arrays (#51240)
+
+### Rationale for this change
+
+Boolean values are bit-packed. When copying values from a sliced boolean array,
+the copy path did not include the array's slice offset. This caused
+`fill_null_forward`, `fill_null_backward`, and `replace_with_mask` to read
+values from earlier positions in the parent array.
+
+### What changes are included in this PR?
+
+- Apply `ArraySpan::offset` to the bit index when copying boolean values from
+  an `ArraySpan`.
+- Add regression coverage for sliced boolean inputs in `replace_with_mask`,
+  `fill_null_forward`, and `fill_null_backward`.
+
+### Are these changes tested?
+
+Yes. I ran `arrow-compute-vector-test` locally.
+
+### Are there any user-facing changes?
+
+Only a bugfix.
+
+### This PR contains a "Critical Fix".
+
+This fixes a bug that caused compute operations on sliced boolean arrays with
+a non-zero offset to produce incorrect values.
+
+* GitHub Issue: #51223
+
+Authored-by: Abdul Azeem Makarim <114302821+A-makarim@users.noreply.github.com>
+Signed-off-by: Antoine Pitrou <antoine@python.org>
+---
+ .../arrow/compute/kernels/copy_data_internal.h |  4 +++-
+ .../compute/kernels/vector_replace_test.cc     | 18 ++++++++++++++++++
+ 2 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/cpp/src/arrow/compute/kernels/copy_data_internal.h b/cpp/src/arrow/compute/kernels/copy_data_internal.h
+index 735c2034c3f3..3dd8e14c6999 100644
+--- a/cpp/src/arrow/compute/kernels/copy_data_internal.h
++++ b/cpp/src/arrow/compute/kernels/copy_data_internal.h
+@@ -42,8 +42,10 @@ struct CopyDataUtils<BooleanType> {
+ 
+   static void CopyData(const DataType&, const ArraySpan& in, const int64_t in_offset,
+                        uint8_t* out, const int64_t out_offset, const int64_t length) {
++    // Boolean values are bit-packed, so apply the array's offset to the bit index
++    // rather than to the data pointer.
+     const auto in_arr = in.GetValues<uint8_t>(1, /*absolute_offset=*/0);
+-    CopyData(*in.type, in_arr, in_offset, out, out_offset, length);
++    CopyData(*in.type, in_arr, in.offset + in_offset, out, out_offset, length);
+   }
+ };
+ 
+diff --git a/cpp/src/arrow/compute/kernels/vector_replace_test.cc b/cpp/src/arrow/compute/kernels/vector_replace_test.cc
+index dc63bae39a54..65cb9126b15f 100644
+--- a/cpp/src/arrow/compute/kernels/vector_replace_test.cc
++++ b/cpp/src/arrow/compute/kernels/vector_replace_test.cc
+@@ -545,6 +545,14 @@ TEST_F(TestReplaceBoolean, ReplaceWithMask) {
+   }
+ }
+ 
++TEST_F(TestReplaceBoolean, ReplaceWithMaskSlicedInput) {
++  auto input =
++      this->array("[true, false, null, true, true, false, null, true]")->Slice(3, 5);
++
++  this->Assert(ReplaceWithMask, input, this->mask("[true, false, false, false, false]"),
++               this->array("[false]"), this->array("[false, true, false, null, true]"));
++}
++
+ // Regression test: ReplaceMaskChunked (the ChunkedArray path of replace_with_mask)
+ // sized each output chunk's data buffer via byte_width(), which is 0 for boolean
+ // (bit-packed), the same GH-45086 buffer-overflow pattern fixed elsewhere in this
+@@ -2117,6 +2125,16 @@ TYPED_TEST(TestFillNullBinary, FillBackwardChunkedArray) {
+                            R"(["qup"])", R"(["qup", "mnz"])"}));
+ }
+ 
++TEST_F(TestFillNullBoolean, FillNullSlicedArray) {
++  auto input =
++      this->array("[true, false, null, true, true, false, null, true]")->Slice(3, 5);
++
++  this->AssertFillNullArray(FillNullForward, input,
++                            this->array("[true, true, false, false, true]"));
++  this->AssertFillNullArray(FillNullBackward, input,
++                            this->array("[true, true, false, true, true]"));
++}
++
+ // Regression test for GH-45086: FillNullForwardChunked/FillNullBackwardChunked
+ // size each output chunk's data buffer as `type->byte_width() * chunk->length()`.
+ // For BooleanType, byte_width() returns 0 (it is bit-packed, not byte-addressable),

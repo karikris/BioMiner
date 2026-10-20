@@ -503,3 +503,87 @@ SHA-256 `a89aee4d645737a6cca9ef4ae558f43009a7a04c5288eedf0277910171c55338`.
 It uses exact current source bytes and the previous attempt's actual artifact
 receipts, in a fresh directory. No kernel tests, environment installation,
 activation or finding closure is claimed by this preflight.
+
+## Actual pair qualification exposed a second upstream defect
+
+The fresh pair at `dec69d2e53a5d775fa3b36bd9c7564f12689b7f5` completed all
+30 build, installation and verification commands. Its receipt is
+`phase3/arrow25-pair-3/built-pair.json`, SHA-256
+`eab7696fed966eec62b1a8cbf8b94ac2322e77429895aa5bae36550cb7817b82`.
+Both application wheels contain identical application payloads; their Polars
+requirements differ as planned. These checks establish identity only.
+
+Native qualification then stopped at `sliced_boolean.forward` in the first
+runtime's feature check. The preceding artifact, loaded-version, TLS and
+import-order checks passed. The second runtime's native checks did not run.
+The actual outer execution exited 1, retained at
+`phase3/patched25-pair-3-native-outer/execution.json`, SHA-256
+`f95a19a714d1f4589935f7176aac1ae00a95917f26f5ca275a689c08e7d8a981`.
+The independent prerequisite review retains this blocking result.
+
+A supervised reproduction recorded 21 operations: 15 incorrect sliced Boolean
+results and six passing controls. For example, offset-one input
+`[null, true, null]` forward-filled to `[null, false, false]`, rather than
+`[null, true, true]`. A separate nearest-non-null oracle matched the committed
+expected values. Offset-zero Boolean and sliced integer controls passed.
+The analysis is `phase3/arrow25-sliced-investigation/analysis.json`, SHA-256
+`8fc9c3638eb6cb3e83a8acd4f90de3f9f3615d1a688c1f0a0c549e275433a51b`.
+
+GitHits search, grep, exact source reads and release-history inspection located
+the missing `ArraySpan.offset` in `CopyDataUtils<BooleanType, ArraySpan>`.
+[Upstream PR 51240](https://github.com/apache/arrow/pull/51240) fixes it in
+commit `0efbdec7a10da1a4043fc1210c61e73c88bc9b4f` and adds sliced-array
+regressions. The exact mail patch SHA-256 is
+`6c64e115aa53621ae7e1992417b26ab7c6c51fb265d3e64216580f7dcae87d50`.
+The Arrow 26 changelog lists GH-51223 under improvements; GitHits classified
+the entry `no_impact`. That classification is contradicted for this enabled
+Arrow 25 runtime by the actual regression and source comparison. No CVE/GHSA
+or additional memory-safety claim is inferred from the correctness defect.
+
+The separate identity auditor initially rejected one conservative inventory
+entry: a 4,008-byte Parquet fixture whose filename contains `.so` as part of
+`.some-named-index`. The corrected external auditor verifies its exact wheel
+membership, owner, hash and non-ELF bytes separately. All four runtimes have
+37 matching Arrow ELF files plus this explicitly classified data asset.
+Fourteen focused auditor checks, fresh execution and independent review pass;
+the original failure remains preserved. Its bounded handoff is
+`phase3/security-patched25-auditor-v2-prep/handoff.json`, SHA-256
+`19c58815189684c72104086e4b7f91ea55cce12515bafeca98f519c6aca37059`.
+This identity result does not waive the native behavior failure.
+
+The allocation-only pair remains unqualified. Shared development replacement,
+registered runtime cutover, security closure and the phase-3 push remain
+pending. The next corrective build must include both exact upstream patches
+and pass the unchanged behavioral gate before those steps can proceed.
+
+The corrective recipe now applies both exact patches in order. It checks every
+stage's input and output bytes, verifies all original archive files, and binds
+the three final source files separately from the shared test file's intermediate
+hash. Resume rejects partial or altered patch chains. Admission requires this
+exact recipe and both patches; allocation-only receipts cannot qualify under
+the new policy. Original patch bytes and the native expected-value cases are
+unchanged.
+
+The new rejection tests failed before implementation. An initial recipe run
+then exposed a synthetic-fixture hash collision between unrelated sample
+contents; the assertion now checks the overlapping file's own final hash.
+The retained final
+recipe run passed 47 tests, and actual full-archive preparation plus strict
+resume passed under supervision without compiling. That actual source check is
+`phase3/arrow25-offset-recipe-1/actual-source.json`, SHA-256
+`198cbeadc2c0055bb95500a86be415dc012a50600758be0c4adedc73a484dc79`.
+
+The combined builder, admission, snapshot, host-refresh, assembly, qualification
+and phase-validator suites passed **346 tests in 22.11 seconds**, with outer
+exit 0 and all tested source bytes unchanged. The command and log are bound by
+`phase3/arrow25-sliced-combined/checks.json`, SHA-256
+`930b97c43f871e6ab89fc0382a6900100509ac6118d9fb46d58a04c464787faa`.
+The recipe SHA-256 is
+`65077fc43ba4542eb051b0a07a53ba147614551d192e774e13773aef0567da83`;
+the admission policy SHA-256 is
+`78db872a76a1557f2386f803be53c1fe5f5fb9b21719f56913c8cc32a70402fd`.
+Independent source review covers both changes and the isolated build operator.
+The review is `phase3/arrow25-sliced-source-review/final-source-operator-review.json`,
+SHA-256 `5214f19686716ce63fc36f7f5b9360d98935d5cd5b3663d393cf0aaf8eb92c3a`.
+These results authorize the fresh build; they do not assert native kernel
+qualification, migration or phase completion.

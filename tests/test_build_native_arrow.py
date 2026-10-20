@@ -1,4 +1,5 @@
-"""The Arrow build must reject unapproved crypto before invoking a compiler."""
+"""The Arrow build must reject unapproved sources before invoking a compiler."""
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -30,12 +31,12 @@ def source_inputs(tmp_path, monkeypatch, arrow_recipe):
         "cpp/src/arrow/compute/kernels/vector_replace_test.cc",
     )
     originals = {name: b"before\nold allocation\nafter\n" for name in relative_files}
-    patched = {name: b"before\nsafe allocation\nafter\n" for name in relative_files}
+    allocation_patched = {name: b"before\nsafe allocation\nafter\n" for name in relative_files}
     patch = tmp_path / "reviewed.patch"
     patch.write_text("".join(
         "".join(difflib.unified_diff(
             originals[name].decode().splitlines(keepends=True),
-            patched[name].decode().splitlines(keepends=True),
+            allocation_patched[name].decode().splitlines(keepends=True),
             fromfile="a/" + name, tofile="b/" + name,
         ))
         for name in relative_files
@@ -43,8 +44,26 @@ def source_inputs(tmp_path, monkeypatch, arrow_recipe):
     sha = lambda data: hashlib.sha256(data).hexdigest()
     monkeypatch.setattr(arrow_recipe, "SECURITY_PATCH_SHA256", sha(patch.read_bytes()), raising=False)
     monkeypatch.setattr(arrow_recipe, "SECURITY_PATCH_FILES", {
-        name: {"original_sha256": sha(originals[name]), "patched_sha256": sha(patched[name])}
+        name: {"original_sha256": sha(originals[name]), "patched_sha256": sha(allocation_patched[name])}
         for name in relative_files
+    }, raising=False)
+    header = "cpp/src/arrow/compute/kernels/copy_data_internal.h"
+    originals[header] = b"before\nold copy\nafter\n"
+    patched = {**allocation_patched, header: b"before\ncopy slice offset\nafter\n"}
+    patched[relative_files[1]] = b"before\nsafe allocation\nslice offset coverage\nafter\n"
+    offset_originals = {header: originals[header], relative_files[1]: allocation_patched[relative_files[1]]}
+    offset_patch = tmp_path / "reviewed-offset.patch"
+    offset_patch.write_text("".join(
+        "".join(difflib.unified_diff(
+            before.decode().splitlines(keepends=True), patched[name].decode().splitlines(keepends=True),
+            fromfile="a/" + name, tofile="b/" + name,
+        )) for name, before in offset_originals.items()
+    ))
+    monkeypatch.setattr(arrow_recipe, "OFFSET_PATCH_PATH", offset_patch, raising=False)
+    monkeypatch.setattr(arrow_recipe, "OFFSET_PATCH_SHA256", sha(offset_patch.read_bytes()), raising=False)
+    monkeypatch.setattr(arrow_recipe, "OFFSET_PATCH_FILES", {
+        name: {"original_sha256": sha(before), "patched_sha256": sha(patched[name])}
+        for name, before in offset_originals.items()
     }, raising=False)
     originals["cpp/cmake_modules/ThirdpartyToolchain.cmake"] = (
         b"list(APPEND AWSSDK_PRODUCTS aws-lc s2n-tls)\n"
@@ -78,16 +97,26 @@ def test_arrow_source_preparation_applies_reviewed_patch(arrow_recipe, source_in
     assert (source / "python/NOTICE.txt").read_bytes() == originals["NOTICE.txt"]
     assert security["patches"][0]["patch"]["sha256"] == arrow_recipe.sha256(patch)
     assert security["patches"][0]["commit"] == arrow_recipe.SECURITY_PATCH_COMMIT
-    assert {row["relative"] for row in security["patches"][0]["files"]} == set(expected)
+    assert security["patches"][1]["commit"] == arrow_recipe.OFFSET_PATCH_COMMIT
+    assert security["patches"][1]["patch"]["sha256"] == arrow_recipe.sha256(arrow_recipe.OFFSET_PATCH_PATH)
+    first = {row["relative"]: row for row in security["patches"][0]["files"]}
+    second = {row["relative"]: row for row in security["patches"][1]["files"]}
+    overlap = "cpp/src/arrow/compute/kernels/vector_replace_test.cc"
+    assert first[overlap]["patched_sha256"] == second[overlap]["original_sha256"]
+    assert first[overlap]["patched_sha256"] != arrow_recipe.sha256(source / overlap)
+    assert security["final_sources"] == [
+        {"relative": name, "sha256": arrow_recipe.sha256(source / name)} for name in sorted(expected)]
     assert toolchain["original_sha256"] != toolchain["patched_sha256"]
     assert 'set(MAKE_BUILD_ARGS "-j1")' in (
         source / "cpp/cmake_modules/ThirdpartyToolchain.cmake"
     ).read_text()
 
 
-def test_arrow_source_preparation_rejects_changed_patch_before_extracting(arrow_recipe, source_inputs):
+@pytest.mark.parametrize("which", ["allocation", "offset"])
+def test_arrow_source_preparation_rejects_changed_patch_before_extracting(arrow_recipe, source_inputs, which):
     archive, patch, work, _, _ = source_inputs
-    patch.write_bytes(patch.read_bytes() + b"\nchanged\n")
+    changed_patch = patch if which == "allocation" else arrow_recipe.OFFSET_PATCH_PATH
+    changed_patch.write_bytes(changed_patch.read_bytes() + b"\nchanged\n")
 
     with pytest.raises(ValueError, match="security patch checksum"):
         arrow_recipe.prepare_source(archive, work, patch, resume=False)
@@ -103,9 +132,63 @@ def test_arrow_source_resume_accepts_complete_reviewed_state(arrow_recipe, sourc
     assert first == second
 
 
+def test_arrow_source_preparation_rejects_discontinuous_patch_chain(
+        arrow_recipe, source_inputs, monkeypatch):
+    archive, patch, work, _, _ = source_inputs
+    pins = {name: dict(row) for name, row in arrow_recipe.OFFSET_PATCH_FILES.items()}
+    pins["cpp/src/arrow/compute/kernels/vector_replace_test.cc"]["original_sha256"] = "a" * 64
+    monkeypatch.setattr(arrow_recipe, "OFFSET_PATCH_FILES", pins)
+
+    with pytest.raises(ValueError, match="patch chain"):
+        arrow_recipe.prepare_source(archive, work, patch, resume=False)
+    assert not work.exists()
+
+
+@pytest.mark.parametrize("change", ["reverse", "missing", "extra", "intermediate_final", "missing_final", "extra_final"])
+def test_arrow_source_resume_rejects_changed_patch_chain_receipt(arrow_recipe, source_inputs, change):
+    archive, patch, work, _, _ = source_inputs
+    arrow_recipe.prepare_source(archive, work, patch, resume=False)
+    receipt = work / "arrow-security-patches.json"
+    value = json.loads(receipt.read_bytes())
+    if change == "reverse":
+        value["patches"].reverse()
+    elif change == "missing":
+        value["patches"].pop()
+    elif change == "extra":
+        value["patches"].append(value["patches"][0])
+    elif change == "intermediate_final":
+        name = "cpp/src/arrow/compute/kernels/vector_replace_test.cc"
+        for row in value["final_sources"]:
+            if row["relative"] == name:
+                row["sha256"] = arrow_recipe.SECURITY_PATCH_FILES[name]["patched_sha256"]
+    elif change == "missing_final":
+        value["final_sources"].pop()
+    else:
+        value["final_sources"].append({"relative": "unexpected.cc", "sha256": "a" * 64})
+    receipt.write_text(json.dumps(value))
+    before = receipt.read_bytes()
+
+    with pytest.raises(ValueError, match="security patch receipt changed"):
+        arrow_recipe.prepare_source(archive, work, patch, resume=True)
+    assert receipt.read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["arrow-a769c291.patch", "arrow-0efbdec7.patch"])
+def test_arrow_source_resume_rejects_changed_retained_patch(arrow_recipe, source_inputs, name):
+    archive, patch, work, _, _ = source_inputs
+    arrow_recipe.prepare_source(archive, work, patch, resume=False)
+    retained = work / name
+    retained.write_bytes(b"changed retained patch")
+
+    with pytest.raises(ValueError, match="preserved security patch changed"):
+        arrow_recipe.prepare_source(archive, work, patch, resume=True)
+    assert retained.read_bytes() == b"changed retained patch"
+
+
 @pytest.mark.parametrize("changed", [
     "cpp/src/arrow/compute/kernels/vector_replace.cc",
     "cpp/src/arrow/compute/kernels/vector_replace_test.cc",
+    "cpp/src/arrow/compute/kernels/copy_data_internal.h",
     "cpp/cmake_modules/ThirdpartyToolchain.cmake",
     "NOTICE.txt",
 ])
@@ -280,6 +363,52 @@ def test_arrow_receipt_rejects_wheel_version_not_bound_to_inputs(tmp_path, arrow
             tmp_path, tmp_path / "source", tmp_path / "openssl", sys.executable,
             {"wheel_version": "25.0.1+biominer.123456789abc"},
         )
+
+
+def test_arrow_compiled_receipt_retains_both_patches_and_only_final_sources(
+        tmp_path, monkeypatch, arrow_recipe, source_inputs):
+    """Synthetic wheel/linkage isolates the retained build-material contract."""
+    import zipfile
+
+    archive, patch, work, _, final = source_inputs
+    source, _, security = arrow_recipe.prepare_source(archive, work, patch, resume=False)
+    arrow_recipe.preserve_recipe(work, b"synthetic recipe", resume=False)
+    build_inputs, version = arrow_recipe.preserve_build_inputs(
+        work, {"security_patches": security}, resume=False)
+    wheelhouse = work / "wheelhouse"
+    wheelhouse.mkdir()
+    with zipfile.ZipFile(wheelhouse / "pyarrow.whl", "w") as wheel:
+        wheel.writestr("pyarrow.dist-info/METADATA", f"Name: pyarrow\nVersion: {version}\n")
+        wheel.writestr("pyarrow/lib.so", b"\x7fELFsynthetic test fixture")
+    prefix = tmp_path / "openssl/prefix"
+    for name in ("include/openssl/opensslv.h", "lib/libcrypto.a", "lib/libssl.a"):
+        path = prefix / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic OpenSSL input")
+    (prefix.parent / "openssl-build-receipt.json").write_text("{}")
+    (work / "fixture.map").write_text("Linker script and memory map")
+    tool = tmp_path / "synthetic-tool"
+    tool.write_bytes(b"synthetic tool")
+    monkeypatch.setattr(arrow_recipe.shutil, "which", lambda name: str(tool))
+    monkeypatch.setattr(arrow_recipe.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=""))
+    monkeypatch.setattr(arrow_recipe.subprocess, "check_output", lambda *a, **k: "[]")
+
+    receipt = arrow_recipe.completed_receipt(work, archive, prefix, sys.executable, {
+        "wheel_version": version, "build_inputs": build_inputs, "security_patches": security,
+    })
+
+    retained = {row["path"]: row["sha256"] for row in receipt["inputs"]}
+    for name in ("arrow-a769c291.patch", "arrow-0efbdec7.patch"):
+        assert retained[str(work / name)] == arrow_recipe.sha256(work / name)
+    actual_sources = {name: value for name, value in retained.items()
+                      if name.startswith(str(source / "cpp/src/"))}
+    assert actual_sources == {str(source / name): arrow_recipe.sha256(source / name) for name in final}
+    intermediate = arrow_recipe.SECURITY_PATCH_FILES[
+        "cpp/src/arrow/compute/kernels/vector_replace_test.cc"]["patched_sha256"]
+    assert actual_sources[str(source / "cpp/src/arrow/compute/kernels/vector_replace_test.cc")] != intermediate
+    assert receipt["patch_application"] == arrow_recipe.file_record(work / "arrow-security-patches.json")
+    assert receipt["build_inputs"] == build_inputs
 
 
 def test_arrow_builder_rejects_unpatched_openssl(tmp_path):

@@ -37,6 +37,19 @@ SECURITY_PATCH_FILES = {
         "patched_sha256": "2f926df7f6fbce5f7c9c0a32575e4eda39f6c446fa25ff0fa083046b63bb4360",
     },
 }
+OFFSET_PATCH_COMMIT = "0efbdec7a10da1a4043fc1210c61e73c88bc9b4f"
+OFFSET_PATCH_SHA256 = "6c64e115aa53621ae7e1992417b26ab7c6c51fb265d3e64216580f7dcae87d50"
+OFFSET_PATCH_PATH = Path(__file__).parent / "native_patches" / "arrow25-0efbdec7.patch"
+OFFSET_PATCH_FILES = {
+    "cpp/src/arrow/compute/kernels/copy_data_internal.h": {
+        "original_sha256": "d1f2979d5a4d4f73f4ab0a40043d377962871f0d85ff3b4a494bcbf94c948c99",
+        "patched_sha256": "21b1f8acce63e0ca301a968339d731eddb5efd8e8eeb1a55638ffe665a046621",
+    },
+    "cpp/src/arrow/compute/kernels/vector_replace_test.cc": {
+        "original_sha256": "2f926df7f6fbce5f7c9c0a32575e4eda39f6c446fa25ff0fa083046b63bb4360",
+        "patched_sha256": "c087392bbd8114e903608b36c1e4e88a087677cbcfda484cb270d227b385788e",
+    },
+}
 FEATURES = ("ACERO", "AZURE", "COMPUTE", "CSV", "DATASET", "FILESYSTEM", "FLIGHT", "GCS", "HDFS", "JSON", "ORC", "PARQUET", "S3", "SUBSTRAIT")
 TOOLCHAIN_PATCHES = (
     ("list(APPEND AWSSDK_PRODUCTS aws-lc s2n-tls)",
@@ -123,13 +136,28 @@ def verify_source_layout(source: Path, members: list) -> None:
             raise ValueError(f"source layout changed since extraction: {relative}")
 
 
-def prepare_source(archive: Path, work: Path, patch: Path, *, resume: bool) -> tuple:
+def prepare_source(archive: Path, work: Path, patch: Path, *, resume: bool,
+                   offset_patch: Path | None = None) -> tuple:
     """Accept only the original archive plus every exact reviewed transformation."""
     if sha256(archive) != ARROW_ARCHIVE_SHA256:
         raise ValueError("Arrow source archive checksum mismatch")
-    patch_bytes = patch.read_bytes()
-    if hashlib.sha256(patch_bytes).hexdigest() != SECURITY_PATCH_SHA256:
-        raise ValueError("Arrow security patch checksum mismatch")
+    stages = (
+        (SECURITY_PATCH_COMMIT, SECURITY_PATCH_SHA256, patch, SECURITY_PATCH_FILES,
+         "arrow-a769c291.patch"),
+        (OFFSET_PATCH_COMMIT, OFFSET_PATCH_SHA256, offset_patch or OFFSET_PATCH_PATH,
+         OFFSET_PATCH_FILES, "arrow-0efbdec7.patch"),
+    )
+    patch_bytes, original_hashes, final_hashes = {}, {}, {}
+    for commit, expected_hash, path, files, preserved_name in stages:
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected_hash:
+            raise ValueError("Arrow security patch checksum mismatch")
+        patch_bytes[preserved_name] = data
+        for relative, pins in files.items():
+            if relative in final_hashes and final_hashes[relative] != pins["original_sha256"]:
+                raise ValueError("reviewed patch chain is discontinuous")
+            original_hashes.setdefault(relative, pins["original_sha256"])
+            final_hashes[relative] = pins["patched_sha256"]
     work = work.absolute()
     if any(path.is_symlink() for path in (work, *work.parents)):
         raise ValueError("work path contains a symlink")
@@ -156,13 +184,14 @@ def prepare_source(archive: Path, work: Path, patch: Path, *, resume: bool) -> t
     if resume and (source.is_symlink() or not source.is_dir()):
         raise ValueError("resume requires an existing source directory")
     work.mkdir(parents=True, exist_ok=True)
-    preserved_patch = work / "arrow-a769c291.patch"
-    if resume:
-        if preserved_patch.is_symlink() or not preserved_patch.is_file() or preserved_patch.read_bytes() != patch_bytes:
-            raise ValueError("preserved security patch changed since extraction")
-    else:
-        with preserved_patch.open("xb") as stream:
-            stream.write(patch_bytes)
+    for name, data in patch_bytes.items():
+        preserved_patch = work / name
+        if resume:
+            if preserved_patch.is_symlink() or not preserved_patch.is_file() or preserved_patch.read_bytes() != data:
+                raise ValueError("preserved security patch changed since extraction")
+        else:
+            with preserved_patch.open("xb") as stream:
+                stream.write(data)
     toolchain_relative = "cpp/cmake_modules/ThirdpartyToolchain.cmake"
     original_toolchain = None
     patched_toolchain = None
@@ -190,30 +219,36 @@ def prepare_source(archive: Path, work: Path, patch: Path, *, resume: bool) -> t
             current = source / relative
             if current.is_symlink() or not current.is_file():
                 raise ValueError(f"source changed since extraction: {relative}")
-            if relative in SECURITY_PATCH_FILES:
+            if relative in original_hashes:
                 found_security_files.add(relative)
-                pins = SECURITY_PATCH_FILES[relative]
-                if hashlib.sha256(expected).hexdigest() != pins["original_sha256"]:
+                if hashlib.sha256(expected).hexdigest() != original_hashes[relative]:
                     raise ValueError(f"original security source checksum mismatch: {relative}")
-                expected_hash = pins["patched_sha256" if resume else "original_sha256"]
+                expected_hash = (final_hashes if resume else original_hashes)[relative]
                 valid = sha256(current) == expected_hash
             else:
                 valid = current.read_bytes() == expected
             if not valid:
                 raise ValueError(f"source changed since extraction: {relative}")
-    if found_security_files != set(SECURITY_PATCH_FILES) or original_toolchain is None:
+    if found_security_files != set(original_hashes) or original_toolchain is None:
         raise ValueError("reviewed source files missing from Arrow archive")
     if not resume:
         (source / toolchain_relative).write_bytes(patched_toolchain)
-        result = subprocess.run(
-            ["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", str(preserved_patch)],
-            cwd=source, capture_output=True, text=True,
-        )
-        output = result.stdout + result.stderr
-        if result.returncode or any(word in output.lower() for word in ("offset", "fuzz", "failed", "reversed")):
-            raise ValueError("Arrow security patch did not apply exactly")
-    for relative, pins in SECURITY_PATCH_FILES.items():
-        if sha256(source / relative) != pins["patched_sha256"]:
+        for commit, expected_hash, path, files, preserved_name in stages:
+            for relative, pins in files.items():
+                if sha256(source / relative) != pins["original_sha256"]:
+                    raise ValueError(f"patch chain input checksum mismatch: {relative}")
+            result = subprocess.run(
+                ["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", str(work / preserved_name)],
+                cwd=source, capture_output=True, text=True,
+            )
+            output = result.stdout + result.stderr
+            if result.returncode or any(word in output.lower() for word in ("offset", "fuzz", "failed", "reversed")):
+                raise ValueError("Arrow security patch did not apply exactly")
+            for relative, pins in files.items():
+                if sha256(source / relative) != pins["patched_sha256"]:
+                    raise ValueError(f"patch chain output checksum mismatch: {relative}")
+    for relative, expected_hash in final_hashes.items():
+        if sha256(source / relative) != expected_hash:
             raise ValueError(f"patched security source checksum mismatch: {relative}")
     toolchain_record = {
         "file": toolchain_relative,
@@ -226,9 +261,11 @@ def prepare_source(archive: Path, work: Path, patch: Path, *, resume: bool) -> t
     security_record = {
         "schema_version": 1, "source_revision": ARROW_COMMIT,
         "patches": [{
-            "commit": SECURITY_PATCH_COMMIT, "patch": file_record(preserved_patch),
-            "files": [{"relative": relative, **pins} for relative, pins in SECURITY_PATCH_FILES.items()],
-        }],
+            "commit": commit, "patch": file_record(work / preserved_name),
+            "files": [{"relative": relative, **pins} for relative, pins in files.items()],
+        } for commit, expected_hash, path, files, preserved_name in stages],
+        "final_sources": [{"relative": relative, "sha256": final_hashes[relative]}
+                          for relative in sorted(final_hashes)],
     }
     receipt = work / "arrow-security-patches.json"
     if resume:
@@ -293,10 +330,10 @@ def completed_receipt(work: Path, archive: Path, prefix: Path, python: str, buil
     input_files = [archive, prefix / "include/openssl/opensslv.h",
                    prefix / "lib/libcrypto.a", prefix / "lib/libssl.a",
                    work / f"arrow-{ARROW_COMMIT}/cpp/cmake_modules/ThirdpartyToolchain.cmake",
-                   work / "build-recipe.py", work / "arrow-a769c291.patch",
+                   work / "build-recipe.py", work / "arrow-a769c291.patch", work / "arrow-0efbdec7.patch",
                    work / "arrow-security-patches.json", work / "build-inputs.json"]
-    input_files.extend(work / f"arrow-{ARROW_COMMIT}" / relative
-                       for relative in SECURITY_PATCH_FILES)
+    input_files.extend(work / f"arrow-{ARROW_COMMIT}" / row["relative"]
+                       for row in build_record["security_patches"]["final_sources"])
     openssl_receipt = prefix.parent / "openssl-build-receipt.json"
     if not openssl_receipt.is_file():
         raise RuntimeError("OpenSSL source build receipt missing")
@@ -342,6 +379,7 @@ def main() -> int:
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--security-patch", type=Path, default=SECURITY_PATCH_PATH)
+    parser.add_argument("--offset-patch", type=Path, default=OFFSET_PATCH_PATH)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--resume", action="store_true", help="reuse a verified source/build generation")
     args = parser.parse_args()
@@ -363,6 +401,7 @@ def main() -> int:
     try:
         source, patch_receipt, security_patches = prepare_source(
             archive, work, args.security_patch.resolve(), resume=args.resume,
+            offset_patch=args.offset_patch.resolve(),
         )
         recipe = preserve_recipe(work, recipe_bytes, resume=args.resume)
     except (OSError, ValueError) as error:
@@ -403,7 +442,8 @@ def main() -> int:
         "recipe": recipe, "security_patches": security_patches,
         "source_archive": file_record(archive),
         "patch_application": file_record(work / "arrow-security-patches.json"),
-        "patched_sources": [file_record(source / relative) for relative in SECURITY_PATCH_FILES],
+        "patched_sources": [file_record(source / row["relative"])
+                            for row in security_patches["final_sources"]],
         "compiler_budget": {
             "maximum_jobs": args.jobs, "outer_ninja_jobs": args.jobs,
             "nested_cmake_jobs": 1, "nested_make_jobs": 1,
