@@ -123,6 +123,73 @@ def test_sampling_frame_requires_all_query_definitions() -> None:
         )
 
 
+@pytest.mark.filterwarnings("error:.*empty_as_null.*:DeprecationWarning")
+@pytest.mark.parametrize(
+    ("query_ids", "message"),
+    [
+        ([], "at least one query definition"),
+        (None, "missing from Flickr state"),
+        ([None], "missing from Flickr state"),
+        (["query-1", None], "missing from Flickr state"),
+        (["query-1", "unknown-query"], "missing from Flickr state"),
+    ],
+)
+def test_sampling_rejects_missing_query_provenance_without_dropping_candidates(
+    query_ids, message: str,
+) -> None:
+    candidates = _candidates()
+    rows = candidates.to_dicts()
+    rows[0]["query_definition_ids"] = query_ids
+    rows[0]["query_hit_count"] = len(query_ids) if query_ids is not None else 0
+
+    with pytest.raises(ValueError, match=message):
+        build_evaluation_sampling_frame(
+            pl.DataFrame(rows, schema=candidates.schema),
+            _geo_assignments(),
+            _query_definitions(),
+        )
+
+
+@pytest.mark.filterwarnings("error:.*empty_as_null.*:DeprecationWarning")
+@pytest.mark.parametrize("reverse", [False, True])
+def test_sampling_preserves_duplicate_hits_and_orders_query_provenance(reverse: bool) -> None:
+    query_ids = ["query-2", "query-4", "query-1", "query-3", "query-4"]
+    if reverse:
+        query_ids.reverse()
+    candidates = _candidates()
+    rows = candidates.to_dicts()
+    rows[0]["query_definition_ids"] = query_ids
+    rows[0]["query_hit_count"] = len(query_ids)
+    candidates = pl.DataFrame(rows, schema=candidates.schema)
+    definitions = _query_definitions().with_columns(
+        pl.lit(10).alias("query_priority"),
+        pl.when(pl.col("query_definition_id") == "query-1")
+        .then(pl.lit("Zeta")).otherwise(pl.lit("Alpha")).alias("query_term"),
+        pl.when(pl.col("query_definition_id") == "query-2")
+        .then(pl.lit("text")).otherwise(pl.lit("tags")).alias("query_field"),
+    )
+    if reverse:
+        candidates = candidates.reverse()
+        definitions = definitions.reverse()
+
+    frame = build_evaluation_sampling_frame(candidates, _geo_assignments(), definitions)
+    row = frame.filter(pl.col("flickr_photo_id") == "photo-a").row(0, named=True)
+
+    assert frame.height == 4
+    assert frame.schema == EVALUATION_SAMPLING_FRAME_SCHEMA
+    assert row["query_definition_ids"] == query_ids
+    assert row["query_hit_count"] == 5
+    assert [item["query_definition_id"] for item in row["query_provenance"]] == [
+        "query-3", "query-4", "query-4", "query-1", "query-2",
+    ]
+    assert row["primary_query_tier"] == "T2"
+    assert row["primary_query_term"] == "Alpha"
+    assert row["primary_query_field"] == "tags"
+    assert row["query_tiers"] == ["T2", "T3", "T1", "T5"]
+    assert row["query_terms"] == ["Alpha", "Zeta"]
+    assert row["query_fields"] == ["tags", "text"]
+
+
 def test_sampling_frame_decodes_flickr_upload_epoch_for_year_fallback() -> None:
     candidates = _candidates().with_columns(
         pl.when(pl.col("flickr_photo_id") == "photo-d")

@@ -47,7 +47,7 @@ def test_rejects_reference_holdout_leakage_for_every_required_identity(
         )
 
     assert expected_dimension in set(error.value.findings["identity_dimension"])
-    assert set(error.value.findings["partitions"].explode()) == {
+    assert set(error.value.findings["partitions"].explode(empty_as_null=True, keep_nulls=True)) == {
         "support_train",
         "balanced_challenge",
     }

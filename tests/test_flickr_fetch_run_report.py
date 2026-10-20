@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import sqlite3
 
 import polars as pl
+import pytest
 
 from biominer.flickr_fetch.metadata_poller import PollOnceResult
 from biominer.reports.flickr_fetch import build_step1_fetch_report, write_step1_manifest
@@ -107,6 +108,85 @@ def test_build_step1_fetch_report_includes_required_metrics(tmp_path) -> None:
     assert report["query_provenance"]["unique_query_labels_with_records"] == 3
     assert report["query_provenance"]["duplicate_records_with_additional_query_hits"] == 1
     assert report["query_provenance"]["top_query_labels_by_records"][0] == {"query_label": "tags:Papilio", "records": 1}
+
+
+@pytest.mark.filterwarnings("error:.*empty_as_null.*:DeprecationWarning")
+@pytest.mark.parametrize("reverse", [False, True])
+def test_fetch_report_preserves_label_counts_with_empty_null_and_duplicate_lists(
+    tmp_path, reverse: bool,
+) -> None:
+    provenance = pl.DataFrame(
+        {
+            "all_query_labels": [
+                [], None, [None], ["text:A", "tags:A", None, "text:A"],
+                ["tags:A"], ["text:B", "text:A", "text:B"],
+            ],
+            "query_hit_count": [0, 0, 1, 3, 1, 3],
+        },
+        schema={"all_query_labels": pl.List(pl.String), "query_hit_count": pl.UInt32},
+    )
+    if reverse:
+        provenance = provenance.reverse().with_columns(pl.col("all_query_labels").list.reverse())
+
+    summary = _public_query_report(tmp_path, provenance)["query_provenance"]
+
+    assert summary["unique_query_labels_with_records"] == 3
+    assert summary["duplicate_records_with_additional_query_hits"] == 2
+    assert summary["query_hit_count_distribution"] == [
+        {"query_hit_count": 0, "records": 2},
+        {"query_hit_count": 1, "records": 2},
+        {"query_hit_count": 3, "records": 2},
+    ]
+    assert summary["top_query_labels_by_records"] == [
+        {"query_label": "text:A", "records": 3},
+        {"query_label": "tags:A", "records": 2},
+        {"query_label": "text:B", "records": 2},
+    ]
+
+
+@pytest.mark.filterwarnings("error:.*empty_as_null.*:DeprecationWarning")
+def test_fetch_report_counts_no_labels_without_erasing_observed_query_hit_counts(tmp_path) -> None:
+    provenance = pl.DataFrame(
+        {"all_query_labels": [[], None, [None]], "query_hit_count": [0, 0, 1]},
+        schema={"all_query_labels": pl.List(pl.String), "query_hit_count": pl.UInt32},
+    )
+
+    summary = _public_query_report(tmp_path, provenance)["query_provenance"]
+
+    assert summary == {
+        "unique_query_labels_with_records": 0,
+        "duplicate_records_with_additional_query_hits": 0,
+        "query_hit_count_distribution": [
+            {"query_hit_count": 0, "records": 2}, {"query_hit_count": 1, "records": 1},
+        ],
+        "top_query_labels_by_records": [],
+    }
+
+
+@pytest.mark.parametrize("provenance", [
+    None, pl.DataFrame(schema={"all_query_labels": pl.List(pl.String), "query_hit_count": pl.UInt32}),
+])
+def test_fetch_report_marks_absent_query_provenance_uninstrumented(tmp_path, provenance) -> None:
+    summary = _public_query_report(tmp_path, provenance)["query_provenance"]
+
+    assert set(summary.values()) == {"not_instrumented"}
+
+
+def _public_query_report(tmp_path, provenance):
+    result = PollOnceResult(
+        state_db=tmp_path / "state.sqlite", raw_responses_written=0,
+        evidence_rows_written=0, evidence_rows_total=0, source_records_inserted=0,
+        duplicate_records_skipped=0, query_hits_inserted=0, duplicate_query_hits_skipped=0,
+        image_urls_queued=0, work_items_claimed=0, api_calls_made=0,
+        remaining_soft_budget=1, remaining_hard_budget=1, stale_claims_requeued=0,
+    )
+    return build_step1_fetch_report(
+        run_id="query-label-fixture", command=["biominer", "poll-once"], result=result,
+        raw_root=tmp_path / "raw", evidence_output=tmp_path / "evidence.parquet",
+        query_provenance=provenance, started_at=datetime(2026, 6, 12, tzinfo=UTC),
+        ended_at=datetime(2026, 6, 12, tzinfo=UTC), workers=1, expected_pages=0,
+        status="completed", git_sha="fixture",
+    )
 
 
 def test_build_step1_fetch_report_uses_recorded_api_call_timings(tmp_path) -> None:

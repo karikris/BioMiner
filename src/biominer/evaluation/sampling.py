@@ -547,7 +547,7 @@ def _candidate_query_provenance(
 ) -> pl.DataFrame:
     links = (
         candidates.select(_KEY + ["query_definition_ids"])
-        .explode("query_definition_ids")
+        .explode("query_definition_ids", empty_as_null=True, keep_nulls=True)
         .rename({"query_definition_ids": "query_definition_id"})
         .join(
             definitions,

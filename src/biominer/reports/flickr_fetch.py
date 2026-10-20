@@ -146,7 +146,11 @@ def _query_provenance_summary(frame: pl.DataFrame | None) -> dict[str, Any]:
             "query_hit_count_distribution": "not_instrumented",
             "top_query_labels_by_records": "not_instrumented",
         }
-    exploded = frame.select("all_query_labels").explode("all_query_labels").drop_nulls()
+    exploded = (
+        frame.select("all_query_labels")
+        .explode("all_query_labels", empty_as_null=True, keep_nulls=True)
+        .drop_nulls()
+    )
     top_labels = (
         exploded.group_by("all_query_labels")
         .len(name="records")

@@ -232,7 +232,7 @@ def test_global_morphology_reference_fills_regional_visual_gap() -> None:
         count=2,
     )
     assert set(result.selected["geographic_layer"]) == {"A", "D"}
-    assert set(result.selected["morphology_tags"].explode()) == {"dorsal", "ventral"}
+    assert set(result.selected["morphology_tags"].explode(empty_as_null=True, keep_nulls=True)) == {"dorsal", "ventral"}
 
 
 def test_licence_ineligible_candidate_is_excluded() -> None:
