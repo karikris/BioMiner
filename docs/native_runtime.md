@@ -28,7 +28,8 @@ The development receipt is not production-generation admission.
 The old shared environment is preserved beneath an inaccessible quarantine.
 The old approved generation's `env` directory is also inaccessible to ordinary
 user launches; neither is an allowed rollback. The frozen patched fallback
-remains available. Phase 2's final qualification and push remain pending.
+remains available. Phase 2's full regression and native qualification passed;
+its phase evidence and push handshake are recorded in the phase report.
 PostgreSQL authentication now passes with certificate verification through the
 configured project pooler; the complete hosted PostgreSQL/S3 qualification is
 still unrun.

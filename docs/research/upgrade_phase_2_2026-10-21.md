@@ -201,13 +201,15 @@ separately; client verification does not attest that internal transport.
 Successful preflight receipt SHA-256:
 `f874056ac4fa426ea4066ae5782b4e97a8778c87cecf68b73e74e367e225d778`.
 
-## Remaining phase work
+## Task 2.3: native qualification and phase verification
 
 The final security report retains all nine original finding IDs/scopes and the
 replacement-attestation gap. They are resolved for the registered local
 entrypoints, with the inventory and retained-artifact limitations above.
-Report SHA-256:
-`b2a21033ee83061fd3448d818f2c6455c1c6d01af07d6cf3b02495a6aa8824c2`.
+The original report remains preserved. Independent review found four stale
+preparation sentences; a successor corrects those sentences without changing
+finding identities, statuses or evidence. Successor SHA-256:
+`3838c0500878332edfe271b22a3791e92a8f9522765095aa3efcf709f0b059e0`.
 
 Task 2.3 starts at `cb9f5e148eb16e90deac164c17e912e715b21b5b`.
 `scripts/qualify_native_runtime.py` now runs five separate opt-in native cases
@@ -225,10 +227,55 @@ workload recovery. A Linux subreaper supervisor cleans up owned descendants,
 including those starting new sessions, if a case times out or leaves children.
 Two real subprocess regressions cover that cleanup.
 
-The qualification and gate suites passed **95 tests**; independent source
-spec/quality review and **26 qualification tests** passed. Actual native cases
-and full phase regression will run from the committed clean source snapshot.
-Their results, the final phase summary and push handshake remain pending
-at this task boundary. Complete hosted
-PostgreSQL/S3 behavior and cleanup tests remain for phase 5. No scientific
-production promotion or general host security clearance is claimed.
+The qualification and gate suites passed **95 tests in 8.47 seconds**;
+independent source spec/quality review and **26 qualification tests** passed.
+Actual native cases and full regression subsequently ran from an isolated
+`git archive` of `74d7b10376c0ba71734b5c2e4c01e143ff4b597b`, with a separate
+qualified test environment editable only against that clean snapshot.
+The unrelated main-checkout scientific work was excluded.
+
+The complete suite passed **3,036 tests, 18 warnings in 96.32 seconds**, without
+failures, skips or deselections. Snapshot cleanliness was checked before and
+after execution. The Polars deprecation warnings remain visible for phase 3.
+All five actual native cases each passed one test; the feature case retained
+both checkpoints, original and resumed Parquet bytes, and child identity.
+
+The first native invocation failed because the coordinator passed the
+environment-clearing wrapper as the child pytest interpreter, removing the
+required qualification context. Its failed log remains preserved. The second
+invocation retained the outer sanitized environment and used the real test
+interpreter for children; it passed without a source change.
+
+| Phase artifact | SHA-256 |
+|---|---|
+| Clean source archive | `bdd9e54c33dcfc4538b95185504fae9fffa92485d2195ce39c32c42ae4c4a516` |
+| Test environment receipt | `e913d688585c71620278e57384684d240c144c7c6e4181c7c7b2de5f488619ce` |
+| Source/configuration digest (25 files) | `aeb0e3dde80698391390a843d1044da22b20fc77fee341d62abcff25508775f8` |
+| Full-suite command receipt | `54eb29222a55219479bcb525aa0cad41c68939464aa7ce4b41b6152e9d89650c` |
+| Actual native qualification report | `2cd95bd871abdced863a8acf91f867ed3999031ba5895442a205785297d6ee35` |
+| Native qualification command receipt | `f62f7c513d6de7c5c53d580cf4eb084464a20f16ba7eab86045abb64a675eb5c` |
+
+Task commits on `main`:
+
+- 2.1: `cf99ca1a75e313cf7e08f944292a9f27674821c4`
+- 2.2: `cb9f5e148eb16e90deac164c17e912e715b21b5b`
+- 2.3: `74d7b10376c0ba71734b5c2e4c01e143ff4b597b`
+
+Complete hosted PostgreSQL/S3 behavior and cleanup tests remain for phase 5.
+No scientific production promotion or general host security clearance is claimed.
+
+## Phase boundary
+
+Independent specification and quality reviews approved the exact three task
+commits, all 25 source/configuration hashes, the full-suite result and all
+native/migration/security evidence. The four mandatory phase checks passed
+through the runner. The validated candidate is
+`/home/toffe/.local/state/biominer/upgrades/20261021/phase2/run-1/phase.json`,
+SHA-256 `5356a1089316d3bf51d115c529605b3154f2018b062e2fcc9d95b028e1cbdf92`.
+
+This documentation-only boundary commit is pushed after the implementation
+commits. The create-only
+`/home/toffe/.local/state/biominer/upgrades/20261021/phase-2-pushed.json`
+handshake records the final local and freshly observed remote `main` SHA after
+the push; phase 3 must pass `continue` against that receipt. Keeping the final
+commit outside the already tested candidate avoids a circular hash claim.
