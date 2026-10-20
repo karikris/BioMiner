@@ -1,8 +1,122 @@
 # Native OpenSSL review — 1 October 2026
 
-The backend upgrades reduce native OpenSSL exposure, but **Psycopg, PyArrow and DuckDB Spatial retain affected bundled copies**. The privately tested CPython build contains the current patched OpenSSL 3.5.9. The shared virtual environment and host packages were preserved; repository version pins do not migrate existing processes. See the [backend upgrade review](backend_dependency_review_2026-10-01.md) for package changes and verification, and the [separate frontend findings](frontend_tooling_security_review_2026-10-01.md) for the report-only sibling scope.
+**20 October continuation:** the user authorized completing the existing native
+work. The original qualification results below remain historical. A fresh
+verification of the original generation now fails with
+`host apt origin evidence changed or absent: openssl`; the observed Ubuntu
+OpenSSL revision is `3.5.5-1ubuntu3.7`. No OS update or reboot was performed in
+this continuation. Application/configuration binding and create-only build and
+profile publication were added after nine failing regression cases. The native
+tooling suite passes **111 tests on Python 3.14.7**. Independent spec and quality
+reviews found no blocking issues. A new monthly dependency profile must be
+qualified before launch; old profile/generation bytes are retained.
+
+The registry wheel upgrades below retain affected native copies. The follow-up remediation now builds separate candidate artifacts with patched private OpenSSL and source-linked Psycopg; **production migration and reboot/process retirement remain pending**. See the follow-up section for the replacement artifacts and qualification evidence. The privately tested CPython build contains the current patched OpenSSL 3.5.9. The shared virtual environment and host packages were preserved; repository version pins do not migrate existing processes. See the [backend upgrade review](backend_dependency_review_2026-10-01.md) for package changes and verification, and the [separate frontend findings](frontend_tooling_security_review_2026-10-01.md) for the report-only sibling scope.
 
 Task: `backend-dependencies-20261001`. Baseline: `main` at `0ba1784f673888ceff8da81c4eb3b6652011dbc4`. Inspection covers Linux x86_64 glibc, standard CPython 3.14 and the exact wheel/extension artifacts below. Advisory status was retrieved on 1 October 2026. Counts below mean published version-range matches, not proven exploitable defects; API use, platform, build options and documented security backports matter.
+
+## Follow-up implementation — preserve the complete native stack
+
+Task: `native-openssl-remediation-20261001`; implementation baseline `main` at
+`074076e4ec0af5990117944b37e761613faf005a`. The earlier inventory and range matrix
+below describe registry artifacts, not the newly built custom artifacts.
+Unrelated science work, the shared `.venv`, and existing signed extension cache
+were preserved. TaxaLens and ButterflyLens remain report-only.
+
+The PostgreSQL extra now selects `psycopg[c]` 3.3.6. Its actual CPython 3.14 wheel
+uses Ubuntu libpq 18.6 rather than `psycopg-binary`'s bundled OpenSSL 3.5.8.
+This introduces compiler/PostgreSQL-header requirements for ordinary source
+installation and makes the Ubuntu security update a deployment prerequisite.
+Arrow 25.0.1 was rebuilt with private static OpenSSL 3.6.5, preserving S3,
+Flight, Parquet encryption, Dataset, Acero/Compute, Azure, GCS, HDFS, ORC,
+Substrait, CSV and JSON capabilities. The AWS build uses OpenSSL for its
+crypto provider; its alternative AWS-LC path was removed for this candidate.
+DuckDB Python/core 1.5.6 and Spatial 04270fe were rebuilt with the GDAL/GEOS/
+CURL network feature set and private OpenSSL 3.6.5. Spatial is statically
+registered, retaining ordinary `LOAD spatial` behavior.
+
+Release notes could not establish those build properties. GitHits source
+inspection, exact source archives, linker maps/static archives, actual ELF
+closure and actual wheel probes supplied that evidence. Source-level fixes
+were needed for AWS crypto selection, third-party unity-build symbol conflicts,
+DuckDB's upstream `DONT_LINK` Spatial registration and the callback registration
+for its metadata-check setting. Failed intermediate candidates were not admitted.
+The inventory distinguishes the actual provider from CPython’s exact
+PSF-2.0 `get_fips_mode` documentation string mentioning OpenSSL 3.0.0;
+other old-provider markers still fail. The private OpenSSL build passed five upstream test files containing 168 tests;
+non-FIPS preparation was skipped. These are regression results, not exploitability
+certification for every advisory in the matrix.
+
+The production DuckDB loader admits no external extensions. A separate compiled
+test policy successfully loaded the exact signed official INET artifact through
+a sealed snapshot; it was not substituted for the production wheel. Official
+signature and ABI checks remain active. Unknown artifacts, affected cached
+Spatial and unsigned/metadata-check bypass settings are rejected. The launcher
+blocks unapproved loader and GDAL plugin overrides. This policy assumes an
+operator-controlled process baseline, not arbitrary hostile code already running
+inside the process.
+
+The persistent interpreter is freshly extracted from the official Astral
+20260929 archive, whose SHA-256 is
+`da5357f47b1d9c8d4c439004d463d893ef688a44c27438a62b47073d26d1377e`.
+It reports Python 3.14.7/OpenSSL 3.5.9. Archive contents, bytecode and unexpected
+files/symlinks are checked; the executable hash alone is insufficient.
+The application wheel uses committed baseline source plus the task-owned
+`pyproject.toml` overlay, excluding the other session's scientific edits.
+
+Build inputs, toolchain bytes, backend files, source archives, static libraries
+and linker maps are retained under ignored `.native-runtime/build-materials`.
+The machine-specific `native-runtime.lock` binds source receipts, actual wheel
+checksums, library ownership, mandatory checks and extension policy. It remains
+`ready: false`; artifact existence alone cannot approve deployment. See
+[the operator workflow](../native_runtime.md) for building a new generation,
+post-update reattestation and verified launch.
+
+During qualification, `openssl`, `libssl3t64` and `libssl-dev` changed from
+**3.5.5-1ubuntu3.5** to the required **3.5.5-1ubuntu3.6**, with official Ubuntu
+security/updates archive provenance. This agent did not perform that update.
+The earlier native profile correctly rejected the changed library hashes; a
+Host reattestation subsequently passed: only the two OpenSSL deployment
+library hashes changed; build receipts remained unchanged. All 35 Ubuntu
+package provenance/version gates passed.
+[USN-8847-1](https://ubuntu.com/security/notices/USN-8847-1) specifies a reboot.
+No reboot-required marker was observed, which does not attest that every old
+process was retired or the notice’s reboot requirement was completed. Coordination
+with active job owners, process retirement, entrypoint migration and production
+promotion remain unperformed. In the original 1 October session, Git metadata
+was read-only, so that session did not commit or push this follow-up.
+The 20 October continuation has separate commit/push evidence.
+Live PostgreSQL CRUD and hosted S3 tests remain unrun.
+
+### Candidate artifacts and actual verification
+
+| Package | Actual candidate version | Wheel SHA-256 |
+|---|---|---|
+| biominer | 0.1.0 | `0db1c50386dc4fc33153b08c66a9deb511cc95cd4caa99ef218d79a46e2acc84` |
+| psycopg-c | 3.3.6 | `fd12633b428ca00ad35d8ae6a0db769ca15ee80ec2401eb3fbcd8b2afc32f6bc` |
+| pyarrow | 25.0.1+biominer.f918dfd84c8c | `67b10809882d255635e19b048c69ba7b60d90d25cd406fe9aed712631a7142ee` |
+| duckdb | 1.5.6+biominer.f8be3729f88a | `83a527979c560899777c274002674ebc989d126789716b0d8c105ff13b9ba8a0` |
+
+The committed baseline source passed **2,708 tests**, with 18 existing Polars
+deprecation warnings, in 61.98 seconds on the patched host using the actual replacement wheels.
+The candidate environment passes `uv pip check` for 46 packages and the
+installed CLI help smoke check. Effective package identity, geometry/Arrow
+capabilities, extension-policy rejection and all six local TLS certificate
+checks passed. Audited test-only policies directly demonstrated rejection of
+wrong ABI metadata and corrupt signatures after passing the native SHA gate,
+alongside signed INET acceptance and immutable loaded bytes after path replacement.
+The final profile SHA-256 is
+`e47aff33c1020f3812e6e4b7b58db9b57771f161cbc682a39976fe975682e61e`.
+The new immutable local generation
+`.native-runtime/generations/security-20261001-1` passed all five installation
+gates and subsequent verification; its verified launcher ran CLI help.
+It inventories 7,335 generation files and passes `uv pip check` for 42 packages.
+The native tooling/security suite passed **100 tests** in 10.15 seconds.
+Both opposite native import orders pass with patched OS library hashes.
+`ready: true` applies to that verified local generation, not to retirement of
+old workers or a complete production deployment. The artifact profile itself
+continues to say `ready: false` until an installed generation is verified.
+All binary/probe artifacts stay in ignored storage.
 
 ## Observed inventory and remaining work
 

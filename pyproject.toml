@@ -27,7 +27,7 @@ ml = [
     "skops>=0.16,<0.17",
 ]
 postgres = [
-    "psycopg[binary]>=3.3.6",
+    "psycopg[c]>=3.3.6",
 ]
 test = [
     "h3>=4.5,<5",

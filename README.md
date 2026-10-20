@@ -44,6 +44,14 @@ The converter writes Zstandard Parquet plus a member and archive manifest.
 Do not treat its output as a registry or a completed intake until the required
 fingerprinting and validation artifacts have been produced.
 
+## Native runtime security
+
+For PostgreSQL, Arrow S3/Flight and DuckDB Spatial, use the
+[verified native runtime workflow](docs/native_runtime.md). An ordinary Python
+lock does not attest bundled OpenSSL. The workflow preserves storage and geometry
+capabilities, checks the host security revision and launches a verified immutable
+generation. Existing workers require coordinated migration and retirement.
+
 ## Repository boundaries
 
 BioMiner creates immutable scientific artifacts. TaxaLens may consume completed

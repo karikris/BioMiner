@@ -109,3 +109,13 @@ Reviewed repositories include `duckdb/duckdb`, `duckdb/duckdb-python`, `agronhol
 Applied skills: ADHD preflight (direct maintenance review), using-superpowers, writing-plans, executing-plans, subagent-driven-development, test-driven-development, systematic-debugging, requesting/receiving-code-review, verification-before-completion and Headroom. The writing-skills skill was inspected but not applied because it concerns skill authoring, not this repository report. Independent final review passed with no substantive findings: the nine staged paths, preserved prior provenance, dependency/build hashes, test/audit receipts, all 61 native matrix rows and deduplicated frontend advisory tables agree with the evidence. Staged `git diff --check` passed, and structured lock inspection verified 575 hashed official-index artifacts and every dependency reference. Exact model/session identifiers and human review were not available and are not invented.
 
 Scientific claims allowed: tested software compatibility and observed package/native inventories only. Biological performance, production occurrence release, live source availability, and a complete native security all-clear remain unclaimed.
+
+## Native OpenSSL implementation follow-up
+
+The later remediation changes the PostgreSQL extra from `psycopg[binary]` to
+`psycopg[c]` and builds private patched Arrow/DuckDB Spatial artifacts without
+removing their storage or geometry feature sets. The registry upgrade table
+above remains historical evidence. See the [OpenSSL follow-up](openssl_security_review_2026-10-01.md)
+and [native generation workflow](../native_runtime.md) for exact artifacts,
+qualification and the remaining Ubuntu/deployment prerequisites. TaxaLens and
+ButterflyLens still have report-only findings.
