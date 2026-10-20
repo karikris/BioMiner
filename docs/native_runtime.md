@@ -13,6 +13,33 @@ also advanced to Ubuntu OpenSSL package revision `3.5.5-1ubuntu3.7`; the earlier
 generation currently fails its recorded apt-origin check. Preserve its bytes
 and create a new profile and generation rather than editing its receipt.
 
+## Current 20 October qualification
+
+The monthly dependency upgrade is qualified locally with
+`native-runtime-2026-10-20.lock` and
+`.native-runtime/generations/dependencies-20261020-1`.
+The profile SHA-256 is
+`099e9996661085c7766c89e55cbdaece7fd1c1edcc7f27ec238bf87e2ef35708`.
+Its application wheel contains source commit
+`827fa5ce4b98aa4e759350580661b6301d32c0ae` plus the reviewed dependency
+configuration. The three custom native wheels and their historical build
+receipts are unchanged. Host refresh records the currently installed Ubuntu
+libraries separately from their build-time evidence.
+
+All five installation checks passed; fresh verification, installed package
+consistency and launcher help also passed. Run through the checked launcher:
+
+```bash
+.native-runtime/python-runtime/python/bin/python3.14 -I -B scripts/native_runtime.py exec --profile native-runtime-2026-10-20.lock --generation .native-runtime/generations/dependencies-20261020-1 -- -m biominer.cli --help
+```
+
+The shared `.venv` and existing workers have not been migrated. Live PostgreSQL
+and hosted S3 checks, coordinated reboot and worker retirement remain unverified.
+See the [dependency review](research/backend_dependency_review_2026-10-20.md)
+for version decisions, security findings, compatibility evidence and exact
+qualification commands. The generic examples below describe new builds;
+existing profiles and generations must not be reused as output paths.
+
 ## Build and qualify a candidate
 
 Use a separate workspace under ignored `.native-runtime/`; preserve existing
