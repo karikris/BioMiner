@@ -729,7 +729,7 @@ unchanged, adds eight stable SDK IDs conservatively as open, and adds an open
 bundled-closure review gap. It contains 19 findings, ten open, and two coverage
 gap records. SHA-256 is `f1f7cb36f41e7aa62a34547b624508b95dab3cb7c53989e154a29fb3b4c50fd5`.
 This is not a passing phase report. Further current SDK advisory review and a
-coherent compatible replacement cohort are required before fresh full builds;
+coherent compatible replacement cohort are required before fresh full builds.
 The intermediate capsule's inherited top-level counts were not recomputed;
 the totals above count its actual finding/gap arrays. Preserve that capsule
 unchanged and correct the counts in its successor. Eleven additional c-ares
@@ -757,3 +757,42 @@ of universal advisory absence. Exact GNU 1.19 source confirms the known GB18030
 allocation guard, and the existing source-object finding remains unchanged.
 The scoped review SHA-256 is
 `4a615b29e5739cf4c6f2579b09d3c0a4b4f39569e7f8178691b4694e98bd12fb`.
+
+## Compatibility scope and corrective Arrow 25 dependency recipe
+
+The user excluded further cybersecurity work and requested continued dependency
+and Polars/Arrow compatibility implementation. The amended plan preserves
+existing admission checks and contained environments. The additional RapidJSON
+counter test source was not compiled or executed; no arithmetic patch was
+implemented. Scope receipt SHA-256 is
+`06ab19c8ff98922fdf7bfae22c9e6eb516b41f890568f033fbb7c2707cd0e534`.
+
+The corrective Arrow 25 recipe now captures the reviewed 21-member source
+cohort as explicit required archive inputs. It retains the original two ordered
+compute patches, all fourteen capabilities and six codecs, encryption, both
+allocators and the private provider prefix. Eight direct SDK packages require
+bundled selection. Both version and checksum transformations reject missing,
+changed or duplicate assignments, including different-valued duplicates that
+would otherwise override an earlier assignment. Source policy is explicitly
+`arrow25-two-compute-patches-private-network-v2`; historical recipes and raw
+artifact admission pins are unchanged.
+
+Parent-owned regression first observed four differing-duplicate cases fail in
+0.19 seconds. After correction, both complete recipe suites passed 424 tests
+in 6.11 seconds, supervisor/runner exit 0, no interruption. Final execution
+receipt SHA-256 is
+`fc19ad5c24172acdb14318417172a3df553cb534f674c3b9e3f43758fef4a139`.
+This validates recipe orchestration with synthetic fixtures. Actual candidate
+configuration, compilation, final source proof and runtime compatibility remain
+separate work; no installed runtime is admitted by this task.
+
+Arrow 26's equivalent cohort recipe was committed separately at `7f8001b`.
+It uses source policy `arrow26-integrated-private-network-v3`, retains its
+integrated compute corrections and eight ABI-2600 libraries, and disables
+unity compilation only for uriparser. Its independent core review passed;
+review SHA-256 is
+`14c5e46bab2973c3261b8729d41abf7568cba91b98163aa84fe5ae28d6dcd06a`.
+The common finite 21-member cohort matches retained input SHA-256
+`584b47d20f2ec9ce3d3f98ed4e616c9b866de96d5033cd8f8406060b7d88a69f`.
+Both recipes require fresh candidate generations and keep their existing
+configuration/compilation approval boundary. Phase 4 remains in progress.

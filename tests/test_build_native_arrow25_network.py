@@ -191,7 +191,7 @@ def test_separate_source_identity_keeps_both_ordered_compute_fixes(recipe, sourc
     source, evidence = prepare(recipe, source_inputs)
     archive, work, patches, original, final = source_inputs
     assert recipe.ARROW_COMMIT == "beccec0d0c451b7aa3e4530416ac431b3c035c69"
-    assert recipe.SOURCE_POLICY == "arrow25-two-compute-patches-private-network-v1"
+    assert recipe.SOURCE_POLICY == "arrow25-two-compute-patches-private-network-v2"
     assert [row["commit"] for row in evidence["security_patches"]["patches"]] == [
         recipe.SECURITY_PATCH_COMMIT, recipe.OFFSET_PATCH_COMMIT]
     for relative, data in final.items():
@@ -605,15 +605,20 @@ def test_cli_rejected_approval_preserves_configure_receipt_and_checkpoint(
         return {"command": command, "exit_code": 0}
 
     monkeypatch.setattr(recipe, "run_stage", configure)
-    boost = tmp_path / "boost.tar.gz"
-    boost.write_bytes(b"approved Boost fixture")
-    monkeypatch.setitem(recipe.DEPENDENCIES["boost"], "sha256", digest(boost.read_bytes()))
+    archives = {}
+    for dependency, pins in recipe.DEPENDENCIES.items():
+        path = tmp_path / (dependency + ".tar.gz")
+        path.write_bytes(("approved " + dependency + " fixture").encode())
+        monkeypatch.setitem(pins, "sha256", digest(path.read_bytes()))
+        archives[dependency] = path
     argv = ["--archive", str(archive), "--work", str(work), "--openssl-prefix", str(openssl),
             "--builder-receipt", str(tmp_path / "builder.json"), "--builder-receipt-sha256", "0" * 64,
             "--network-receipt", str(receipt_path), "--network-receipt-sha256", digest(receipt_path.read_bytes()),
             "--network-helper", str(helper), "--python", "/approved/python", "--cc", tools["cc"]["path"],
-            "--cxx", tools["cxx"]["path"], "--boost-archive", str(boost),
+            "--cxx", tools["cxx"]["path"],
             "--security-patch", str(patches[0]), "--offset-patch", str(patches[1])]
+    for dependency, path in archives.items():
+        argv += ["--" + dependency.replace("_", "-") + "-archive", str(path)]
     configured_result = recipe.main(argv + ["--configure-only"])
     if mutation not in {None, "alias"}:
         assert configured_result != 0
@@ -691,3 +696,490 @@ def test_load_only_map_does_not_prove_actual_private_archive_contribution(recipe
     final.write_text("Linker script and memory map\n" + "\n".join("LOAD " + row["path"] for row in archives) + "\n")
     with pytest.raises(ValueError, match="final.*static linkage|archive contribution"):
         recipe.verify_link_maps(work, network_inputs[2], {"static_archives": archives}, network=network)
+
+
+# Frozen reviewed cohort identities. Tests never load the external acquisition draft.
+EXPECTED_SDK_COHORT = {
+    "aws_sdk_cpp": {
+        "variable": "AWSSDK",
+        "version": "1.11.914",
+        "build_version": "d207a37ecb8dc33b5e131d0d59843d264b7f7e86",
+        "commit": "d207a37ecb8dc33b5e131d0d59843d264b7f7e86",
+        "sha256": "108382fed71e70ada73d4aaa45e0ba54777f7eca6bbd44ac24b9af9ef54f069e",
+        "filename": "aws-sdk-cpp-d207a37ecb8dc33b5e131d0d59843d264b7f7e86.tar.gz",
+        "url": "https://github.com/aws/aws-sdk-cpp/archive/d207a37ecb8dc33b5e131d0d59843d264b7f7e86.tar.gz",
+        "env": "ARROW_AWSSDK_URL",
+        "old_version": "1.11.778",
+        "old_sha256": "06371849792f1a8633c3e0592a17b4700f39c748ad374f4e9a6592739ecc4d9c"
+    },
+    "aws_crt_cpp": {
+        "variable": "AWS_CRT_CPP",
+        "version": "0.43.8",
+        "build_version": "9c319786d1d83d5ace6a9de817dcfe1861003609",
+        "commit": "9c319786d1d83d5ace6a9de817dcfe1861003609",
+        "sha256": "f107357efa7d6b9be783d96d49cdaf000fe881417c431ae9fe27faf1bb55f431",
+        "filename": "aws-crt-cpp-9c319786d1d83d5ace6a9de817dcfe1861003609.tar.gz",
+        "url": "https://github.com/awslabs/aws-crt-cpp/archive/9c319786d1d83d5ace6a9de817dcfe1861003609.tar.gz",
+        "env": "ARROW_AWS_CRT_CPP_URL",
+        "old_version": "v0.38.0",
+        "old_sha256": "f57b82f0a9e6890e4d47aa1c48b9324b5beb5b58000715c4c6ef9f147be13891"
+    },
+    "aws_c_auth": {
+        "variable": "AWS_C_AUTH",
+        "version": "4b5d524bf1a511b05e0fffe5bdc51800770b9427",
+        "build_version": "4b5d524bf1a511b05e0fffe5bdc51800770b9427",
+        "commit": "4b5d524bf1a511b05e0fffe5bdc51800770b9427",
+        "sha256": "b4f6690b382abe049d543804f40230e667a95a18f64506ef7647925e8c6b9b67",
+        "filename": "aws-c-auth-4b5d524bf1a511b05e0fffe5bdc51800770b9427.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-auth/archive/4b5d524bf1a511b05e0fffe5bdc51800770b9427.tar.gz",
+        "env": "ARROW_AWS_C_AUTH_URL",
+        "old_version": "v0.10.1",
+        "old_sha256": "85d737f0f735256f1931e85e4cadbe228d88698f7b59a9b390b49ef5d0778a43"
+    },
+    "aws_c_cal": {
+        "variable": "AWS_C_CAL",
+        "version": "8aa2a48a09f93c65d4cf06388e143a6584de6321",
+        "build_version": "8aa2a48a09f93c65d4cf06388e143a6584de6321",
+        "commit": "8aa2a48a09f93c65d4cf06388e143a6584de6321",
+        "sha256": "29706ab10a4d95a74db278925b82c85077c08224c0efe837841d2354555c8817",
+        "filename": "aws-c-cal-8aa2a48a09f93c65d4cf06388e143a6584de6321.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-cal/archive/8aa2a48a09f93c65d4cf06388e143a6584de6321.tar.gz",
+        "env": "ARROW_AWS_C_CAL_URL",
+        "old_version": "v0.9.13",
+        "old_sha256": "80b7c6087b0af461b4483e4c9483aea2e0dac5d9fb2289b057159ea6032409e1"
+    },
+    "aws_c_common": {
+        "variable": "AWS_C_COMMON",
+        "version": "f7d471b1feaea9a310851672580f9ac7e031cfc0",
+        "build_version": "f7d471b1feaea9a310851672580f9ac7e031cfc0",
+        "commit": "f7d471b1feaea9a310851672580f9ac7e031cfc0",
+        "sha256": "a87a89fa6678fda59dd66ea9246e70d837bf71ecec39829ec712e6863d1453e4",
+        "filename": "aws-c-common-f7d471b1feaea9a310851672580f9ac7e031cfc0.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-common/archive/f7d471b1feaea9a310851672580f9ac7e031cfc0.tar.gz",
+        "env": "ARROW_AWS_C_COMMON_URL",
+        "old_version": "v0.12.6",
+        "old_sha256": "138822ecdcaff1d702f37d4751f245847d088592724921cc6bf61c232b198d6b"
+    },
+    "aws_c_compression": {
+        "variable": "AWS_C_COMPRESSION",
+        "version": "d8264e64f698341eb03039b96b4f44702a9b3f83",
+        "build_version": "d8264e64f698341eb03039b96b4f44702a9b3f83",
+        "commit": "d8264e64f698341eb03039b96b4f44702a9b3f83",
+        "sha256": "537971fe42e989b638e0f436683357ed3d07f07b06b910b1c37ab3a8094bb8fd",
+        "filename": "aws-c-compression-d8264e64f698341eb03039b96b4f44702a9b3f83.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-compression/archive/d8264e64f698341eb03039b96b4f44702a9b3f83.tar.gz",
+        "env": "ARROW_AWS_C_COMPRESSION_URL",
+        "old_version": "v0.3.2",
+        "old_sha256": "f93f5a5d8b3fee3a6d97b14ba279efacd4d4016ef9cc7dc4be7d43519ecfbe93"
+    },
+    "aws_c_event_stream": {
+        "variable": "AWS_C_EVENT_STREAM",
+        "version": "51bef3c44e1058b1689751539170b2e0f589ccdb",
+        "build_version": "51bef3c44e1058b1689751539170b2e0f589ccdb",
+        "commit": "51bef3c44e1058b1689751539170b2e0f589ccdb",
+        "sha256": "b890d4940957d1ddade1a9d7de4adc37b7cb98dfdfdfec7436527fec8cb558df",
+        "filename": "aws-c-event-stream-51bef3c44e1058b1689751539170b2e0f589ccdb.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-event-stream/archive/51bef3c44e1058b1689751539170b2e0f589ccdb.tar.gz",
+        "env": "ARROW_AWS_C_EVENT_STREAM_URL",
+        "old_version": "v0.7.0",
+        "old_sha256": "88835b4c78462547917f622fd9dda45c991b7e356d9c07e2f0537d4d97fbd4fb"
+    },
+    "aws_c_http": {
+        "variable": "AWS_C_HTTP",
+        "version": "8aefd899fc3210bfd0e3fd414011a3cb708bf6e4",
+        "build_version": "8aefd899fc3210bfd0e3fd414011a3cb708bf6e4",
+        "commit": "8aefd899fc3210bfd0e3fd414011a3cb708bf6e4",
+        "sha256": "61b1770e2e3a2bf046005cbfa8e26d621d8f266f05d03589ebee36bb4a0ac39f",
+        "filename": "aws-c-http-8aefd899fc3210bfd0e3fd414011a3cb708bf6e4.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-http/archive/8aefd899fc3210bfd0e3fd414011a3cb708bf6e4.tar.gz",
+        "env": "ARROW_AWS_C_HTTP_URL",
+        "old_version": "v0.10.13",
+        "old_sha256": "d8352e7a1fb1996694a4dc31219ce03452882abf8d0858c104727f975e11b9c7"
+    },
+    "aws_c_io": {
+        "variable": "AWS_C_IO",
+        "version": "28e4eb351a536daf1627bf69279e50671f7729b5",
+        "build_version": "28e4eb351a536daf1627bf69279e50671f7729b5",
+        "commit": "28e4eb351a536daf1627bf69279e50671f7729b5",
+        "sha256": "ea51cbe20981ed34b7a8c01a60c848e4ccb716a29cd740ead07ffd61be5169c3",
+        "filename": "aws-c-io-28e4eb351a536daf1627bf69279e50671f7729b5.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-io/archive/28e4eb351a536daf1627bf69279e50671f7729b5.tar.gz",
+        "env": "ARROW_AWS_C_IO_URL",
+        "old_version": "v0.26.3",
+        "old_sha256": "521fd0848fca661130bbb7278a414d7a38bdcb9bc8ffa89f6660d84e5838a303"
+    },
+    "aws_c_mqtt": {
+        "variable": "AWS_C_MQTT",
+        "version": "e35b9ca3f9fcbf1a972c831c5e79046ce56959d1",
+        "build_version": "e35b9ca3f9fcbf1a972c831c5e79046ce56959d1",
+        "commit": "e35b9ca3f9fcbf1a972c831c5e79046ce56959d1",
+        "sha256": "54d1987ce06eb7b39faace854818e9322d3df79cb310ada350beca0b12cb89cc",
+        "filename": "aws-c-mqtt-e35b9ca3f9fcbf1a972c831c5e79046ce56959d1.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-mqtt/archive/e35b9ca3f9fcbf1a972c831c5e79046ce56959d1.tar.gz",
+        "env": "ARROW_AWS_C_MQTT_URL",
+        "old_version": "v0.15.2",
+        "old_sha256": "66f3f5edff4ad1f765a86d3342b6017d0f29f950c1c24f8c1edacdc895202edc"
+    },
+    "aws_c_s3": {
+        "variable": "AWS_C_S3",
+        "version": "226c3e6937e3d5f7db9e10651f7bd20575e98187",
+        "build_version": "226c3e6937e3d5f7db9e10651f7bd20575e98187",
+        "commit": "226c3e6937e3d5f7db9e10651f7bd20575e98187",
+        "sha256": "a8f33816bf7aff38467fb15ca233a33a9113be78dad47c8a7ee30d323b42ba74",
+        "filename": "aws-c-s3-226c3e6937e3d5f7db9e10651f7bd20575e98187.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-s3/archive/226c3e6937e3d5f7db9e10651f7bd20575e98187.tar.gz",
+        "env": "ARROW_AWS_C_S3_URL",
+        "old_version": "v0.12.0",
+        "old_sha256": "1a8a8ceda0585d52028a1f3daa5861f924e7d8d2f6a17bec05813dc0b74d6eed"
+    },
+    "aws_c_sdkutils": {
+        "variable": "AWS_C_SDKUTILS",
+        "version": "a1cc19f53b63658f1b1400b36f199eafeeb895a6",
+        "build_version": "a1cc19f53b63658f1b1400b36f199eafeeb895a6",
+        "commit": "a1cc19f53b63658f1b1400b36f199eafeeb895a6",
+        "sha256": "f8ef9e93b30f9833d9c9ea474110c8fa2d29fd78b885546b07e68558ece3bb1c",
+        "filename": "aws-c-sdkutils-a1cc19f53b63658f1b1400b36f199eafeeb895a6.tar.gz",
+        "url": "https://github.com/awslabs/aws-c-sdkutils/archive/a1cc19f53b63658f1b1400b36f199eafeeb895a6.tar.gz",
+        "env": "ARROW_AWS_C_SDKUTILS_URL",
+        "old_version": "v0.2.4",
+        "old_sha256": "493cbed4fa57e0d4622fcff044e11305eb4fc12445f32c8861025597939175fc"
+    },
+    "aws_checksums": {
+        "variable": "AWS_CHECKSUMS",
+        "version": "1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e",
+        "build_version": "1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e",
+        "commit": "1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e",
+        "sha256": "c58d8c5319319dcade0926da44ad12effecb21372983e22835a657a32f03c9c9",
+        "filename": "aws-checksums-1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e.tar.gz",
+        "url": "https://github.com/awslabs/aws-checksums/archive/1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e.tar.gz",
+        "env": "ARROW_AWS_CHECKSUMS_URL",
+        "old_version": "v0.2.10",
+        "old_sha256": "cb6509f75e42ee25c372a6d379e8582ce5179e5335183842e808f7d8abb0c314"
+    },
+    "s2n_tls": {
+        "variable": "S2N_TLS",
+        "version": "1.7.12",
+        "build_version": "6459002cd61e4bf3bbc53db23f068b21da9ff6bd",
+        "commit": "6459002cd61e4bf3bbc53db23f068b21da9ff6bd",
+        "sha256": "94a57c4f4713cc20088b723bcdf0bb254e32a559ffcbed583e67fe3d8ddec442",
+        "filename": "s2n-tls-6459002cd61e4bf3bbc53db23f068b21da9ff6bd.tar.gz",
+        "url": "https://github.com/aws/s2n-tls/archive/6459002cd61e4bf3bbc53db23f068b21da9ff6bd.tar.gz",
+        "env": "ARROW_S2N_TLS_URL",
+        "old_version": "v1.7.0",
+        "old_sha256": "a6e8228e238239bb3c17b1eda3ed702bcbb2eaebc792eac4d754cc5619b0ea06"
+    },
+    "thrift": {
+        "variable": "THRIFT",
+        "version": "0.25.0",
+        "build_version": "0.25.0",
+        "commit": "27e8a425ffb498e190df3a12e239326bf5ba9ed6",
+        "sha256": "66da4707214c54c94bac082103dc67adaf9e08925662700f269170a7b534b214",
+        "filename": "thrift-27e8a425ffb498e190df3a12e239326bf5ba9ed6.tar.gz",
+        "url": "https://www.apache.org/dyn/closer.lua/thrift/0.25.0/thrift-0.25.0.tar.gz?action=download",
+        "env": "ARROW_THRIFT_URL",
+        "old_version": "0.22.0",
+        "old_sha256": "794a0e455787960d9f27ab92c38e34da27e8deeda7a5db0e59dc64a00df8a1e5"
+    },
+    "grpc": {
+        "variable": "GRPC",
+        "version": "1.83.1",
+        "build_version": "v1.83.1",
+        "commit": "aae267021b1ac256f8b9038d0ef528c3798cc137",
+        "sha256": "60caa8397426d8a500e3e57ab6a49d1cb5aa62a36f2591eb9da3d77fa38ad8c9",
+        "filename": "grpc-v1.83.1.tar.gz",
+        "url": "https://github.com/grpc/grpc/archive/v1.83.1.tar.gz",
+        "env": "ARROW_GRPC_URL",
+        "old_version": "v1.76.0",
+        "old_sha256": "0af37b800953130b47c075b56683ee60bdc3eda3c37fc6004193f5b569758204"
+    },
+    "protobuf": {
+        "variable": "PROTOBUF",
+        "version": "35.1",
+        "build_version": "v35.1",
+        "commit": "35cd01f9fe9afbeea38cc7b979a3b6bfcde82c03",
+        "sha256": "f0b6838e7522a8da96126d487068c959bc624926368f3024ac8fd03abd0a1ac4",
+        "filename": "protobuf-35.1.tar.gz",
+        "url": "https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protobuf-35.1.tar.gz",
+        "env": "ARROW_PROTOBUF_URL",
+        "old_version": "v31.1",
+        "old_sha256": "12bfd76d27b9ac3d65c00966901609e020481b9474ef75c7ff4601ac06fa0b82"
+    },
+    "absl": {
+        "variable": "ABSL",
+        "version": "20250512.1",
+        "build_version": "20250512.1",
+        "commit": "76bb24329e8bf5f39704eb10d21b9a80befa7c81",
+        "sha256": "9b7a064305e9fd94d124ffa6cc358592eb42b5da588fb4e07d09254aa40086db",
+        "filename": "absl-20250512.1.tar.gz",
+        "url": "https://github.com/abseil/abseil-cpp/archive/20250512.1.tar.gz",
+        "env": "ARROW_ABSL_URL",
+        "old_version": "20250127.0",
+        "old_sha256": "16242f394245627e508ec6bb296b433c90f8d914f73b9c026fddb905e27276e8"
+    },
+    "cares": {
+        "variable": "CARES",
+        "version": "1.34.9",
+        "build_version": "1.34.9",
+        "commit": "bc91829cce983a35ec01f5dbc05465858a3df469",
+        "sha256": "9364b70a12eb59a06830fb488d9357f90100dff0d98b23ea3593a183d43e6f2f",
+        "filename": "c-ares-1.34.9.tar.gz",
+        "url": "https://github.com/c-ares/c-ares/releases/download/v1.34.9/c-ares-1.34.9.tar.gz",
+        "env": "ARROW_CARES_URL",
+        "old_version": "1.34.6",
+        "old_sha256": "912dd7cc3b3e8a79c52fd7fb9c0f4ecf0aaa73e45efda880266a2d6e26b84ef5"
+    },
+    "rapidjson": {
+        "variable": "RAPIDJSON",
+        "version": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f",
+        "build_version": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f",
+        "commit": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f",
+        "sha256": "2d2601a82d2d3b7e143a3c8d43ef616671391034bc46891a9816b79cf2d3e7a8",
+        "filename": "rapidjson-24b5e7a8b27f42fa16b96fc70aade9106cf7102f.tar.gz",
+        "url": "https://github.com/Tencent/rapidjson/archive/24b5e7a8b27f42fa16b96fc70aade9106cf7102f.tar.gz",
+        "env": "ARROW_RAPIDJSON_URL",
+        "old_version": "232389d4f1012dddec4ef84861face2d2ba85709",
+        "old_sha256": "b9290a9a6d444c8e049bd589ab804e0ccf2b05dc5984a19ed5ae75d090064806"
+    },
+    "jemalloc": {
+        "variable": "JEMALLOC",
+        "version": "5.3.1",
+        "build_version": "5.3.1",
+        "commit": "81034ce1f1373e37dc865038e1bc8eeecf559ce8",
+        "sha256": "3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92",
+        "filename": "jemalloc-5.3.1.tar.bz2",
+        "url": "https://github.com/jemalloc/jemalloc/releases/download/5.3.1/jemalloc-5.3.1.tar.bz2",
+        "env": "ARROW_JEMALLOC_URL",
+        "old_version": "5.3.0",
+        "old_sha256": "2db82d1e7119df3e71b7640219b6dfe84789bc0537983c3b7ac4f7189aecfeaa"
+    }
+}
+
+
+def source_transform_fixture(recipe, source_inputs, *, versions=None):
+    original = source_inputs[3]
+    members = {
+        "cpp/cmake_modules/ThirdpartyToolchain.cmake":
+            original["cpp/cmake_modules/ThirdpartyToolchain.cmake"],
+        "cpp/thirdparty/versions.txt": (
+            "\n".join(f"ARROW_{row['variable']}_BUILD_VERSION={row['old_version']}\n"
+                      f"ARROW_{row['variable']}_BUILD_SHA256_CHECKSUM={row['old_sha256']}"
+                      for row in EXPECTED_SDK_COHORT.values()) + "\n"
+            + "ARROW_BOOST_BUILD_VERSION=1.88.0\n"
+            + "ARROW_BOOST_BUILD_SHA256_CHECKSUM=dcea50f40ba1ecfc448fdf886c0165cf3e525fef2c9e3e080b9804e8117b9694\n"
+            + "ARROW_UNRELATED_BUILD_VERSION=keep-this-source-identity\n").encode(),
+    }
+    if versions is not None:
+        members["cpp/thirdparty/versions.txt"] = versions
+    packed = io.BytesIO()
+    with tarfile.open(fileobj=packed, mode="w") as archive:
+        for relative, data in members.items():
+            member = tarfile.TarInfo("arrow/" + relative)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    packed.seek(0)
+    return packed, members
+
+
+def test_sdk_cohort_pins_are_the_complete_reviewed_finite_table(recipe):
+    assert getattr(recipe, "SDK_COHORT", {}) == EXPECTED_SDK_COHORT
+    for name, pins in EXPECTED_SDK_COHORT.items():
+        assert recipe.DEPENDENCIES[name] == pins
+
+
+def test_sdk_source_transformation_changes_every_exact_version_and_checksum(recipe, source_inputs):
+    packed, original = source_transform_fixture(recipe, source_inputs)
+    with tarfile.open(fileobj=packed) as archive:
+        observed = recipe.source_transformations(archive, "arrow")
+    lines = observed["cpp/thirdparty/versions.txt"].decode().splitlines()
+    for pins in EXPECTED_SDK_COHORT.values():
+        assert lines.count(f"ARROW_{pins['variable']}_BUILD_VERSION={pins['build_version']}") == 1
+        assert lines.count(f"ARROW_{pins['variable']}_BUILD_SHA256_CHECKSUM={pins['sha256']}") == 1
+        assert f"ARROW_{pins['variable']}_BUILD_VERSION={pins['old_version']}" not in lines
+        assert f"ARROW_{pins['variable']}_BUILD_SHA256_CHECKSUM={pins['old_sha256']}" not in lines
+    assert "ARROW_UNRELATED_BUILD_VERSION=keep-this-source-identity" in lines
+    assert "ARROW_BOOST_BUILD_VERSION=1.92.0" in lines
+    assert set(observed) == set(original)
+
+
+@pytest.mark.parametrize("field", ["version", "sha256"])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "prefixed", "suffixed"])
+def test_sdk_source_transformation_requires_whole_unique_assignment_lines(
+        recipe, source_inputs, field, mutation):
+    packed, members = source_transform_fixture(recipe, source_inputs)
+    pins = EXPECTED_SDK_COHORT["grpc"]
+    anchor = (f"ARROW_GRPC_BUILD_VERSION={pins['old_version']}" if field == "version"
+              else f"ARROW_GRPC_BUILD_SHA256_CHECKSUM={pins['old_sha256']}")
+    replacement = {"missing": "", "duplicate": anchor + "\n" + anchor,
+                   "prefixed": "UNREVIEWED_" + anchor, "suffixed": anchor + "_unreviewed"}[mutation]
+    poisoned = members["cpp/thirdparty/versions.txt"].replace(anchor.encode(), replacement.encode())
+    packed, _ = source_transform_fixture(recipe, source_inputs, versions=poisoned)
+    with tarfile.open(fileobj=packed) as archive:
+        with pytest.raises(ValueError, match="anchor|assignment|transformation"):
+            recipe.source_transformations(archive, "arrow")
+
+
+@pytest.mark.parametrize("field", ["version", "sha256"])
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_sdk_source_transformation_rejects_changed_value_duplicate_assignments(
+        recipe, source_inputs, field, position):
+    _, members = source_transform_fixture(recipe, source_inputs)
+    pins = EXPECTED_SDK_COHORT["grpc"]
+    key = "ARROW_GRPC_BUILD_VERSION" if field == "version" else "ARROW_GRPC_BUILD_SHA256_CHECKSUM"
+    old_value = pins["old_version"] if field == "version" else pins["old_sha256"]
+    anchor = f"{key}={old_value}"
+    duplicate = f"{key}=unreviewed-version" if field == "version" else f"{key}={'0' * 64}"
+    replacement = (duplicate + "\n" + anchor if position == "before"
+                   else anchor + "\n" + duplicate)
+    poisoned = members["cpp/thirdparty/versions.txt"].replace(anchor.encode(), replacement.encode())
+    packed, _ = source_transform_fixture(recipe, source_inputs, versions=poisoned)
+    with tarfile.open(fileobj=packed) as archive:
+        with pytest.raises(ValueError, match="anchor|assignment|transformation"):
+            recipe.source_transformations(archive, "arrow")
+
+
+def test_corrective25_keeps_uri_absence_and_all_existing_capabilities(recipe, source_inputs):
+    source, evidence = prepare(recipe, source_inputs)
+    toolchain = (source / "cpp/cmake_modules/ThirdpartyToolchain.cmake").read_text()
+    # Exact Arrow25 has no uriparser source/target. Its target-only unity fix is26-only.
+    assert "uriparser" not in toolchain
+    assert tuple(recipe.FEATURES) == (
+        "ACERO", "AZURE", "COMPUTE", "CSV", "DATASET", "FILESYSTEM", "FLIGHT",
+        "GCS", "HDFS", "JSON", "ORC", "PARQUET", "S3", "SUBSTRAIT")
+    assert tuple(recipe.CODECS) == ("BROTLI", "BZ2", "LZ4", "SNAPPY", "ZLIB", "ZSTD")
+    assert [row["commit"] for row in evidence["security_patches"]["patches"]] == [
+        "a769c291e01093b73d03a075179cf7a09bf92ad8",
+        "0efbdec7a10da1a4043fc1210c61e73c88bc9b4f"]
+    assert "set_target_properties(c-ares PROPERTIES UNITY_BUILD OFF)" in toolchain
+    assert "  set(CMAKE_UNITY_BUILD OFF)\n  fetchcontent_makeavailable(grpc)" in toolchain
+
+
+def test_all_direct_sdk_packages_are_forced_to_the_reviewed_bundled_sources(recipe, tmp_path):
+    context = {"cc": "/cc", "cxx": "/cxx", "python": "/python", "work": str(tmp_path),
+               "openssl_prefix": "/private/openssl", "network_prefix": "/private/network"}
+    expected = recipe.expected_cache(context, stage="cpp")
+    for package in ("AWSSDK", "gRPC", "Protobuf", "absl", "c-ares", "Thrift", "jemalloc", "RapidJSON"):
+        assert expected[package + "_SOURCE"] == "BUNDLED"
+    assert expected["CUSTOM_MEMORY_MANAGEMENT"] == "OFF"
+
+
+@pytest.mark.parametrize("name", [*EXPECTED_SDK_COHORT, "unreviewed"])
+def test_inherited_dependency_urls_cannot_influence_the_build(recipe, monkeypatch, name):
+    variable = EXPECTED_SDK_COHORT[name]["env"] if name != "unreviewed" else "ARROW_UNREVIEWED_URL"
+    monkeypatch.setenv(variable, "/poisoned/unreviewed-input.tar.gz")
+    env = recipe.build_environment(4, python="/python", cc="/cc", cxx="/cxx")
+    assert variable not in env
+
+
+@pytest.fixture
+def sdk_configure_inputs(recipe, source_inputs, network_inputs, tmp_path, monkeypatch):
+    """Exercise real configure orchestration, source patching and immutable inputs."""
+    archive, work, patches, _, _ = source_inputs
+    receipt, helper, openssl, descriptor = network_inputs
+    original_relative_to = Path.is_relative_to
+    monkeypatch.setattr(Path, "is_relative_to", lambda self, *other:
+        False if other in (("/tmp",), ("/var/tmp",)) else original_relative_to(self, *other))
+    tools = {name: {"path": "/approved/" + name, "sha256": "0" * 64}
+             for name in ("cc", "cxx", "cmake", "ninja", "ld")}
+    builder = {"base_python": {"path": "/approved/base-python"}, "toolchain": tools}
+    monkeypatch.setattr(recipe, "validate_builder", lambda *args, **kwargs: builder)
+    monkeypatch.setattr(recipe, "probe_builder", lambda *args: {"identity": "frozen fixture"})
+    monkeypatch.setattr(recipe, "validate_python_runtime", lambda *args: {"files": []})
+    monkeypatch.setattr(recipe, "validate_openssl", lambda *args: {"version": "3.6.5"})
+    monkeypatch.setattr(recipe, "expected_generated_version", lambda *args: b"fixture generated version\n")
+    monkeypatch.setattr(recipe.subprocess, "check_output", lambda *args, **kwargs: "fixture version\n")
+    monkeypatch.setattr(recipe, "capture_dependencies", lambda *args, **kwargs: {
+        "targets": [], "boost_components": [], "boost_selection": {}, "source_trees": [],
+        "forced_bundled_source_verification": {}, "static_archives": [], "downloaded_archives": []})
+    # Use independent fixture bytes while preserving the production table's other fields.
+    monkeypatch.setattr(recipe, "DEPENDENCIES", {name: dict(pins) for name, pins in recipe.DEPENDENCIES.items()})
+    expected = {**recipe.DEPENDENCIES, **EXPECTED_SDK_COHORT}
+    archives = {}
+    for name, pins in expected.items():
+        path = tmp_path / ("sdk-input-" + name + ".tar.gz")
+        path.write_bytes(("approved synthetic archive " + name).encode())
+        archives[name] = path
+        if name in recipe.DEPENDENCIES:
+            monkeypatch.setitem(recipe.DEPENDENCIES[name], "sha256", digest(path.read_bytes()))
+    argv = ["--archive", str(archive), "--work", str(work), "--openssl-prefix", str(openssl),
+            "--builder-receipt", str(tmp_path / "builder.json"), "--builder-receipt-sha256", "0" * 64,
+            "--network-receipt", str(receipt), "--network-receipt-sha256", digest(receipt.read_bytes()),
+            "--network-helper", str(helper), "--python", "/approved/python", "--cc", tools["cc"]["path"],
+            "--cxx", tools["cxx"]["path"], "--security-patch", str(patches[0]),
+            "--offset-patch", str(patches[1])]
+    for name, path in archives.items():
+        argv += ["--" + name.replace("_", "-") + "-archive", str(path)]
+    stages = []
+    mutation = {"name": None}
+
+    def configure(stage_work, name, command, env):
+        stages.append({"name": name, "env": dict(env)})
+        assert name == "configure"
+        context = {"work": str(work), "openssl_prefix": str(openssl),
+                   "network_prefix": descriptor["prefix"], "python": "/approved/python",
+                   "cc": tools["cc"]["path"], "cxx": tools["cxx"]["path"]}
+        cache = work / "cpp-build/CMakeCache.txt"
+        cache.write_text("\n".join(f"{key}:STRING={value}" for key, value in
+                                  recipe.expected_cache(context, stage="cpp").items()) + "\n")
+        if mutation["name"]:
+            name = mutation["name"]
+            (work / "inputs" / expected[name]["filename"]).write_bytes(b"changed copied SDK archive")
+        return {"command": command, "exit_code": 0}
+
+    monkeypatch.setattr(recipe, "run_stage", configure)
+    return {"argv": argv, "work": work, "archives": archives, "stages": stages,
+            "expected": expected, "mutation": mutation}
+
+
+def invoke_sdk_cli(recipe, argv):
+    try:
+        return recipe.main(argv)
+    except SystemExit as error:
+        # argparse rejection is an observable pre-implementation failure too.
+        return error.code
+
+
+def test_every_sdk_archive_is_captured_and_source_owned_urls_override_poison(
+        recipe, sdk_configure_inputs, monkeypatch):
+    inputs = sdk_configure_inputs
+    for name, pins in EXPECTED_SDK_COHORT.items():
+        monkeypatch.setenv(pins["env"], "/poisoned/" + name + ".tar.gz")
+    assert invoke_sdk_cli(recipe, inputs["argv"] + ["--configure-only"]) == 0
+    work = inputs["work"]
+    manifest = json.loads((work / "build-inputs.json").read_bytes())
+    assert manifest["source_policy"] == "arrow25-two-compute-patches-private-network-v2"
+    assert set(manifest["dependencies"]) == set(inputs["expected"])
+    assert [row["name"] for row in inputs["stages"]] == ["configure"]
+    env = inputs["stages"][0]["env"]
+    for name, pins in EXPECTED_SDK_COHORT.items():
+        saved = work / "inputs" / pins["filename"]
+        assert saved.read_bytes() == inputs["archives"][name].read_bytes()
+        assert manifest["dependencies"][name] == {
+            **pins, "sha256": digest(saved.read_bytes()),
+            "archive": record(saved), "role": "bundled_provider"}
+        assert env[pins["env"]] == str(saved)
+    assert manifest["compiler_budget"] == {
+        "maximum_jobs": 4, "outer_ninja_jobs": 4, "nested_cmake_jobs": 1, "nested_make_jobs": 1}
+    assert manifest["security_patches"]["patches"][0]["commit"] == recipe.SECURITY_PATCH_COMMIT
+    assert manifest["security_patches"]["patches"][1]["commit"] == recipe.OFFSET_PATCH_COMMIT
+
+
+@pytest.mark.parametrize("name", list(EXPECTED_SDK_COHORT))
+def test_any_sdk_archive_checksum_failure_creates_no_generation(
+        recipe, sdk_configure_inputs, name, capsys):
+    inputs = sdk_configure_inputs
+    inputs["archives"][name].write_bytes(b"wrong source input")
+    assert invoke_sdk_cli(recipe, inputs["argv"] + ["--check"]) != 0
+    assert "checksum" in capsys.readouterr().err
+    assert not inputs["work"].exists()
+    assert inputs["stages"] == []
+
+
+@pytest.mark.parametrize("name", ["aws_sdk_cpp", "grpc", "cares"])
+def test_copied_sdk_input_mutation_is_rejected_after_configure(
+        recipe, sdk_configure_inputs, name, capsys):
+    inputs = sdk_configure_inputs
+    inputs["mutation"]["name"] = name
+    assert invoke_sdk_cli(recipe, inputs["argv"] + ["--configure-only"]) != 0
+    assert "immutable build input checksum" in capsys.readouterr().err
+    assert not (inputs["work"] / "configured-inputs.json").exists()
+    assert json.loads((inputs["work"] / "build-receipt.json").read_bytes())["status"] == "failed"
