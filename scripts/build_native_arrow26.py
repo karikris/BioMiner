@@ -54,11 +54,17 @@ DEPENDENCIES = {
     "zlib": {"version": "1.3.2", "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
              "filename": "zlib-1.3.2.tar.gz", "env": "ARROW_ZLIB_URL"},
 }
-ZLIB_PATCH_COMMIT = "df84af25dc1942490e1d1c899a07619152a46148"
-ZLIB_PATCH_SHA256 = "110ff14375733173d8aa54574473424fbd7dfe4b81f1ca34a759c6fe14b15b14"
-ZLIB_ORIGINAL_GZWRITE_SHA256 = "2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04"
-ZLIB_PATCHED_GZWRITE_SHA256 = "31d0da140edf382b82b13e2d87a22f59e158d9014ee026459e01cf437d0ab07d"
-ZLIB_PATCH_PATH = Path(__file__).parent / "native_patches/zlib-df84af25.patch"
+SOURCE_POLICY = "arrow26-integrated-private-network-v2"
+# Actual configuration remains closed until the reviewed PIC-provider helper
+# has a committed source pin. Synthetic tests substitute their exact helper.
+NETWORK_HELPER_SHA256 = "a8cb0355e3abfa4415093268c17678d63ea1e745a48f4a5dd750a6a01d037414"
+NETWORK_ARCHIVES = ("libcurl.a", "libxml2.a", "libiconv.a", "libcharset.a", "libz.a", "libnghttp2.a")
+NETWORK_HEADERS = ("curl/curl.h", "libxml2/libxml/parser.h", "iconv.h", "zlib.h", "nghttp2/nghttp2.h")
+NETWORK_COMPONENTS = {
+    "libcurl": ("curl", "8.23.0"), "libxml2": ("libxml2", "2.15.4"),
+    "libiconv": ("libiconv", "1.19"), "libcharset": ("libiconv", "1.19"),
+    "zlib": ("zlib", "1.3.2"), "libnghttp2": ("nghttp2", "1.68.0-2ubuntu0.2"),
+}
 TOOLCHAIN_PATCHES = (
     ("list(APPEND AWSSDK_PRODUCTS aws-lc s2n-tls)",
      "list(APPEND AWSSDK_PRODUCTS s2n-tls)\n    add_library(crypto ALIAS OpenSSL::Crypto)"),
@@ -72,12 +78,7 @@ VERSION_PATCHES = (
     ("ARROW_SIMDJSON_BUILD_VERSION=v4.6.4", "ARROW_SIMDJSON_BUILD_VERSION=v4.6.11"),
     ("ARROW_SIMDJSON_BUILD_SHA256_CHECKSUM=b091107844fe928158c5c2265c20360fff312889ddf7ebc4528a0f0f8f2ff9cd",
      "ARROW_SIMDJSON_BUILD_SHA256_CHECKSUM=" + DEPENDENCIES["simdjson"]["sha256"]),
-    ("ARROW_ZLIB_BUILD_VERSION=1.3.1", "ARROW_ZLIB_BUILD_VERSION=1.3.2"),
-    ("ARROW_ZLIB_BUILD_SHA256_CHECKSUM=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
-     "ARROW_ZLIB_BUILD_SHA256_CHECKSUM=" + DEPENDENCIES["zlib"]["sha256"]),
 )
-ZLIB_CMAKE_ANCHOR = '    set(ZLIB_CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS} "-DCMAKE_INSTALL_PREFIX=${ZLIB_PREFIX}")'
-ZLIB_PROJECT_ANCHOR = '                        URL_HASH "SHA256=${ARROW_ZLIB_BUILD_SHA256_CHECKSUM}"'
 BOOST_SELECTION_ANCHOR = "  fetchcontent_makeavailable(boost)"
 
 def sha256(path: Path) -> str:
@@ -209,13 +210,6 @@ def source_transformations(bundle: tarfile.TarFile, root: str) -> dict:
     toolchain = bundle.extractfile(root + "/" + toolchain_path).read()
     for before, after in TOOLCHAIN_PATCHES:
         toolchain = exact_replace(toolchain, before, after)
-    toolchain = exact_replace(toolchain, ZLIB_CMAKE_ANCHOR, ZLIB_CMAKE_ANCHOR[:-1] +
-        ' "-DZLIB_BUILD_TESTING=OFF" "-DZLIB_BUILD_SHARED=OFF" "-DZLIB_BUILD_STATIC=ON"'
-        ' "-DZLIB_INSTALL=ON" "-DCMAKE_INSTALL_LIBDIR=lib")')
-    toolchain = exact_replace(toolchain, ZLIB_PROJECT_ANCHOR, ZLIB_PROJECT_ANCHOR +
-        '\n                        PATCH_COMMAND "${Python3_EXECUTABLE}" -I -B "${BIOMINER_RECIPE}"'
-        ' --apply-zlib-patch --work "${BIOMINER_WORK}" --zlib-source <SOURCE_DIR>'
-        ' --wheel-version "${BIOMINER_WHEEL_VERSION}"')
     toolchain = exact_replace(toolchain, BOOST_SELECTION_ANCHOR, BOOST_SELECTION_ANCHOR +
         '\n  file(WRITE "${CMAKE_BINARY_DIR}/biominer-boost-selection.txt" "${BOOST_INCLUDE_LIBRARIES}\\n")')
     versions_path = "cpp/thirdparty/versions.txt"
@@ -236,7 +230,7 @@ def prepare_source(archive: Path, work: Path, *, resume: bool) -> tuple:
     if resume:
         for name in ("cpp-build", "python-build", "arrow-prefix", "wheelhouse", "wheel-inventory",
                      "inputs", "build-receipt.json", "source-verification.json", "configured-inputs.json",
-                     "resume-state.json", "logs", "zlib-patch-application.json"):
+                     "resume-state.json", "logs", "private-network-helper.py", "private-network.cmake"):
             if (work / name).is_symlink():
                 raise ValueError(f"resume output path is a symlink: {name}")
         receipt = work / "build-receipt.json"
@@ -364,42 +358,93 @@ def probe_builder(builder: dict) -> dict:
     return observed
 
 
-def apply_zlib_patch(source: Path, archive: Path, patch: Path, receipt: Path) -> dict:
-    if sha256(archive) != DEPENDENCIES["zlib"]["sha256"]:
-        raise ValueError("zlib archive checksum mismatch")
-    if sha256(patch) != ZLIB_PATCH_SHA256:
-        raise ValueError("zlib patch checksum mismatch")
-    if receipt.is_symlink():
-        raise ValueError("zlib patch receipt is a symlink")
-    resumed = receipt.exists()
-    with tarfile.open(archive) as bundle:
-        root, _ = archive_members(bundle)
-        original = bundle.extractfile(root + "/gzwrite.c").read()
-        if hashlib.sha256(original).hexdigest() != ZLIB_ORIGINAL_GZWRITE_SHA256:
-            raise ValueError("zlib original gzwrite source checksum mismatch")
-        replacements = {}
-        if resumed:
-            current = source / "gzwrite.c"
-            if not current.is_file() or current.is_symlink() or sha256(current) != ZLIB_PATCHED_GZWRITE_SHA256:
-                raise ValueError("zlib patched gzwrite source checksum mismatch")
-            replacements["gzwrite.c"] = current.read_bytes()
-        verify_archive_tree(bundle, source, replacements)
-        if not resumed:
-            result = subprocess.run(["/usr/bin/patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", str(patch)],
-                                    cwd=source, capture_output=True, text=True)
-            output = result.stdout + result.stderr
-            if result.returncode or re.search(r"offset|fuzz|failed|reversed", output, re.I):
-                raise ValueError("zlib patch did not apply exactly")
-            if sha256(source / "gzwrite.c") != ZLIB_PATCHED_GZWRITE_SHA256:
-                raise ValueError("zlib patched gzwrite source checksum mismatch")
-            replacements["gzwrite.c"] = (source / "gzwrite.c").read_bytes()
-        files = verify_archive_tree(bundle, source, replacements)
-    application = {"schema_version": 1, "patch_commit": ZLIB_PATCH_COMMIT,
-                   "source": str(source.absolute()), "archive": file_record(archive), "patch": file_record(patch),
-                   "original_gzwrite_sha256": ZLIB_ORIGINAL_GZWRITE_SHA256,
-                   "patched_gzwrite_sha256": ZLIB_PATCHED_GZWRITE_SHA256, "files": files}
-    preserve(receipt, canonical_json(application), resume=resumed, label="zlib patch receipt")
-    return application
+def validate_network(receipt_path: Path, receipt_sha256: str, helper_path: Path, *, openssl_prefix: Path) -> dict:
+    """Load only approved helper source and retain its complete verified closure."""
+    helper_path, receipt_path = Path(helper_path).absolute(), Path(receipt_path).absolute()
+    if any(path.is_symlink() for path in (helper_path, *helper_path.parents)):
+        raise ValueError("network helper checksum path contains a symlink")
+    helper_bytes = helper_path.read_bytes()
+    helper_hash = hashlib.sha256(helper_bytes).hexdigest()
+    if not isinstance(NETWORK_HELPER_SHA256, str) or helper_hash != NETWORK_HELPER_SHA256:
+        raise ValueError("network helper checksum mismatch or committed helper pin unavailable")
+    reference = {"path": str(receipt_path), "sha256": receipt_sha256}
+    check_record(reference, "network receipt")
+    namespace = {"__name__": "biominer_private_network_helper", "__file__": str(helper_path)}
+    # Execute exactly the bytes just hashed, never a separately resolved module
+    # or a timestamp-valid pyc from the mutable source directory.
+    exec(compile(helper_bytes, str(helper_path), "exec"), namespace)
+    verified = namespace["verify_completed_prefix"](receipt_path, receipt_sha256)
+    if (set(verified) != {"receipt", "prefix", "build", "files", "private_files"}
+            or verified["receipt"] != reference):
+        raise ValueError("network descriptor does not bind the approved receipt")
+    raw, prefix = verified["build"], Path(verified["prefix"])
+    if raw != json.loads(receipt_path.read_bytes()):
+        raise ValueError("network descriptor raw build differs from the approved receipt")
+    if (raw.get("schema_version") != 1 or raw.get("kind") != "private_network_static_build"
+            or raw.get("status") != "compiled_unverified" or raw.get("ready") is not False
+            or raw.get("prefix") != str(prefix) or not prefix.is_absolute()
+            or prefix != receipt_path.parent / "prefix" or prefix.resolve() != prefix):
+        raise ValueError("network descriptor has an unapproved private prefix or build identity")
+    if raw.get("openssl", {}).get("prefix") != str(Path(openssl_prefix).absolute()):
+        raise ValueError("network descriptor selected different private OpenSSL inputs")
+    files = {}
+    for row in verified["files"]:
+        path = check_record(row, "network closure")
+        if str(path) in files:
+            raise ValueError("network closure has duplicate file identities")
+        files[str(path)] = row["sha256"]
+    if files.get(str(receipt_path)) != receipt_sha256:
+        raise ValueError("network closure omitted the approved receipt")
+    for name, metadata in verified["private_files"].items():
+        path = Path(name)
+        identity = (metadata.get("source_package"), metadata.get("source_version"))
+        if (not path.is_absolute() or not path.is_relative_to(prefix) or path.resolve() != path
+                or metadata.get("component") not in NETWORK_COMPONENTS
+                or identity != NETWORK_COMPONENTS[metadata["component"]]
+                or files.get(name) != metadata.get("sha256")):
+            raise ValueError("network private file lacks exact component/source/closure ownership")
+    required = [prefix / "lib" / name for name in NETWORK_ARCHIVES]
+    required += [prefix / "include" / name for name in NETWORK_HEADERS]
+    if any(str(path) not in verified["private_files"] for path in required):
+        raise ValueError("network closure lacks a required private archive or header")
+    return {**verified, "helper": {"path": str(helper_path), "sha256": helper_hash}}
+
+
+def verify_network(network: dict) -> None:
+    check_record(network["helper"], "network helper")
+    current = validate_network(Path(network["receipt"]["path"]), network["receipt"]["sha256"],
+                               Path(network["helper"]["path"]),
+                               openssl_prefix=Path(network["build"]["openssl"]["prefix"]))
+    if current != network:
+        raise ValueError("network descriptor or complete source/provider closure changed")
+
+
+def private_network_cmake(prefix: Path, openssl: Path) -> bytes:
+    """Bind global static imports before upstream find modules can omit links."""
+    for path in (prefix, openssl):
+        if not path.is_absolute() or any(character in str(path) for character in '\t\n\r;"$\\{}'):
+            raise ValueError("network/OpenSSL path contains unsupported CMake characters")
+    targets = (
+        ("OpenSSL::Crypto", openssl / "lib/libcrypto.a", openssl / "include", "Threads::Threads;${CMAKE_DL_LIBS}"),
+        ("OpenSSL::SSL", openssl / "lib/libssl.a", openssl / "include", "OpenSSL::Crypto"),
+        ("ZLIB::ZLIB", prefix / "lib/libz.a", prefix / "include", ""),
+        ("biominer_nghttp2", prefix / "lib/libnghttp2.a", prefix / "include", ""),
+        ("biominer_charset", prefix / "lib/libcharset.a", prefix / "include", ""),
+        ("Iconv::Iconv", prefix / "lib/libiconv.a", prefix / "include", ""),
+        ("LibXml2::LibXml2", prefix / "lib/libxml2.a", prefix / "include/libxml2", "Iconv::Iconv;ZLIB::ZLIB;m"),
+        ("CURL::libcurl", prefix / "lib/libcurl.a", prefix / "include", "ZLIB::ZLIB;OpenSSL::SSL;biominer_nghttp2;Threads::Threads;${CMAKE_DL_LIBS}"),
+    )
+    lines = ["# Recipe-owned exact private imports; no host pkg-config interfaces.",
+             "include_guard(GLOBAL)", "find_package(Threads REQUIRED)"]
+    for target, archive, include, dependencies in targets:
+        lines += [f"if(TARGET {target})", f'  message(FATAL_ERROR "private provider target already exists: {target}")',
+                  "endif()", f"add_library({target} STATIC IMPORTED GLOBAL)",
+                  f"set_target_properties({target} PROPERTIES", f'  IMPORTED_LOCATION "{archive}"',
+                  '  IMPORTED_LINK_INTERFACE_LANGUAGES "C"', f'  INTERFACE_INCLUDE_DIRECTORIES "{include}"',
+                  f'  INTERFACE_LINK_LIBRARIES "{dependencies}")']
+    lines += ['set_property(TARGET CURL::libcurl APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS "CURL_STATICLIB")',
+              'set_property(TARGET LibXml2::LibXml2 APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS "LIBXML_STATIC")']
+    return ("\n".join(lines) + "\n").encode()
 
 
 def build_environment(jobs: int, *, python: str, cc: str, cxx: str) -> dict:
@@ -419,17 +464,30 @@ def build_environment(jobs: int, *, python: str, cc: str, cxx: str) -> dict:
 def expected_cache(context: dict, *, stage: str) -> dict:
     expected = {"CMAKE_C_COMPILER": context["cc"], "CMAKE_CXX_COMPILER": context["cxx"]}
     expected.update({name: context["python"] for name in ("Python3_EXECUTABLE", "Python_EXECUTABLE", "PYTHON_EXECUTABLE")})
+    prefix, network = Path(context["openssl_prefix"]), Path(context["network_prefix"])
+    expected.update({
+        "CMAKE_PROJECT_INCLUDE": str(Path(context["work"]) / "private-network.cmake"),
+        "CMAKE_FIND_PACKAGE_PREFER_CONFIG": "OFF", "ZLIB_SOURCE": "SYSTEM",
+        "ZLIB_LIBRARY": str(network / "lib/libz.a"), "ZLIB_LIBRARY_RELEASE": str(network / "lib/libz.a"),
+        "ZLIB_LIBRARY_DEBUG": str(network / "lib/libz.a"), "ZLIB_INCLUDE_DIR": str(network / "include"),
+        "CURL_NO_CURL_CMAKE": "TRUE", "CURL_USE_STATIC_LIBS": "TRUE",
+        "CURL_LIBRARY": str(network / "lib/libcurl.a"), "CURL_LIBRARY_RELEASE": str(network / "lib/libcurl.a"),
+        "CURL_LIBRARY_DEBUG": str(network / "lib/libcurl.a"), "CURL_INCLUDE_DIR": str(network / "include"),
+        "LIBXML2_LIBRARY": str(network / "lib/libxml2.a"), "LIBXML2_INCLUDE_DIR": str(network / "include/libxml2"),
+        "Iconv_LIBRARY": str(network / "lib/libiconv.a"), "Iconv_INCLUDE_DIR": str(network / "include"),
+        "Iconv_IS_BUILT_IN": "FALSE", "NGHTTP2_LIBRARY": str(network / "lib/libnghttp2.a"),
+        "NGHTTP2_INCLUDE_DIR": str(network / "include"), "OPENSSL_USE_STATIC_LIBS": "TRUE",
+        "OPENSSL_ROOT_DIR": str(prefix), "OPENSSL_INCLUDE_DIR": str(prefix / "include"),
+        "OPENSSL_CRYPTO_LIBRARY": str(prefix / "lib/libcrypto.a"), "OPENSSL_SSL_LIBRARY": str(prefix / "lib/libssl.a"),
+    })
     if stage == "cpp":
         expected.update({f"ARROW_{name}": "ON" for name in FEATURES})
         expected.update({f"ARROW_WITH_{name}": "ON" for name in CODECS})
         expected.update({f"ARROW_{name}": "OFF" for name in ("TESTING", "BUILD_TESTS", "BUILD_BENCHMARKS", "BUILD_INTEGRATION", "GANDIVA")})
-        expected.update({name + "_SOURCE": "BUNDLED" for name in ("simdjson", "uriparser", "Boost", "ZLIB")})
-        prefix = Path(context["openssl_prefix"])
+        expected.update({name + "_SOURCE": "BUNDLED" for name in ("simdjson", "uriparser", "Boost")})
         expected.update(ARROW_BUILD_SHARED="ON", ARROW_BUILD_STATIC="OFF", ARROW_DEPENDENCY_SOURCE="AUTO",
                         ARROW_DEPENDENCY_USE_SHARED="OFF", ARROW_JEMALLOC="ON", ARROW_MIMALLOC="ON",
-                        PARQUET_REQUIRE_ENCRYPTION="ON", OPENSSL_USE_STATIC_LIBS="TRUE",
-                        OPENSSL_ROOT_DIR=str(prefix), OPENSSL_CRYPTO_LIBRARY=str(prefix / "lib/libcrypto.a"),
-                        OPENSSL_SSL_LIBRARY=str(prefix / "lib/libssl.a"), URIPARSER_BUILD_TESTS="OFF")
+                        PARQUET_REQUIRE_ENCRYPTION="ON", URIPARSER_BUILD_TESTS="OFF")
     elif stage == "python":
         expected.update({"PYARROW_" + name: "ON" for name in PYTHON_FEATURES})
         expected.update(PYARROW_GANDIVA="OFF", PYARROW_BUNDLE_ARROW_CPP="ON")
@@ -459,21 +517,20 @@ def verify_cache(path: Path, context: dict, *, stage: str) -> dict:
     return cache
 
 
-def build_commands(source: Path, work: Path, prefix: Path, *, python: str, cc: str, cxx: str, jobs: int,
+def build_commands(source: Path, work: Path, prefix: Path, *, network_prefix: Path, python: str, cc: str, cxx: str, jobs: int,
                    cmake: str = "cmake", ninja: str = "ninja") -> dict:
     build_environment(jobs, python=python, cc=cc, cxx=cxx)
-    context = {"python": python, "cc": cc, "cxx": cxx, "openssl_prefix": str(prefix), "work": str(work)}
+    context = {"python": python, "cc": cc, "cxx": cxx, "openssl_prefix": str(prefix),
+               "network_prefix": str(network_prefix), "work": str(work)}
     flags = expected_cache(context, stage="cpp") | {
-        "CMAKE_PREFIX_PATH": str(prefix), "CMAKE_BUILD_TYPE": "Release", "CMAKE_INSTALL_LIBDIR": "lib",
+        "CMAKE_PREFIX_PATH": str(network_prefix) + ";" + str(prefix), "CMAKE_BUILD_TYPE": "Release", "CMAKE_INSTALL_LIBDIR": "lib",
         "CMAKE_INSTALL_PREFIX": str(work / "arrow-prefix"), "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_UNITY_BUILD": "ON", "ARROW_RPATH_ORIGIN": "ON", "CMAKE_MAKE_PROGRAM": ninja,
         "CMAKE_FIND_USE_PACKAGE_REGISTRY": "OFF", "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY": "OFF",
         "CMAKE_SHARED_LINKER_FLAGS": "-Wl,-Map,%", "CMAKE_MODULE_LINKER_FLAGS": "-Wl,-Map,%",
-        "BIOMINER_RECIPE": str(work / "build-recipe.py"), "BIOMINER_WORK": str(work),
-        "BIOMINER_WHEEL_VERSION": "{wheel_version}",
     }
     python_flags = expected_cache(context, stage="python") | {
-        "CMAKE_PREFIX_PATH": str(work / "arrow-prefix") + ";" + str(prefix),
+        "CMAKE_PREFIX_PATH": ";".join(map(str, (work / "arrow-prefix", network_prefix, prefix))),
         "CMAKE_MAKE_PROGRAM": ninja, "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_SHARED_LINKER_FLAGS": "-Wl,-Map,%", "CMAKE_MODULE_LINKER_FLAGS": "-Wl,-Map,%",
         "CMAKE_FIND_USE_PACKAGE_REGISTRY": "OFF", "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY": "OFF",
@@ -542,7 +599,34 @@ def validate_python_runtime(base_python: Path) -> dict:
             "archive": runtime["archive"], "python": runtime["python"], "files": files}
 
 
-def native_input_provider(path: Path, python_runtime: dict | None) -> dict:
+def protected_native_name(path: Path) -> bool:
+    return bool(re.fullmatch(r"lib(?:curl(?:-[^.]+)?|xml2|z|iconv|charset|ssl|crypto|nghttp2)"
+                             r"(?:\.a|\.so(?:\.[0-9]+)*)", path.name))
+
+
+def native_input_provider(path: Path, python_runtime: dict | None, *, network: dict | None = None,
+                          openssl: dict | None = None) -> dict:
+    path = path.resolve()
+    if network:
+        metadata = network["private_files"].get(str(path))
+        if metadata:
+            reference = {"path": str(path), "sha256": metadata["sha256"]}
+            check_record(reference, "network private input")
+            check_record(network["receipt"], "network receipt")
+            check_record(network["helper"], "network helper")
+            if network["helper"]["sha256"] != NETWORK_HELPER_SHA256:
+                raise ValueError("network helper checksum is not the approved source pin")
+            return {"kind": "private_network", "helper": network["helper"], "receipt": network["receipt"],
+                    "file": reference, **{name: metadata[name] for name in ("component", "source_package", "source_version")}}
+        if path.is_relative_to(Path(network["prefix"])):
+            raise ValueError(f"unapproved private network provider: {path}")
+    if openssl:
+        for row in openssl["static_archives"]:
+            if Path(row["path"]).resolve() == path:
+                check_record(row, "private OpenSSL archive")
+                check_record(openssl["receipt"], "private OpenSSL receipt")
+                return {"kind": "private_openssl", "version": "3.6.5", "receipt": openssl["receipt"],
+                        "source_commit": openssl["source_commit"]}
     if python_runtime:
         for row in python_runtime["files"]:
             if Path(row["path"]).resolve() == path.resolve():
@@ -550,6 +634,8 @@ def native_input_provider(path: Path, python_runtime: dict | None) -> dict:
                 check_record(python_runtime["receipt"], "Python runtime source receipt")
                 return {"kind": "python_runtime", "source_build": python_runtime["source_build"],
                         "receipt": python_runtime["receipt"]}
+    if protected_native_name(path):
+        raise ValueError(f"unapproved network/crypto provider: {path}")
     return system_provider(path)
 
 
@@ -621,7 +707,11 @@ def capture_cmake_targets(build: Path, expected_source: Path) -> tuple[list, lis
 def capture_dependencies(work: Path, *, compiled: bool) -> dict:
     build = work / "cpp-build"
     inputs = json.loads((work / "build-inputs.json").read_bytes())
-    private_archives = {str(Path(row["path"]).resolve()): row for row in inputs["openssl"]["static_archives"]}
+    network = inputs.get("network")
+    if network:
+        verify_network(network)
+    if (build / "zlib_ep").exists():
+        raise ValueError("unapproved second bundled zlib provider selected")
     targets, file_api = capture_cmake_targets(build, work / f"arrow-{ARROW_COMMIT}/cpp")
     boost = build / "biominer-boost-selection.txt"
     if not boost.is_file():
@@ -645,12 +735,9 @@ def capture_dependencies(work: Path, *, compiled: bool) -> dict:
             if not re.search(r"\.(a|so(?:\.[0-9]+)*)$", candidate.name) or not candidate.is_file():
                 continue
             item = file_record(candidate)
-            if str(candidate.resolve()) in private_archives:
-                check_record(private_archives[str(candidate.resolve())], "private OpenSSL archive")
-                item["provider"] = {"kind": "private_openssl", "version": "3.6.5",
-                                    "receipt": inputs["openssl"]["receipt"], "source_commit": inputs["openssl"]["source_commit"]}
-            elif not candidate.resolve().is_relative_to(work):
-                item["provider"] = native_input_provider(candidate.resolve(), inputs.get("python_runtime"))
+            if protected_native_name(candidate.resolve()) or not candidate.resolve().is_relative_to(work):
+                item["provider"] = native_input_provider(candidate.resolve(), inputs.get("python_runtime"),
+                                                         network=network, openssl=inputs.get("openssl"))
             native_inputs[str(candidate)] = item
             if candidate.name.endswith(".a"):
                 static_archives[str(candidate)] = item
@@ -669,20 +756,10 @@ def capture_dependencies(work: Path, *, compiled: bool) -> dict:
             raise ValueError(f"required bundled {name} source missing")
         with tarfile.open(work / "inputs" / DEPENDENCIES[name]["filename"]) as archive:
             forced[name] = verify_archive_tree(archive, source)
-    zlib_source = build / "zlib_ep/src/zlib_ep"
-    if compiled:
-        application = apply_zlib_patch(zlib_source, work / "inputs" / DEPENDENCIES["zlib"]["filename"],
-                                       work / "zlib-df84af25.patch", work / "zlib-patch-application.json")
-        forced["zlib"] = application["files"]
-        zcache = zlib_source.parent / "zlib_ep-build/CMakeCache.txt"
-        values = dict(re.findall(r"^([^/#][^:]*):[^=]+=(.*)$", zcache.read_text(), re.M))
-        for key, value in {"ZLIB_BUILD_TESTING": "OFF", "ZLIB_BUILD_SHARED": "OFF", "ZLIB_BUILD_STATIC": "ON", "ZLIB_INSTALL": "ON"}.items():
-            if values.get(key) != value:
-                raise ValueError(f"zlib CMake cache rejected {key}")
-        source_roots.add(zlib_source)
-        zarchive = build / "zlib_ep/src/zlib_ep-install/lib/libz.a"
-        if not zarchive.is_file() or str(zarchive) not in static_archives:
-            raise ValueError("actual bundled patched zlib static archive missing")
+    if network:
+        selected = {str(Path(row["path"]).resolve()) for row in static_archives.values()}
+        if any(str(Path(network["prefix"]) / "lib" / name) not in selected for name in NETWORK_ARCHIVES):
+            raise ValueError("configured target inventory omitted a required private network static archive")
     versions = (work / f"arrow-{ARROW_COMMIT}/cpp/thirdparty/versions.txt").read_text()
     reviewed_hashes = set(re.findall(r"_SHA256_CHECKSUM=([0-9a-f]{64})", versions))
     archives = []
@@ -692,12 +769,13 @@ def capture_dependencies(work: Path, *, compiled: bool) -> dict:
             item["matches_arrow_versions_pin"] = item["sha256"] in reviewed_hashes
             archives.append(item)
     return {"schema_version": 1, "stage": "compiled" if compiled else "configured", "targets": targets,
+            "private_network": {name: network[name] for name in ("receipt", "helper", "prefix")} if network else None,
             "file_api": file_api, "native_inputs": sorted(native_inputs.values(), key=lambda row: row["path"]),
             "boost_components": components, "boost_selection": file_record(boost),
             "static_archives": sorted(static_archives.values(), key=lambda row: row["path"]),
             "source_trees": [{"path": str(path), "files": tree_inventory(path)} for path in sorted(source_roots)],
             "forced_bundled_source_verification": forced, "downloaded_archives": archives,
-            "coverage": "CMake File API 2.9 includes build and scoped imported targets plus resolved link fragments. Bare -l flags require final linker-map resolution. Targets are a superset; final maps establish actual linkage. System source/advisory review remains required."}
+            "coverage": "CMake File API 2.9 includes build and scoped imported targets plus resolved link fragments. Private network inputs are receipt/source-bound. Bare -l flags require final linker-map resolution. Targets are a superset; final maps establish actual linkage. Other system source/advisory review remains required."}
 
 
 def verify_configured_selection(configured: dict, current: dict) -> None:
@@ -712,6 +790,8 @@ def verify_configured_selection(configured: dict, current: dict) -> None:
             raise ValueError(f"configured dependency selection changed: {name}")
     if configured.get("file_api") != current.get("file_api"):
         raise ValueError("configured File API evidence changed")
+    if configured.get("private_network") != current.get("private_network"):
+        raise ValueError("configured private network provider changed")
     for name in ("static_archives", "native_inputs", "downloaded_archives"):
         observed = {row["path"]: row for row in current.get(name, [])}
         for row in configured.get(name, []):
@@ -776,8 +856,11 @@ def inspect_wheel(work: Path, build_record: dict) -> dict:
             resolved = Path(dependency).resolve()
             if resolved in wheel_paths or str(resolved) in native_files:
                 continue
-            provider = native_input_provider(resolved, build_record.get("python_runtime"))
+            provider = native_input_provider(resolved, build_record.get("python_runtime"),
+                                             network=build_record.get("network"), openssl=build_record.get("openssl"))
             owner = ("python-runtime:" + provider["source_build"] if provider.get("kind") == "python_runtime"
+                     else "private-network:" + provider["component"] if provider.get("kind") == "private_network"
+                     else "private-openssl:3.6.5" if provider.get("kind") == "private_openssl"
                      else "dpkg:" + provider["package"])
             native_files[str(resolved)] = file_record(resolved) | {"owner": owner, "provider": provider}
     return {"wheel": file_record(wheel), "version": metadata["Version"],
@@ -804,8 +887,18 @@ def verify_resume_state(work: Path, state: dict | None = None) -> None:
         raise ValueError("resume state changed: intermediate outputs or inputs differ")
 
 
-def verify_link_maps(work: Path, prefix: Path, dependencies: dict) -> dict:
-    maps, linked = [], set()
+def verify_link_maps(work: Path, prefix: Path, dependencies: dict, *, network: dict) -> dict:
+    verify_network(network)
+    inputs_path = work / "build-inputs.json"
+    inputs = json.loads(inputs_path.read_bytes()) if inputs_path.is_file() else {}
+    maps, final_maps, linked, contributed = [], [], set(), set()
+    closure = {row["path"]: row for row in network["files"]}
+    required = [prefix / "lib/libcrypto.a", prefix / "lib/libssl.a"]
+    required += [Path(network["prefix"]) / "lib" / name for name in NETWORK_ARCHIVES if name != "libcharset.a"]
+    for path in required:
+        if str(path) not in closure:
+            raise ValueError(f"private network closure omitted required static input: {path.name}")
+        check_record(closure[str(path)], "network static link input")
     for path in sorted(work.rglob("*.map")):
         if path.is_symlink() or not path.is_file():
             continue
@@ -813,18 +906,37 @@ def verify_link_maps(work: Path, prefix: Path, dependencies: dict) -> dict:
         if "Linker script and memory map" not in text:
             continue
         maps.append(file_record(path))
-        linked.update(re.findall(r"(?:^|\s)(/[^\s()]+\.a)(?:\(|\s|$)", text, re.M))
+        if (not (path.is_relative_to(work / "cpp-build") or path.is_relative_to(work / "python-build"))
+                or any(part in {"CMakeScratch", "CMakeTmp", "_deps"} for part in path.relative_to(work).parts)
+                or not re.fullmatch(r".+\.so(?:\.[0-9]+)*\.map", path.name)):
+            continue
+        if path.resolve() != path:
+            raise ValueError("final linker map path contains a symlink")
+        final_maps.append(file_record(path))
+        stage_build = work / ("python-build" if path.is_relative_to(work / "python-build") else "cpp-build")
+        for archive in re.findall(r"(?:^|\s)([^\s()]+\.a)\([^\s()]+\)", text, re.M):
+            contributed.add(str((stage_build / archive).resolve()))
+        libraries = re.findall(r"(?:^|\s)([^\s()]+(?:\.a|\.so(?:\.[0-9]+)*))(?=[\s()]|$)", text, re.M)
+        for name in libraries:
+            library = (stage_build / name).resolve()
+            if protected_native_name(library):
+                if library in (prefix / "lib/libssl.a", prefix / "lib/libcrypto.a"):
+                    check_record(closure[str(library)], "network private OpenSSL link input")
+                else:
+                    native_input_provider(library, inputs.get("python_runtime"), network=network,
+                                          openssl=inputs.get("openssl"))
+            if library.suffix == ".a":
+                linked.add(str(library))
     if not maps:
         raise ValueError("build produced no per-output linker maps")
-    required = [prefix / "lib/libcrypto.a", prefix / "lib/libssl.a"]
-    zlib = [Path(row["path"]) for row in dependencies["static_archives"] if Path(row["path"]).name == "libz.a"]
-    if len(zlib) != 1:
-        raise ValueError("exactly one approved bundled libz.a required")
-    required.extend(zlib)
-    resolved = {str(Path(path).resolve()) for path in linked}
+    resolved = linked
     for path in required:
         if str(path.resolve()) not in resolved:
-            raise ValueError(f"link maps do not prove actual static linkage: {path.name}")
+            raise ValueError(f"final link maps do not prove actual static linkage: {path.name}")
+        if str(path.resolve()) not in contributed:
+            raise ValueError(f"final link maps do not prove a consumed archive member: {path.name}")
+    if len([name for name in resolved if Path(name).name == "libz.a"]) != 1:
+        raise ValueError("exactly one approved private libz.a required in final linkage")
     known = {str(Path(row["path"]).resolve()): row for row in dependencies["static_archives"]}
     records = []
     for name in sorted(resolved):
@@ -835,11 +947,14 @@ def verify_link_maps(work: Path, prefix: Path, dependencies: dict) -> dict:
         else:
             item = file_record(path)
             if not path.is_relative_to(work) and not path.is_relative_to(prefix):
-                inputs = json.loads((work / "build-inputs.json").read_bytes())
-                item["provider"] = native_input_provider(path, inputs.get("python_runtime"))
+                item["provider"] = native_input_provider(path, inputs.get("python_runtime"),
+                                                         network=network, openssl=inputs.get("openssl"))
+        if name in network["private_files"]:
+            item = {**item, "provider": native_input_provider(path, inputs.get("python_runtime"), network=network,
+                                                             openssl=inputs.get("openssl"))}
         records.append(item)
-    return {"maps": maps, "linked_static_archives": records,
-            "qualification": "Link maps include build outputs; runtime admission must review final wheel library maps and every system source/provider."}
+    return {"maps": maps, "final_maps": final_maps, "linked_static_archives": records,
+            "qualification": "Every required private archive contributes an object member in final Arrow/Python consumer maps, excluding configure probes; LOAD entries alone do not establish consumption. Final ELF closure and all other system source/provider reviews remain required."}
 
 
 def validate_openssl(prefix: Path, source_archive: Path) -> dict:
@@ -907,42 +1022,28 @@ def run_stage(work: Path, name: str, command: list, env: dict) -> dict:
     return {"command": command, "log": file_record(path), "exit_code": 0}
 
 
-def private_zlib_main(argv: list) -> int:
-    parser = argparse.ArgumentParser(description="Guarded Arrow 26 ExternalProject patch step")
-    parser.add_argument("--work", required=True, type=Path)
-    parser.add_argument("--zlib-source", required=True, type=Path)
-    parser.add_argument("--wheel-version", required=True)
-    args = parser.parse_args(argv)
-    work = args.work.absolute()
-    manifest = work / "build-inputs.json"
-    if args.wheel_version != "26.0.0+biominer." + sha256(manifest)[:12]:
-        raise ValueError("zlib patch step build manifest version mismatch")
-    inputs = json.loads(manifest.read_bytes())
-    if file_record(Path(__file__)) != inputs["recipe"]:
-        raise ValueError("zlib patch step is not the captured executing recipe")
-    expected = work / "cpp-build/zlib_ep/src/zlib_ep"
-    if args.zlib_source.absolute() != expected or any(path.is_symlink() for path in (expected, *expected.parents)):
-        raise ValueError("zlib patch source is outside the owned ExternalProject")
-    check_record(inputs["patch_tool"], "zlib patch tool")
-    check_record(inputs["dependencies"]["zlib"]["archive"], "zlib archive")
-    check_record(inputs["zlib_patch"], "zlib patch")
-    apply_zlib_patch(expected, work / "inputs" / DEPENDENCIES["zlib"]["filename"],
-                     work / "zlib-df84af25.patch", work / "zlib-patch-application.json")
-    return 0
+def run_network_stage(work: Path, name: str, command: list, env: dict, network: dict, *, frozen_inputs: tuple = ()) -> dict:
+    def guard():
+        verify_network(network)
+        for reference in frozen_inputs:
+            check_record(reference, "immutable build input")
+    guard()
+    try:
+        return run_stage(work, name, command, env)
+    finally:
+        guard()
 
 
 def main(argv: list | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] == "--apply-zlib-patch":
-        return private_zlib_main(argv[1:])
     recipe_bytes = Path(__file__).read_bytes()
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("openssl-prefix", "archive", "work", "builder-receipt", "simdjson-archive", "uriparser-archive", "boost-archive", "zlib-archive"):
+    for name in ("openssl-prefix", "archive", "work", "builder-receipt", "simdjson-archive", "uriparser-archive", "boost-archive", "zlib-archive",
+                 "network-receipt", "network-helper"):
         parser.add_argument("--" + name, required=True, type=Path)
-    for name in ("builder-receipt-sha256", "python", "cc", "cxx"):
+    for name in ("builder-receipt-sha256", "network-receipt-sha256", "python", "cc", "cxx"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--openssl-source-archive", type=Path)
-    parser.add_argument("--zlib-patch", type=Path, default=ZLIB_PATCH_PATH)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--check", action="store_true", help="verify approved inputs without creating a build generation")
     parser.add_argument("--configure-only", action="store_true", help="stop for review of actual native dependency selection")
@@ -966,12 +1067,13 @@ def main(argv: list | None = None) -> int:
         python_runtime = validate_python_runtime(Path(builder["base_python"]["path"]))
         openssl_archive = args.openssl_source_archive.absolute() if args.openssl_source_archive else prefix.parent / "downloads/openssl.tar.gz"
         openssl = validate_openssl(prefix, openssl_archive)
+        network = validate_network(args.network_receipt, args.network_receipt_sha256, args.network_helper,
+                                   openssl_prefix=prefix)
         if sha256(archive) != ARROW_ARCHIVE_SHA256:
             raise ValueError("Arrow source archive checksum mismatch")
         archives = {name: getattr(args, name + "_archive").absolute() for name in DEPENDENCIES}
         for name, path in archives.items():
             check_record({"path": str(path), "sha256": DEPENDENCIES[name]["sha256"]}, name + " archive")
-        check_record({"path": str(args.zlib_patch.absolute()), "sha256": ZLIB_PATCH_SHA256}, "zlib patch")
         if args.check:
             return 0
         if args.resume:
@@ -984,6 +1086,17 @@ def main(argv: list | None = None) -> int:
             verify_resume_state(work, state)
         source, source_verification = prepare_source(archive, work, resume=args.resume)
         recipe_record = preserve_recipe(work, recipe_bytes, resume=args.resume)
+        helper_record = preserve(work / "private-network-helper.py", Path(network["helper"]["path"]).read_bytes(),
+                                 resume=args.resume, label="network helper source")
+        captured_network = validate_network(args.network_receipt, args.network_receipt_sha256, Path(helper_record["path"]),
+                                            openssl_prefix=prefix)
+        if {key: value for key, value in captured_network.items() if key != "helper"} != {
+                key: value for key, value in network.items() if key != "helper"}:
+            raise ValueError("network source/provider closure changed during preparation")
+        network = captured_network
+        network_prefix = Path(network["prefix"])
+        provider_cmake = preserve(work / "private-network.cmake", private_network_cmake(network_prefix, prefix),
+                                  resume=args.resume, label="private network CMake metadata")
         (work / "inputs").mkdir(exist_ok=True)
         query = work / "cpp-build/.cmake/api/v1/query/codemodel-v2"
         query.parent.mkdir(parents=True, exist_ok=True)
@@ -992,23 +1105,23 @@ def main(argv: list | None = None) -> int:
         for name, path in archives.items():
             copied = preserve(work / "inputs" / DEPENDENCIES[name]["filename"], path.read_bytes(),
                               resume=args.resume, label=name + " source archive")
-            dependencies[name] = {**DEPENDENCIES[name], "archive": copied}
-        zlib_patch = preserve(work / "zlib-df84af25.patch", args.zlib_patch.read_bytes(),
-                              resume=args.resume, label="zlib patch")
+            dependencies[name] = {**DEPENDENCIES[name], "archive": copied,
+                                  "role": "retained_source_pin_only" if name == "zlib" else "bundled_provider"}
         context = {"python": args.python, "cc": args.cc, "cxx": args.cxx,
-                   "openssl_prefix": str(prefix), "work": str(work)}
-        commands = build_commands(source, work, prefix, python=args.python, cc=args.cc, cxx=args.cxx, jobs=args.jobs,
+                   "openssl_prefix": str(prefix), "network_prefix": str(network_prefix), "work": str(work)}
+        commands = build_commands(source, work, prefix, network_prefix=network_prefix,
+                                   python=args.python, cc=args.cc, cxx=args.cxx, jobs=args.jobs,
                                    cmake=builder["toolchain"]["cmake"]["path"], ninja=builder["toolchain"]["ninja"]["path"])
         tool_versions = {name: subprocess.check_output([row["path"], "--version"], text=True).splitlines()[0]
                          for name, row in builder["toolchain"].items()}
         inputs = {
-            "schema_version": 1, "source_policy": "arrow26-integrated-v1", "arrow_commit": ARROW_COMMIT,
+            "schema_version": 1, "source_policy": SOURCE_POLICY, "arrow_commit": ARROW_COMMIT,
             "source_archive": file_record(archive), "source_verification": file_record(work / "source-verification.json"),
             "integrated_sources": source_verification["integrated_sources"], "recipe": recipe_record,
             "builder": builder, "observed_builder": observed_builder, "toolchain_versions": tool_versions,
             "python_runtime": python_runtime,
-            "openssl": openssl, "dependencies": dependencies, "zlib_patch": zlib_patch,
-            "patch_tool": file_record(Path("/usr/bin/patch")), "commands": commands, "context": context,
+            "openssl": openssl, "network": network, "provider_cmake": provider_cmake, "dependencies": dependencies,
+            "commands": commands, "context": context,
             "cmake_file_api_query": query_record,
             "compiler_budget": {"maximum_jobs": args.jobs, "outer_ninja_jobs": args.jobs, "nested_cmake_jobs": 1, "nested_make_jobs": 1},
             "features": FEATURES, "codecs": CODECS,
@@ -1019,6 +1132,8 @@ def main(argv: list | None = None) -> int:
             "qualification": "unqualified host-specific candidate; all selected system sources and advisory gaps require independent review",
         }
         manifest, version = preserve_build_inputs(work, inputs, resume=args.resume)
+        frozen_inputs = (recipe_record, provider_cmake, manifest, inputs["source_verification"], query_record,
+                         *(dependency["archive"] for dependency in dependencies.values()))
         expected_version = expected_generated_version(args.python, version)
         preserve(work / "expected-generated-version.py", expected_version, resume=args.resume, label="generated version template")
         # Validate the reviewed configuration before replacing the mutable
@@ -1035,18 +1150,20 @@ def main(argv: list | None = None) -> int:
         record = {**inputs, "status": "building", "build_inputs": manifest, "wheel_version": version, "stages": []}
         receipt_path = work / "build-receipt.json"
         receipt_path.write_bytes(canonical_json(record))
-        env.update(GIT_CEILING_DIRECTORIES=str(work), OPENSSL_ROOT_DIR=str(prefix), PKG_CONFIG_PATH=str(prefix / "lib/pkgconfig"),
-                   ARROW_HOME=str(work / "arrow-prefix"), CMAKE_PREFIX_PATH=str(work / "arrow-prefix") + ";" + str(prefix),
+        env.update(GIT_CEILING_DIRECTORIES=str(work), OPENSSL_ROOT_DIR=str(prefix),
+                   PKG_CONFIG_PATH=os.pathsep.join(map(str, (network_prefix / "lib/pkgconfig", prefix / "lib/pkgconfig"))),
+                   ARROW_HOME=str(work / "arrow-prefix"),
+                   CMAKE_PREFIX_PATH=";".join(map(str, (work / "arrow-prefix", network_prefix, prefix))),
                    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYARROW=version, LDFLAGS="-Wl,-Map,%", TMPDIR=str(work / "tmp"))
         env["PATH"] = os.pathsep.join(dict.fromkeys([str(Path(row["path"]).parent) for row in builder["toolchain"].values()] +
                                                    [str(Path(args.python).parent), "/usr/bin", "/bin"]))
         for name, dependency in dependencies.items():
-            env[dependency["env"]] = dependency["archive"]["path"]
+            if dependency["role"] == "bundled_provider":
+                env[dependency["env"]] = dependency["archive"]["path"]
         (work / "tmp").mkdir(exist_ok=True)
         if args.configure_only:
-            command = [item.replace("{wheel_version}", version) if item == "-DBIOMINER_WHEEL_VERSION={wheel_version}" else item
-                       for item in commands["cpp_configure"]]
-            record["stages"].append(run_stage(work, "configure", command, env))
+            record["stages"].append(run_network_stage(work, "configure", commands["cpp_configure"], env, network,
+                                                     frozen_inputs=frozen_inputs))
             verify_cache(work / "cpp-build/CMakeCache.txt", context, stage="cpp")
             configured = {"schema_version": 1, "build_inputs": manifest,
                           "cache": file_record(work / "cpp-build/CMakeCache.txt"),
@@ -1055,10 +1172,13 @@ def main(argv: list | None = None) -> int:
             record.update(status="configured_unverified", configured_inputs=configured_record)
             return_code = 0
         else:
-            record["stages"].append(run_stage(work, "cpp-build", commands["cpp_build"], env))
+            record["stages"].append(run_network_stage(work, "cpp-build", commands["cpp_build"], env, network,
+                                                     frozen_inputs=frozen_inputs))
+            verify_cache(work / "cpp-build/CMakeCache.txt", context, stage="cpp")
             dependencies_compiled = capture_dependencies(work, compiled=True)
             source_compilation = compile_source_evidence(work)
-            record["stages"].append(run_stage(work, "python-build", commands["python_build"], env))
+            record["stages"].append(run_network_stage(work, "python-build", commands["python_build"], env, network,
+                                                     frozen_inputs=frozen_inputs))
             verify_cache(work / "python-build/CMakeCache.txt", context, stage="python")
             validate_builder(args.builder_receipt.absolute(), args.builder_receipt_sha256,
                              python=args.python, cc=args.cc, cxx=args.cxx)
@@ -1070,17 +1190,21 @@ def main(argv: list | None = None) -> int:
                 root, _ = archive_members(bundle)
                 final_sources = verify_archive_tree(bundle, source, source_transformations(bundle, root),
                     {"python/pyarrow/_generated_version.py": expected_version})
-            maps = verify_link_maps(work, prefix, dependencies_compiled)
+            maps = verify_link_maps(work, prefix, dependencies_compiled, network=network)
             wheel = inspect_wheel(work, record)
+            verify_network(network)
+            for reference in frozen_inputs:
+                check_record(reference, "immutable build input")
             dependency_record = preserve(work / "compiled-dependencies.json", canonical_json(dependencies_compiled), resume=False, label="compiled dependencies")
             final_source_record = preserve(work / "compiled-sources.json", canonical_json({"files": final_sources, **source_compilation}), resume=False, label="compiled sources")
             record = {
-                "schema_version": 1, "status": "compiled_unverified", "name": "pyarrow", **wheel,
+                "schema_version": 1, "source_policy": SOURCE_POLICY, "status": "compiled_unverified", "name": "pyarrow", **wheel,
                 "wheel_sha256": wheel["wheel"]["sha256"], "source_revision": ARROW_COMMIT,
                 "recipe": recipe_record, "build_inputs": manifest, "source_verification": inputs["source_verification"],
-                "patch_application": file_record(work / "zlib-patch-application.json"),
+                "network": network, "openssl": openssl, "provider_cmake": provider_cmake,
                 "compiled_dependencies": dependency_record, "compiled_sources": final_source_record,
-                "native_link_artifacts": maps["maps"], "linked_static_archives": maps["linked_static_archives"],
+                "native_link_artifacts": maps["maps"], "final_native_link_artifacts": maps["final_maps"],
+                "linked_static_archives": maps["linked_static_archives"],
                 "toolchain": builder["toolchain"], "toolchain_versions": tool_versions,
                 "python_build_distributions": builder["distributions"],
                 "python_runtime": python_runtime,

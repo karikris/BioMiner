@@ -481,3 +481,32 @@ source, backend, patch and orchestration integration was separately assessed.
 The actual Arrow 25 build and fresh fallback qualification remain pending.
 This source commit does not reactivate either disabled runtime or close the
 installed-provider findings.
+
+## Task 4.1: Arrow 26 private-provider correction
+
+Source policy `arrow26-integrated-private-network-v2` selects the approved
+private prefix in both C++ and Python CMake projects. Global imported targets
+carry the complete static CURL/XML/Iconv/zlib/OpenSSL/HTTP2 interfaces. The
+helper source is captured and hashed before execution; complete provider and
+immutable build inputs are rechecked around each stage, including failures.
+Configured and final native evidence rejects protected host-provider inputs.
+
+The unused bundled zlib patch path is removed. Its original archive is
+explicitly retained only as a source pin; the selected compiled provider must
+be the single patched private zlib. All enabled Arrow features, codecs,
+encryption and allocators remain required. Final shared-library consumer maps
+must prove object contributions from all seven core private archives, excluding
+configure probes and dependency build maps. Root reproduced eight LOAD-only
+counterexamples before the member-consumption correction.
+
+After binding the committed helper, 127 focused tests passed in 1.68 seconds.
+Receipt `phase4/arrow26-network-final-pin-1/execution.json` has SHA-256
+`e8fbf1aa02cb8c741a79444faf45bb4941e649bd605749addc7c99fededed206`,
+supervisor/runner exit 0 and no interruption. Independent SPEC/QUALITY review
+plus an exact helper-pin-only comparison bind the final recipe. Real archive
+inspection also verified both source transformations, recorded under
+`phase4/arrow-family-source-policy-preflight-1/`.
+
+Actual configure selection, compilation, final ELF review, native API/codec
+qualification and admission remain pending. This supersedes the earlier v1
+candidate schema without admitting any of its artifacts.
