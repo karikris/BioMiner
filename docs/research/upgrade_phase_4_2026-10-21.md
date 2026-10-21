@@ -510,3 +510,44 @@ inspection also verified both source transformations, recorded under
 Actual configure selection, compilation, final ELF review, native API/codec
 qualification and admission remain pending. This supersedes the earlier v1
 candidate schema without admitting any of its artifacts.
+
+## Actual private prefix build
+
+Attempt 1 stopped when the compiler observer encountered `ProcessLookupError`
+while reading a disappearing `/proc` entry. The observer interrupted its owned
+build; this was not a native compile failure or a budget violation. It observed
+at most four frontends and produced no completed build receipt. Its directory
+and outer/inner receipts remain intact. A new observer tolerates only this
+transient enumeration/read race, resamples incomplete snapshots and preserves
+the independent timeout, four-job limit and cleanup. Independent SPEC/QUALITY
+review approved that narrow correction; primary psutil source corroborates
+both vanished-entry exception types.
+
+Fresh attempt 2 completed in 42.083 seconds with supervisor/runner exit 0,
+no interruption and at most four frontends across 415 samples. Exact nghttp2
+source and three patches produced 26 pinned-GCC PIC compilations with matching
+target objects, archive members and installed headers. Whole-archive shared
+links passed for the seven core archives and separate charset. Actual probes
+confirmed curl 8.23.0, OpenSSL 3.6.5, zlib 1.3.2, libxml2 2.15.4, libiconv 1.19
+and nghttp2 1.68.0. They reported HTTP/HTTPS/HTTP2 support and exercised
+XML/XPath, encoding and gzip/XML. This offline probe made no HTTP request or
+TLS certificate handshake; installed TLS checks remain required.
+Recorded consumer dependencies contain only libc/libm, without TEXTREL or
+protected host providers. All 54 commands succeeded with terminal cleanup;
+retained licence copies match their sources.
+
+Raw receipt `.native-runtime/private-network-security-20261021-2/build-receipt.json`
+has SHA-256 `9371f44d18d198179e2a4dc808dc534feef7faca9e3d27328f4bcbfcb84c6b99`.
+Outer receipt `phase4/network-build-outer-2/execution.json` has SHA-256
+`3482c25a555e54783096eed723ed65c77f5737ca83509e3381baaecbf4603775`;
+inner receipt has SHA-256
+`b9b9b0b19155641783282bc96be400e9f007824f74a242a3eff93ddeda7a81ca`.
+The pinned helper's post-build pure verification rehashed 12,479 closure files
+and 70 private files; its execution receipt has SHA-256
+`95b58ebc186b97d6a811cc314eaea224e15047285c5a551129efbaa4b384f754`.
+Independent actual review approved this exact prefix for Arrow configuration.
+
+The receipt remains `compiled_unverified`, `ready:false`. No Arrow installation,
+runtime admission, safe fallback or whole-host security clearance follows from
+these prefix observations. Installed-provider findings remain open pending
+replacement runtime qualification.
