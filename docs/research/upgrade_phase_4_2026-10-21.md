@@ -1,5 +1,14 @@
 # Phase 4: Arrow 26 build and compatibility
 
+Current scope is compatibility qualification of the selected, unregistered
+candidates, without additional cybersecurity work or production activation.
+Both complete source replays and both five-check native qualifications passed.
+The committed application source passed all 4,254 tests; all 644 cases affected
+by the installed runner's fixture and temporary-space failures now pass too.
+The complete installed suite/CLI rerun and phase-4 publication/push remain
+pending. The sections below retain the chronological evidence, including
+superseded preparations and failed attempts.
+
 Phase 4 starts on `main` at
 `007396255b6afe6acef9cf80d8d7960a1290a1cc`, after the verified phase-3 push.
 The external `phase-3-pushed.json` handshake has SHA-256
@@ -1371,3 +1380,50 @@ requiring HOME outside `/tmp`. All 21 affected cases pass with separate private
 `/tmp` pytest scratch and retained HOME/reports outside it. The reviewed runner
 correction leaves every product guard and test unchanged. The complete suite
 is rerunning with this correction; no full-suite success is claimed yet.
+
+
+## Installed fixture view and verified source-result reuse
+
+The third full attempt passed all 4,254 source cases and 12,762 phase outcomes,
+then failed the installed run: 3,610 passed, 537 failed and 107 setup errors.
+Diagnosis classified all 644 affected nodes: 458 explicit disk-full failures,
+27 missing relative fixtures, 68 Git-init errors, 87 Parquet transport errors,
+one PEM error and three other errors. The latter categories remained unresolved
+until the clean diagnostic below. The overall failed attempt stays failed;
+its successful source-stage receipts are retained separately and unchanged.
+
+The corrected runner supplies a readonly fixture view from the exact committed
+snapshot. Its `src` link points to installed site-packages, so relative package
+reads and the existing vision subprocess use installed payloads. Test imports
+keep `--noconftest` and `--import-mode=importlib`; the exact installed module
+origin/hash guards remain unchanged. GitHits inspection of pytest 9.1.1's
+`import_path` confirms the importlib branch avoids inserting test directories
+into `sys.path`. No product guards or test cases were removed or weakened.
+
+The new coordinator requires the same frozen installation, source, Python,
+tools and limits before reusing the original source collection and suite.
+It verifies their original contexts, commands, logs and passed outcomes, while
+retaining the failed overall qualification. The new result will distinguish
+these reused source stages from fresh installed and CLI stages. A 3 GiB free
+space check precedes pytest workers. Three terminal synthetic fixture trees
+were copied, fsynced and verified with complete byte/mode/link inventories
+before reclaiming their exact `/tmp` roots; unrelated temporary files remain
+untouched. Retention execution SHA-256 is
+`bbdccf736de29698228177c4bb2a3d20995dc1b6033cb9347bf7152e982c0a96`.
+
+Eighteen new runner controls first failed before implementation. All 66 controls
+then passed in 0.28 seconds. Actual metadata-only source reuse validation
+passed. Independent code/context SPEC and QUALITY review passed, SHA-256
+`0c4d73ccff35083511d543784f4692a9ac9a0352c97694e9b8f4e1bb9f21cdb6`.
+The runner SHA-256 is
+`524035c1b7ce172a9ece3742f860075944c2ed714771ab6af461b45c73347ae1`.
+
+All 644 original installed failures then passed in the focused diagnostic,
+with all 1,932 setup/call/teardown outcomes passing, unchanged frozen inputs
+and verified fixture view. Its inner command exited 0 in 271.058 seconds;
+outer receipt SHA-256 is
+`ba3935e0f137820b644204d2e8b10dadb0b2d3d96ccdec35d6924d9e4cf5dfa5`.
+Reports/logs remain retained; only that successful diagnostic's own synthetic
+scratch was removed. The complete installed 4,254-case suite and three CLI
+checks are now running. No full installed, phase or runtime-admission pass is
+claimed by this diagnostic.
