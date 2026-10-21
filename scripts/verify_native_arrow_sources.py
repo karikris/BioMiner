@@ -1767,7 +1767,48 @@ def _external_project(name, layout, manifest, selected, compile_info, evidence, 
     return result
 
 
-def _artifact_closure(raw, work, evidence):
+def _completed_build_fields(kind, raw, manifest, resolver):
+    if kind == "26":
+        build = raw.get("build")
+        _require(isinstance(build, dict), "Arrow26 completed build context has the wrong nested shape")
+        return {"context": build.get("context"), "toolchain": raw.get("toolchain"), "stages": build.get("stages")}
+    _require(kind == "25" and raw.get("kind") == "corrective_arrow25_private_network_build"
+             and "build" not in raw and "toolchain" not in raw,
+             "Arrow25 completed receipt has a wrong or ambiguous flat shape")
+    context = raw.get("context")
+    _require(isinstance(context, dict) and context == manifest.get("context"),
+             "completed raw/manifest work context differs")
+    builder = raw.get("builder")
+    _require(isinstance(builder, dict) and builder == manifest.get("builder"),
+             "Arrow25 completed builder differs from its build manifest")
+    qualified = resolver.json(builder.get("receipt"))
+    _require({key: value for key, value in builder.items() if key != "receipt"} == qualified
+             and (qualified.get("schema_version"), qualified.get("kind"), qualified.get("status"))
+             == (1, "arrow26_python_builder", "frozen_verified"),
+             "Arrow25 frozen builder receipt content/backlink differs")
+    toolchain = qualified.get("toolchain")
+    _require(isinstance(toolchain, dict) and set(toolchain) == {"cc", "cxx", "cmake", "ninja", "ld"},
+             "Arrow25 frozen builder toolchain is incomplete or unqualified")
+    for role in ("cc", "cxx"):
+        _require(context.get(role) == _reference(toolchain[role])["path"],
+                 "Arrow25 compiler context differs from its frozen builder toolchain")
+    _require(context.get("python") == _reference(qualified.get("python"))["path"],
+             "Arrow25 Python context differs from its frozen builder")
+    commands = raw.get("commands")
+    _require(isinstance(commands, dict) and commands == manifest.get("commands")
+             and set(commands) == {"cpp_configure", "cpp_build", "python_build"}
+             and all(isinstance(value, list) and bool(value) for value in commands.values()),
+             "Arrow25 completed commands differ from their build manifest")
+    stages = raw.get("stages")
+    _require(isinstance(stages, list) and len(stages) == 2
+             and all(isinstance(stage, dict) and stage.get("exit_code") == 0
+                     and stage.get("command") == commands[name]
+                     for stage, name in zip(stages, ("cpp_build", "python_build"))),
+             "Arrow25 completed stages differ from their successful source-owned commands")
+    return {"context": context, "toolchain": toolchain, "stages": stages}
+
+
+def _artifact_closure(raw, work, evidence, stages):
     result = {"linked_static_archives": raw.get("linked_static_archives"),
               "link_maps": raw.get("native_link_artifacts"),
               "final_link_maps": raw.get("final_native_link_artifacts"),
@@ -1867,7 +1908,6 @@ def _artifact_closure(raw, work, evidence):
                     canonical = evidence._tool_file(normalized)
                     _require(canonical["path"] in external and external[canonical["path"]] == canonical,
                              "ELF linkage selects an unrecorded external native")
-    stages = raw.get("build", {}).get("stages")
     _require(isinstance(stages, list) and bool(stages), "completed subject has no recorded build commands")
     for stage in stages:
         _require(isinstance(stage, dict) and stage.get("exit_code") == 0
@@ -1929,14 +1969,15 @@ def _assemble_attestation(raw_ref, cohort_ref, resolver, *, captured=None, produ
     _require(manifest.get("source_policy") == family["source_policy"]
              and manifest.get("recipe") == subject["recipe"] and selected.get("stage") == "compiled",
              "source attestation build/dependency subject differs")
+    build = _completed_build_fields(kind, raw, manifest, resolver)
     work = str(_logical_path(manifest.get("context", {}).get("work")))
-    _require(raw.get("build", {}).get("context", {}).get("work") == work,
+    _require(isinstance(build["context"], dict) and build["context"].get("work") == work,
              "completed raw/manifest work context differs")
     _require(subject["raw_receipt"]["path"] == work + "/build-receipt.json",
              "completed raw receipt belongs to another build")
     arrow = work + "/arrow-" + family["source_revision"]
     evidence = _Evidence(resolver, captured)
-    toolchain = raw.get("toolchain")
+    toolchain = build["toolchain"]
     _require(isinstance(toolchain, dict) and {"cc", "cxx", "cmake", "ninja", "ld"} <= set(toolchain),
              "completed subject toolchain is incomplete")
     for role, reference in toolchain.items():
@@ -1944,12 +1985,29 @@ def _assemble_attestation(raw_ref, cohort_ref, resolver, *, captured=None, produ
         _require(role in {"cc", "cxx", "cmake", "ninja", "ld", "ar", "ranlib", "make"},
                  "completed subject has an unqualified toolchain role")
         evidence.tool(role, reference["path"], toolchain)
-    _verify_inventory_files(arrow, compile_info.get("files"), resolver,
-                            original_archive=manifest.get("source_archive"))
+    source_files = _verify_inventory_files(arrow, compile_info.get("files"), resolver,
+                                           original_archive=manifest.get("source_archive"))
     resolver.read(manifest.get("source_archive"))
     if manifest.get("source_verification") is not None:
         resolver.read(manifest["source_verification"])
-    for field in ("translation_units", "integrated_header_consumers"):
+    consumer_field = "patched_header_consumers" if kind == "25" else "integrated_header_consumers"
+    if kind == "25":
+        _require(set(compile_info) == {"files", "compile_commands", "translation_units", consumer_field}
+                 and raw.get("compile_source_evidence") == {key: value for key, value in compile_info.items()
+                                                            if key != "files"},
+                 "Arrow25 compiled source evidence differs from its exact raw receipt")
+        inventory = _inventory(source_files)
+        expected_consumers = []
+        for name in ("scalar_if_else.cc", "vector_replace.cc"):
+            relative = "cpp/src/arrow/compute/kernels/" + name
+            row = inventory.get(relative)
+            _require(row is not None and row["type"] == "file", "Arrow25 patched source consumer is missing")
+            expected_consumers.append({"path": arrow + "/" + relative, "sha256": row["sha256"]})
+        _require(compile_info[consumer_field] == expected_consumers
+                 and isinstance(compile_info.get("translation_units"), list)
+                 and bool(compile_info["translation_units"]),
+                 "Arrow25 patched source consumer/translation-unit evidence differs")
+    for field in ("translation_units", consumer_field):
         for reference in compile_info.get(field, []):
             resolver.read(reference)
     file_api = selected.get("file_api")
@@ -2003,7 +2061,7 @@ def _assemble_attestation(raw_ref, cohort_ref, resolver, *, captured=None, produ
                 for name, layout in layouts.items()}
     supplemental["jemalloc"] = external["jemalloc"]
     verify_proof_union(kind, legacy, supplemental)
-    artifacts = _artifact_closure(raw, work, evidence)
+    artifacts = _artifact_closure(raw, work, evidence, build["stages"])
     artifacts["generator_tools"] = {role: evidence.tools[role] for role in sorted(evidence.tools)}
     artifacts["generator_aliases"] = {name: evidence.aliases[name] for name in sorted(evidence.aliases)}
     result = {"schema_version": 1, "kind": "bundled_native_source_attestation", "status": "source_attested",
@@ -2074,8 +2132,13 @@ def main(argv=None):
         resolver = _Resolver()
         raw = resolver.json(raw_ref)
         manifest = resolver.json(raw.get("build_inputs"))
+        kinds = [kind for kind, family in FAMILIES.items()
+                 if raw.get("source_policy") == family["source_policy"]
+                 and raw.get("source_revision") == family["source_revision"]]
+        _require(len(kinds) == 1, "completed source receipt family is unqualified")
+        build = _completed_build_fields(kinds[0], raw, manifest, resolver)
         work = str(_logical_path(manifest.get("context", {}).get("work")))
-        _require(raw.get("build", {}).get("context", {}).get("work") == work,
+        _require(isinstance(build["context"], dict) and build["context"].get("work") == work,
                  "completed raw/manifest work context differs")
         output = args.output.absolute()
         _require(not output.exists() and not output.is_symlink(), "source attestation output already exists; preserve it")

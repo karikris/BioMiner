@@ -1134,3 +1134,23 @@ This qualifies standalone candidate functionality only. Source attestation,
 full BioMiner source/installed suites, the four-cell matrix, live services,
 resource repetitions, canary/recovery and phase handshakes remain required.
 The candidate remains unregistered; no runtime was admitted or activated.
+
+## Actual Arrow 25 completed receipt layout
+
+The actual Arrow 25 build records context, commands and stages at the top
+level, with its five toolchain roles inside the exact frozen builder receipt.
+The source reader now validates that finite layout, builder backlink, command
+and successful-stage agreement, and both patched-header consumers. Arrow 26
+retains its nested layout. Ambiguous or substituted layouts remain rejected;
+source families, archives, cohort and admission assignments are unchanged.
+
+Focused RED recorded five failures and ten passes. The first complete run
+recorded one failure and 259 passes: the migrated fixture still expected two
+unused tools. Removing only those fixture entries preserved every closure
+assertion. All 260 tests then passed in 12.68 seconds, exit 0 without
+interruption; execution receipt SHA-256
+`bc68778ef19ecb6d5d81bdbb3ae02f452150bb4cda0d7d846a0895109691335c`.
+Independent source/test review passed, SHA-256
+`3e4bb3f24c41f41bbf694fde597c1b3784b3429f9d1deaadda9e39dfcac65653`.
+Actual completed-build capture and retained replay remain pending; this task
+changes no runtime admission or phase-completion status.

@@ -402,6 +402,16 @@ class CompletedSourceCase:
                         "cxx": self.toolchain["cxx"]["path"]},
             "dependencies": {}, "builder": {"toolchain": self.toolchain},
         }
+        if schema_kind == "25":
+            for unused in ("ranlib", "make"):
+                self.toolchain.pop(unused)
+            builder_python = self.put(self.root / "tools/python", b"synthetic frozen builder Python\n")
+            builder = {"schema_version": 1, "kind": "arrow26_python_builder", "status": "frozen_verified",
+                       "python": builder_python, "toolchain": {name: self.toolchain[name] for name in (
+                           "cc", "cxx", "cmake", "ninja", "ld")}}
+            builder_ref = self.json(self.root / "builder-receipt.json", builder)
+            self.manifest["builder"] = {**builder, "receipt": builder_ref}
+            self.manifest["context"]["python"] = builder_python["path"]
         self.cache = self.put(self.cpp / "CMakeCache.txt", b"BUILD_SHARED_LIBS:BOOL=OFF\n" + (
             b"CUSTOM_MEMORY_MANAGEMENT:BOOL=OFF\n" if schema_kind == "25" else b""))
         self.cohort_rows = []
@@ -633,6 +643,15 @@ class CompletedSourceCase:
             for name, project in self.ep.items()).encode())
         self.main_graph = self.put(self.cpp / "build.ninja", "".join(self.ninja_commands).encode())
         self.main_compile = self.json(self.cpp / "compile_commands.json", self.compile_commands)
+        self.patched_consumers, self.patched_units = [], []
+        if self.kind == "25":
+            for name in ("scalar_if_else.cc", "vector_replace.cc"):
+                self.patched_consumers.append(self.put(
+                    self.arrow / "cpp/src/arrow/compute/kernels" / name,
+                    ("// original ordered-patch header consumer " + name + "\n").encode()))
+            self.patched_units.append(self.put(
+                self.cpp / "src/arrow/CMakeFiles/arrow_compute_objlib.dir/Unity/unity_0_cxx.cxx",
+                "".join('#include "' + row["path"] + '"\n' for row in self.patched_consumers).encode()))
         self.manifest["source_archive"] = self.bundle(self.root / "arrow-original.tar.gz", self.arrow,
                                                      {"NOTICE.txt": b"synthetic Arrow upstream notice\n"})
 
@@ -663,9 +682,20 @@ class CompletedSourceCase:
                          "static_archives": [record(project["static"]) for project in self.ep.values()],
                          "downloaded_archives": self.archives, "native_inputs": [], "file_api": []}
         self.selected_ref = self.json(self.work / "compiled-dependencies.json", self.selected)
+        compilation = {"compile_commands": self.main_compile,
+                       "translation_units": self.patched_units if self.kind == "25" else [],
+                       ("patched_header_consumers" if self.kind == "25" else "integrated_header_consumers"):
+                           self.patched_consumers if self.kind == "25" else []}
         self.source_ref = self.json(self.work / "compiled-sources.json", {
-            "files": self.inventory(self.arrow), "compile_commands": self.main_compile,
-            "translation_units": [], "integrated_header_consumers": []})
+            "files": self.inventory(self.arrow), **compilation})
+        if self.kind == "25":
+            self.manifest["commands"] = {
+                "cpp_configure": [self.toolchain["cmake"]["path"], "-S", str(self.arrow / "cpp"),
+                                  "-B", str(self.cpp)],
+                "cpp_build": [self.toolchain["cmake"]["path"], "--build", str(self.cpp),
+                              "--target", "install", "--parallel", "4"],
+                "python_build": [self.manifest["builder"]["python"]["path"], "-I", "-B", "-m", "build", "--wheel"],
+            }
         manifest_ref = self.json(self.work / "build-inputs.json", self.manifest)
         self.raw = {"schema_version": 1, "name": "pyarrow", "status": "compiled_unverified",
                     "source_policy": self.family["source_policy"], "source_revision": self.family["source_revision"],
@@ -683,6 +713,18 @@ class CompletedSourceCase:
                               "stages": [{"command": [self.toolchain["cmake"]["path"], "--build", str(self.cpp),
                                                        "--target", "install", "--parallel", "4"],
                                           "log": self.build_log, "exit_code": 0}]}}
+        if self.kind == "25":
+            self.raw.pop("build")
+            self.raw.pop("toolchain")
+            self.raw.update({"kind": "corrective_arrow25_private_network_build", "ready": False,
+                             "context": dict(self.manifest["context"]),
+                             "builder": json.loads(json.dumps(self.manifest["builder"])),
+                             "commands": json.loads(json.dumps(self.manifest["commands"])),
+                             "compile_source_evidence": compilation,
+                             "stages": [{"command": self.manifest["commands"][name], "exit_code": 0,
+                                         "log": self.build_log if name == "cpp_build" else self.put(
+                                             self.work / "logs/python-build-1.log", b"wheel build completed\n")}
+                                        for name in ("cpp_build", "python_build")]})
         self.raw_ref = self.json(self.work / "build-receipt.json", self.raw)
 
     def capture(self, verifier):
@@ -884,7 +926,8 @@ def test_completed_capture_cli_rejects_an_output_inside_the_frozen_build(
 def test_completed_capture_rejects_inconsistent_work_context(
         verifier, completed_source_case):
     case = completed_source_case
-    case.raw["build"]["context"] = {**case.manifest["context"], "work": str(case.root / "other-build")}
+    context_owner = case.raw if case.kind == "25" else case.raw["build"]
+    context_owner["context"] = {**case.manifest["context"], "work": str(case.root / "other-build")}
     case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
     with pytest.raises(ValueError, match="context|work|build"):
         case.capture(verifier)
@@ -893,7 +936,8 @@ def test_completed_capture_rejects_inconsistent_work_context(
 def test_completed_cli_never_publishes_in_manifest_work_with_inconsistent_work_context(
         verifier, completed_source_case):
     case = completed_source_case
-    case.raw["build"]["context"] = {**case.manifest["context"], "work": str(case.root / "other-build")}
+    context_owner = case.raw if case.kind == "25" else case.raw["build"]
+    context_owner["context"] = {**case.manifest["context"], "work": str(case.root / "other-build")}
     case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
     output = case.work / "new-attestation.json"
     argv = ["--build-receipt", case.raw_ref["path"], "--build-receipt-sha256", case.raw_ref["sha256"],
@@ -1597,4 +1641,90 @@ def test_remaining_lz4_metadata_rejects_foreign_names_templates_bytes_paths_and_
     case = completed_source_case
     use_remaining_source_owned_lz4_metadata(case, verifier, monkeypatch, change=change)
     with pytest.raises(ValueError, match="unqualified|metadata|template|module|CPack|source|symlink|alias"):
+        case.capture(verifier)
+
+
+@pytest.fixture
+def actual_flat_arrow25_case(tmp_path, verifier, monkeypatch):
+    return CompletedSourceCase(tmp_path, "25", verifier, monkeypatch)
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_arrow25_flat_receipt_binds_builder_stages_and_patched_source_consumers(
+        verifier, actual_flat_arrow25_case, tmp_path, monkeypatch, retained):
+    case = actual_flat_arrow25_case
+    assert "build" not in case.raw and "toolchain" not in case.raw
+    assert case.raw["builder"] == case.manifest["builder"]
+    attestation = case.publish(verifier, tmp_path / "flat-arrow25-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    assert initial["attestation"]["schema_kind"] == "25"
+    assert initial["attestation"]["artifact_closure"]["build_commands"] == case.raw["stages"]
+    required = [case.manifest["builder"]["receipt"], *case.manifest["builder"]["toolchain"].values(),
+                *case.patched_consumers, *case.patched_units]
+    assert all(row in initial["files"] for row in required)
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+def test_arrow25_flat_receipt_cli_publishes_only_outside_its_actual_manifest_work(
+        verifier, actual_flat_arrow25_case, tmp_path):
+    case = actual_flat_arrow25_case
+    output = tmp_path / "flat-arrow25-cli-attestation.json"
+    raw_before = Path(case.raw_ref["path"]).read_bytes()
+    argv = ["--build-receipt", case.raw_ref["path"], "--build-receipt-sha256", case.raw_ref["sha256"],
+            "--cohort", case.cohort["path"], "--output", str(output)]
+    assert verifier.main(argv) == 0
+    assert verifier.verify_completed_attestation(str(output), record(output)["sha256"])["attestation"]["schema_kind"] == "25"
+    assert Path(case.raw_ref["path"]).read_bytes() == raw_before
+
+
+@pytest.mark.parametrize("change", ["nested_only", "ambiguous_layout", "context", "commands", "stage_command",
+                                    "failed_stage", "builder_backlink", "builder_content", "tool_context",
+                                    "patched_field", "compile_evidence"])
+def test_arrow25_flat_receipt_rejects_wrong_shape_or_unbound_build_source_evidence(
+        verifier, actual_flat_arrow25_case, change):
+    case = actual_flat_arrow25_case
+    if change in {"nested_only", "ambiguous_layout"}:
+        case.raw["build"] = {"context": case.raw["context"], "stages": case.raw["stages"]}
+        case.raw["toolchain"] = case.raw["builder"]["toolchain"]
+        if change == "nested_only":
+            for key in ("context", "stages", "commands", "builder"):
+                case.raw.pop(key)
+    elif change == "context":
+        case.raw["context"]["work"] = str(case.root / "foreign-build")
+    elif change == "commands":
+        case.raw["commands"]["cpp_build"][1] = "--foreign-build"
+    elif change == "stage_command":
+        case.raw["stages"][0]["command"] = [case.toolchain["cmake"]["path"], "--foreign-build"]
+    elif change == "failed_stage":
+        case.raw["stages"][0]["exit_code"] = 1
+    elif change == "builder_backlink":
+        Path(case.manifest["builder"]["receipt"]["path"]).write_bytes(b"changed frozen builder receipt\n")
+    elif change == "builder_content":
+        case.raw["builder"]["toolchain"]["cc"] = case.put(case.root / "foreign-cc", b"foreign compiler\n")
+    elif change == "tool_context":
+        context = {**case.manifest["context"], "cc": str(case.root / "foreign-cc")}
+        case.manifest["context"] = context
+        case.raw["context"] = dict(context)
+        case.raw["build_inputs"] = case.json(case.work / "build-inputs.json", case.manifest)
+    elif change == "patched_field":
+        compilation = json.loads(Path(case.source_ref["path"]).read_bytes())
+        compilation["integrated_header_consumers"] = compilation.pop("patched_header_consumers")
+        case.raw["compiled_sources"] = case.json(case.work / "compiled-sources.json", compilation)
+        case.raw["compile_source_evidence"] = {key: value for key, value in compilation.items() if key != "files"}
+    elif change == "compile_evidence":
+        case.raw["compile_source_evidence"] = {**case.raw["compile_source_evidence"], "patched_header_consumers": []}
+    case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+    with pytest.raises(ValueError, match="shape|context|builder|toolchain|command|stage|evidence|consumer|receipt|header|compiled|checksum|family|failed"):
+        case.capture(verifier)
+
+
+def test_arrow25_flat_receipt_layout_is_not_a_fallback_for_arrow26(
+        verifier, tmp_path, monkeypatch):
+    case = CompletedSourceCase(tmp_path, "26", verifier, monkeypatch)
+    build = case.raw.pop("build")
+    case.raw["context"], case.raw["stages"] = build["context"], build["stages"]
+    case.raw["builder"] = {"toolchain": case.raw.pop("toolchain")}
+    case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+    with pytest.raises(ValueError, match="context|build|toolchain|shape"):
         case.capture(verifier)
