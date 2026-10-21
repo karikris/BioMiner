@@ -3,11 +3,10 @@
 Current scope is compatibility qualification of the selected, unregistered
 candidates, without additional cybersecurity work or production activation.
 Both complete source replays and both five-check native qualifications passed.
-The committed application source passed all 4,254 tests; all 644 cases affected
-by the installed runner's fixture and temporary-space failures now pass too.
-The complete installed suite/CLI rerun and phase-4 publication/push remain
-pending. The sections below retain the chronological evidence, including
-superseded preparations and failed attempts.
+The frozen committed application and fresh installed application each passed
+all 4,254 cases; three installed CLI checks also passed. Phase-4 final joined
+review, publication and push remain pending at this checkpoint. The sections
+below retain chronological preparations and failed attempts.
 
 Phase 4 starts on `main` at
 `007396255b6afe6acef9cf80d8d7960a1290a1cc`, after the verified phase-3 push.
@@ -1470,3 +1469,30 @@ Its execution SHA-256 is
 The complete installed run and three CLI checks have started with context 5;
 the original successful 4,254-case source proof remains explicit reused evidence.
 Full installed success and phase publication remain pending at this checkpoint.
+
+
+## Complete application qualification
+
+The final qualification passed, SHA-256
+`0ad283c39f9a0e922a0a221b3bf83d65435e3fd736fcf28955dc66360094625d`.
+Its outer execution exited 0 without interruption, SHA-256
+`9191fc7f9563e528f6f9ba6a32819c3b83f1cedea393cf2ebc41b31d30667d99`.
+The seven stages preserve the original successful source collection/suite as
+explicit reused evidence and add fresh installed collection/suite, installed
+origin verification, installed console help and installed module help.
+
+Both source and installed collections contain the same ordered 4,254 unique
+node IDs. Each suite passed all 12,762 setup/call/teardown outcomes, with no
+skips, xfails, deselections or collection errors. The source suite execution
+was 488.316 seconds; the fresh installed suite was 498.842 seconds. All three
+CLI stages exited 0; the console's public resource driver also verified its
+worker exit, thread policy and removed scratch. Final frozen source, private
+Git, whole 46-package installation and fixture-view verification passed.
+
+This qualifies application commit `a0aac4e` and its exact installed target
+wheel, rather than unrelated dirty scientific work in this checkout. The
+failed overall run containing the original source pass remains failed and
+unchanged; only its two independently verified source stages are reused.
+The existing five native checks remain scoped to the identical 45 dependency
+artifacts. Phase-4 final evidence review and verified push are separate steps;
+security, runtime admission and production migration remain excluded.
