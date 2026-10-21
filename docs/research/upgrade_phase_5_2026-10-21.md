@@ -170,3 +170,49 @@ independent read-only post-run integrity observation (`0ca8dafb…`) verified
 inventories. This is review evidence; the benchmark did not emit a separate
 post-run inventory JSON or an integrity boolean. Its reviewed code checked the
 same frozen inputs before and after every worker. Both forms remain distinct.
+
+
+## Task 5.5: preserve the pending-live handoff
+
+Starting main SHA: `d3a7d732dbf0d20916226429f5f0d19fe2d70cbf`.
+A finite metadata-only assembler joined the completed matrix, actual resource
+result and exact unchanged phase-4 full-suite row. Root inspected the helper
+before execution. The actual bounded assembly exited 0/0; it performed no
+qualification, semantic phase validation, service call or publication. The
+immutable output is `compatibility-phase5-concrete-1/manifest.assembly.pending-live-1.json`,
+SHA-256 `2729a5ebb5061e0d1c62ec13b0cbf62e1404cf686b9a2afed051de691c5111a2`.
+Its execution receipt is `c36a5ff8…`. Three subjects and 358 source identities
+match the published phase-4 manifest. The live result remains null, its sole
+qualification blocker remains explicit, and every readiness/admission/production
+flag remains false. The draft ledger contains five actual task commits through
+`d3a7d73`; this later handoff commit and future live work must be added to a new
+immutable final assembly before phase completion. The unchanged compatibility
+builder remains the sole semantic validator and publisher.
+
+Fresh retry preparation changes only the nonce and owned output roots. The
+worker/client settings remain unchanged. Actual metadata validation passed
+without credentials or live calls (`826be9e4…`), and independent preparation
+review approved (`9529a02a…`). Context/guard hashes are `5cc2a9f3…` / `1232d26a…`.
+This is preparation only: user confirmation of the approved local bucket and
+endpoint, final concrete launch/pin review and serialized scheduling are still
+required. No third live attempt was made.
+
+GitHits source follow-up (`a00e4b96…`) confirms that Arrow can classify
+`NO_SUCH_BUCKET` as NotFound during existence checks. HEAD and PUT share the
+same endpoint resolver, bucket/key parameters and addressing choice in the
+reviewed paths. Neither an existenceFalse result nor the current evidence
+establishes a Put-only routing defect. No checksum or addressing setting was
+changed speculatively.
+
+Current handoff: matrix 4 × 59 passed; unchanged full application 4,254 source
+and 4,254 installed cases plus three CLI stages passed; resources 12 passed;
+combined live qualification failed on S3 while PostgreSQL and both cleanups
+passed. Phase 5 is not published or pushed; remote main remains the completed
+phase-4 SHA `48e3c469a803a8c8e4b60d4d68f7794ce8cb92d8`. Phase 6 remains prepared
+and unrun behind its required phase-5 handshake. Existing scientific work and
+contained runtimes remain untouched. The cybersecurity component stays excluded.
+
+Independent checkpoint review (`39499cde…`) approved this coherent incomplete
+handoff only. It verified the exact draft, actual assembly, protected identities,
+completed evidence joins, preparation-only retry scope and explicit null live
+result. It is not phase approval or publication authorization.
