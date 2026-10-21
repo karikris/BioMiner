@@ -40,7 +40,7 @@ FAMILIES = {
     "26": {
         "source_policy": "arrow26-integrated-private-network-v3",
         "source_revision": "446167169a0dc547e00e1bc29f417a40c0ca267a",
-        "recipe_sha256": "ff52c1e7ca5ee5d146a4cc83af9a618862fe59de29d55e88f9c867f733f73473",
+        "recipe_sha256": "bd403b3700fb2d6a5073422b60bfdbfe0226b0a0718ad88996fdaa69bb5abf18",
         "legacy": frozenset({"simdjson", "uriparser", "boost"}),
     },
 }

@@ -1101,3 +1101,14 @@ passed in 12.01 seconds, exit 0 without interruption; receipt SHA-256
 Independent source/test review passed, SHA-256
 `ebdf031993804325322569cf33265b283f3c42b4c1dafed1cd39a77d209cb4e6`.
 Actual capture/replay and the fresh Arrow 26 runtime checks remain required.
+
+## Align Arrow 26 AWS recipe identity
+
+Both finite recipe readers and the existing expected test literal now bind the
+reviewed AWS correction (`bd403b37…`). Reversing these three literals reproduces
+the complete baseline files; all actual admission assignments remain closed.
+The adapter and source-proof suites passed 539 tests in 22.23 seconds, exit 0
+without interruption; receipt SHA-256
+`9bb806d1a30e8955a2cc0089d8a984ccdab5a46fc308b45ebc02707bdbcb9bfc`.
+Root literal review SHA-256 `5ee8325cd8773dc5699f578c547d28535d30ae0737b9459971243aaf7f237911`. This binds source
+identity only; it does not qualify the new native artifact.

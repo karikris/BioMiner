@@ -240,7 +240,7 @@ def test_private_arrow25_family_has_a_separate_closed_admission_policy(tmp_path)
 
 @pytest.mark.parametrize('family,kind,recipe_sha256', [
     ('arrow26-integrated-private-network-v3', '26',
-     'ff52c1e7ca5ee5d146a4cc83af9a618862fe59de29d55e88f9c867f733f73473'),
+     'bd403b3700fb2d6a5073422b60bfdbfe0226b0a0718ad88996fdaa69bb5abf18'),
     ('arrow25-two-compute-patches-private-network-v2', '25',
      '881740f1bbac88722230b307a876ca18f009fe79f4406e2ca9baf17e615c413a'),
 ])
