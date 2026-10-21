@@ -170,6 +170,49 @@ The exact upstream CMake source/docs and GitHits search/read/grep/status results
 are retained in `phase4/cmake-inventory-research-1/githits.json`. The next actual
 configure uses a fresh generation; the failed receipt and source stay intact.
 
+
+### Configuration correction: retain the standalone Python provider
+
+The second run completed CMake configuration/generation, then correctly stopped
+because its newly complete inventory encountered `libpython3.14.so` outside the
+OS package database. This library belongs to the already qualified standalone
+Python runtime. The failed generation-2 receipt is preserved with SHA-256
+`eee74d2e4a935dca5c8974c61792c52ec0ef0b571530a6474a6c2d28b89a9b10`.
+Outer `phase4/configure-outer-2/execution.json` has SHA-256
+`6ea5b2866c71eb0d3d3073a31018556181025cdc76b5a15be25af2ae50c72c2a`;
+inner `phase4/configure-execution-2/execution.json` has SHA-256
+`dc07a95f556c511a1c471c8cdb2b10d587b04dec3789107249fc031ca1e769c1`.
+Both exits are 1 with no interruption; cleanup succeeded and maximum sampled
+compiler concurrency was one. Arrow target compilation remains unrun.
+
+The correction binds the exact existing Python source receipt
+`43a7e96c319752ec519a3c7e213cbb063bb8d140bbb598e69ceb6b49b2c787f4`
+and archive `da5357f47b1d9c8d4c439004d463d893ef688a44c27438a62b47073d26d1377e`.
+It rechecks all 3,518 original payload files before and after building, retaining
+293 native/header file descriptors in the build manifest and final raw receipt.
+Selected files require exact attested membership and bytes. Existing
+`python-runtime:Astral20260929` ownership applies to the ELF closure; all other
+external inputs still require a known private OpenSSL archive or an OS provider.
+This adds no arbitrary unowned-library fallback.
+
+The provider regression first failed on the missing implementation, then all
+61 recipe tests passed in 0.67 seconds. The GREEN receipt is
+`phase4/task4.1-focused-5/execution.json`, SHA-256
+`1b0522e672dc4f08a664a419922cb29ed934dc5d2ea7b61850af0d3064e7de3f`,
+with supervisor/runner exit 0 and no interruption. A read-only actual-runtime
+preflight revalidated the full payload and source/provider membership:
+`phase4/private-python-provider-check-1.json`, SHA-256
+`b648fd750d0061afba87a74c246a36637e6fb04fc054d9fa1bf4709184d82822`.
+Current recipe SHA-256 is
+`1629657fa2ec79fac6045a314d675371f95e756f6bb3da71729df1f440ab2182`.
+
+The retained configured-provider audit contains 468 targets and 15 existing
+external native inputs: `phase4/configured-native-provider-audit-2.json`, SHA-256
+`9a5243017bc8f23490f1493a72b5d33a2788f7209a8129a4907a8bcd1c9cc2da`.
+It establishes provider identity for a configured superset. Final linkage,
+current source/advisory applicability and a fresh successful configuration remain
+required before runtime admission. The next run uses a new generation 3.
+
 ## Task 4.2: storage API compatibility
 
 Starting commit is `3fcd4e5fad78a950ef20acbba398417389f6110e`. The refreshed

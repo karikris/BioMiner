@@ -518,6 +518,41 @@ def system_provider(path: Path) -> dict:
             "source_and_advisory_review": "required_before_runtime_admission"}
 
 
+def validate_python_runtime(base_python: Path) -> dict:
+    """Reuse the exact standalone runtime attestation, including native inputs."""
+    prefix = base_python.resolve().parent.parent
+    receipt = prefix.parent / "receipt.json"
+    check_record({"path": str(receipt), "sha256": "43a7e96c319752ec519a3c7e213cbb063bb8d140bbb598e69ceb6b49b2c787f4"},
+                 "Python runtime source receipt")
+    runtime = json.loads(receipt.read_bytes())
+    if (runtime.get("schema_version") != 1 or runtime.get("source_build") != "Astral20260929"
+            or runtime.get("identity") != {"version": "3.14.7", "openssl_version": "3.5.9"}
+            or runtime.get("python") != file_record(base_python)
+            or runtime.get("archive", {}).get("sha256") != "da5357f47b1d9c8d4c439004d463d893ef688a44c27438a62b47073d26d1377e"):
+        raise ValueError("Python runtime source identity rejected")
+    check_record(runtime["archive"], "Python runtime source archive")
+    files = []
+    for row in runtime["verified_archive_files"]:
+        path = check_record(row, "Python runtime archive member")
+        if not path.is_relative_to(prefix):
+            raise ValueError("Python runtime source member escapes approved prefix")
+        if path.is_relative_to(prefix / "include") or re.search(r"\.(a|so(?:\.[0-9]+)*)$", path.name):
+            files.append(row)
+    return {"source_build": runtime["source_build"], "receipt": file_record(receipt),
+            "archive": runtime["archive"], "python": runtime["python"], "files": files}
+
+
+def native_input_provider(path: Path, python_runtime: dict | None) -> dict:
+    if python_runtime:
+        for row in python_runtime["files"]:
+            if Path(row["path"]).resolve() == path.resolve():
+                check_record(row, "Python native input")
+                check_record(python_runtime["receipt"], "Python runtime source receipt")
+                return {"kind": "python_runtime", "source_build": python_runtime["source_build"],
+                        "receipt": python_runtime["receipt"]}
+    return system_provider(path)
+
+
 def capture_cmake_targets(build: Path, expected_source: Path) -> tuple[list, list]:
     """Use CMake's scoped target identities and already evaluated link inputs."""
     reply = build / ".cmake/api/v1/reply"
@@ -615,7 +650,7 @@ def capture_dependencies(work: Path, *, compiled: bool) -> dict:
                 item["provider"] = {"kind": "private_openssl", "version": "3.6.5",
                                     "receipt": inputs["openssl"]["receipt"], "source_commit": inputs["openssl"]["source_commit"]}
             elif not candidate.resolve().is_relative_to(work):
-                item["provider"] = system_provider(candidate.resolve())
+                item["provider"] = native_input_provider(candidate.resolve(), inputs.get("python_runtime"))
             native_inputs[str(candidate)] = item
             if candidate.name.endswith(".a"):
                 static_archives[str(candidate)] = item
@@ -741,8 +776,10 @@ def inspect_wheel(work: Path, build_record: dict) -> dict:
             resolved = Path(dependency).resolve()
             if resolved in wheel_paths or str(resolved) in native_files:
                 continue
-            provider = system_provider(resolved)
-            native_files[str(resolved)] = file_record(resolved) | {"owner": "dpkg:" + provider["package"], "provider": provider}
+            provider = native_input_provider(resolved, build_record.get("python_runtime"))
+            owner = ("python-runtime:" + provider["source_build"] if provider.get("kind") == "python_runtime"
+                     else "dpkg:" + provider["package"])
+            native_files[str(resolved)] = file_record(resolved) | {"owner": owner, "provider": provider}
     return {"wheel": file_record(wheel), "version": metadata["Version"],
             "native_files": list(native_files.values()), "linkage": linkage}
 
@@ -798,7 +835,8 @@ def verify_link_maps(work: Path, prefix: Path, dependencies: dict) -> dict:
         else:
             item = file_record(path)
             if not path.is_relative_to(work) and not path.is_relative_to(prefix):
-                item["provider"] = system_provider(path)
+                inputs = json.loads((work / "build-inputs.json").read_bytes())
+                item["provider"] = native_input_provider(path, inputs.get("python_runtime"))
         records.append(item)
     return {"maps": maps, "linked_static_archives": records,
             "qualification": "Link maps include build outputs; runtime admission must review final wheel library maps and every system source/provider."}
@@ -925,6 +963,7 @@ def main(argv: list | None = None) -> int:
         builder = validate_builder(args.builder_receipt.absolute(), args.builder_receipt_sha256,
                                    python=args.python, cc=args.cc, cxx=args.cxx)
         observed_builder = probe_builder(builder)
+        python_runtime = validate_python_runtime(Path(builder["base_python"]["path"]))
         openssl_archive = args.openssl_source_archive.absolute() if args.openssl_source_archive else prefix.parent / "downloads/openssl.tar.gz"
         openssl = validate_openssl(prefix, openssl_archive)
         if sha256(archive) != ARROW_ARCHIVE_SHA256:
@@ -967,6 +1006,7 @@ def main(argv: list | None = None) -> int:
             "source_archive": file_record(archive), "source_verification": file_record(work / "source-verification.json"),
             "integrated_sources": source_verification["integrated_sources"], "recipe": recipe_record,
             "builder": builder, "observed_builder": observed_builder, "toolchain_versions": tool_versions,
+            "python_runtime": python_runtime,
             "openssl": openssl, "dependencies": dependencies, "zlib_patch": zlib_patch,
             "patch_tool": file_record(Path("/usr/bin/patch")), "commands": commands, "context": context,
             "cmake_file_api_query": query_record,
@@ -1022,6 +1062,8 @@ def main(argv: list | None = None) -> int:
             verify_cache(work / "python-build/CMakeCache.txt", context, stage="python")
             validate_builder(args.builder_receipt.absolute(), args.builder_receipt_sha256,
                              python=args.python, cc=args.cc, cxx=args.cxx)
+            if validate_python_runtime(Path(builder["base_python"]["path"])) != python_runtime:
+                raise ValueError("Python runtime source inputs changed during build")
             if validate_openssl(prefix, openssl_archive) != openssl:
                 raise ValueError("approved OpenSSL inputs changed during build")
             with tarfile.open(archive) as bundle:
@@ -1041,6 +1083,7 @@ def main(argv: list | None = None) -> int:
                 "native_link_artifacts": maps["maps"], "linked_static_archives": maps["linked_static_archives"],
                 "toolchain": builder["toolchain"], "toolchain_versions": tool_versions,
                 "python_build_distributions": builder["distributions"],
+                "python_runtime": python_runtime,
                 "effective_versions": {"pyarrow": version, "openssl": "3.6.5", **{name: dep["version"] for name, dep in DEPENDENCIES.items()}},
                 "build": record, "qualification": "compiled host-specific candidate; native/source/security/API qualification and admission still required",
             }

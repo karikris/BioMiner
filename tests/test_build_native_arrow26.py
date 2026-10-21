@@ -504,6 +504,7 @@ def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
     monkeypatch.setattr(Path, "is_relative_to", lambda self, *other:
                         False if other in (("/tmp",), ("/var/tmp",)) else original_relative_to(self, *other))
     monkeypatch.setattr(recipe, "probe_builder", lambda value: {"identity": "frozen test builder"})
+    monkeypatch.setattr(recipe, "validate_python_runtime", lambda value: {"source_build": "synthetic-python", "files": []})
     monkeypatch.setattr(recipe, "validate_openssl", lambda *args: {"version": "3.6.5"})
     monkeypatch.setattr(recipe, "expected_generated_version", lambda *args: b"exact generated test version\n")
     monkeypatch.setattr(recipe.subprocess, "check_output", lambda *args, **kwargs: "fixture tool version\n")
@@ -629,3 +630,21 @@ def test_dependency_inventory_rejects_invalid_file_api_evidence(recipe, tmp_path
 
     with pytest.raises(ValueError, match="File API"):
         recipe.capture_dependencies(work, compiled=False)
+
+
+def test_private_python_native_input_requires_source_attested_bytes(recipe, tmp_path):
+    library = tmp_path / "python/lib/libpython3.14.so.1.0"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"approved standalone Python library")
+    receipt = tmp_path / "python-receipt.json"
+    receipt.write_text('{"source_build":"synthetic-python"}\n')
+    runtime = {"source_build": "synthetic-python", "receipt": record(receipt),
+               "files": [record(library)]}
+
+    provider = recipe.native_input_provider(library, runtime)
+
+    assert provider == {"kind": "python_runtime", "source_build": "synthetic-python",
+                        "receipt": record(receipt)}
+    library.write_bytes(b"changed standalone Python library")
+    with pytest.raises(ValueError, match="Python native input checksum"):
+        recipe.native_input_provider(library, runtime)
