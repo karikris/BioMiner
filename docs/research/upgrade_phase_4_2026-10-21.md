@@ -1112,3 +1112,25 @@ without interruption; receipt SHA-256
 `9bb806d1a30e8955a2cc0089d8a984ccdab5a46fc308b45ebc02707bdbcb9bfc`.
 Root literal review SHA-256 `5ee8325cd8773dc5699f578c547d28535d30ae0737b9459971243aaf7f237911`. This binds source
 identity only; it does not qualify the new native artifact.
+
+## Corrected Arrow 25 native candidate qualification
+
+Generation 3 compiled in 1177.609 seconds, exit 0 without interruption or
+cleanup failure, with at most four owned compiler frontends. Its immutable
+45-distribution candidate contains 8335 inventory entries and 7316 verified
+whole-wheel payload files. Independent completed-artifact review passed;
+review SHA-256 `5ebb316ff26262ca0e0fb75121f64a63808211134230d357c751aee262502f33`.
+
+All five existing native checks passed: versions, native ownership in both
+import orders, compiled extension policy, loopback certificate connections,
+and geometry/codecs. Each check revalidated the complete frozen inventory,
+353 expected ELF providers and descriptor inputs before and after execution.
+The 353 files are expected ownership evidence, not a claim all were mapped.
+Qualification receipt SHA-256
+`620597740fe689c071186bf0a29e14214b43336ea37b2e1cb282c9862462cefd`
+binds all five reports, integrity records and execution receipts.
+
+This qualifies standalone candidate functionality only. Source attestation,
+full BioMiner source/installed suites, the four-cell matrix, live services,
+resource repetitions, canary/recovery and phase handshakes remain required.
+The candidate remains unregistered; no runtime was admitted or activated.
