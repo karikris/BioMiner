@@ -11,6 +11,23 @@ attestation service, or proof of reviewer identity. Source scope and command
 selection still need independent review. Commands and logs must contain no
 credentials. Use the environment for provider access.
 
+## Amended compatibility scope
+
+The request without the cybersecurity component uses a separate external
+`compatibility_phase.py` developer-assistance operator, SHA-256
+`44ff68a2ef6b7542cadde614c07610f4dec60624696d9c465903b43af1859ee5`.
+Its `biominer-upgrade-compatibility-phase/v1` receipts cover the remaining
+candidate compatibility phases 4–6. The existing validator and admission
+policies remain unchanged. See the [phase-4 report](research/upgrade_phase_4_2026-10-21.md)
+for exact manifests, independent reviews and commands.
+
+Publication requires all actual checks and digest-bound independent reviews.
+A distinct documentation-only summary commit, matching local/remote `main`,
+and create-only pushed receipt precede fresh continuation. These receipts
+keep security passage, legacy phase passage, runtime admission, registration,
+production readiness and production migration false. They provide no
+production fallback qualification.
+
 ## Workflow
 
 1. Complete task commits `N.1`, `N.2`, and `N.3` on `main`. Preserve unrelated

@@ -4,9 +4,10 @@ Current scope is compatibility qualification of the selected, unregistered
 candidates, without additional cybersecurity work or production activation.
 Both complete source replays and both five-check native qualifications passed.
 The frozen committed application and fresh installed application each passed
-all 4,254 cases; three installed CLI checks also passed. Phase-4 final joined
-review, publication and push remain pending at this checkpoint. The sections
-below retain chronological preparations and failed attempts.
+all 4,254 cases; three installed CLI checks also passed. Phase-4 joined spec and quality reviews approved the exact evidence; formal
+validation and candidate publication passed. The separate push receipt binds
+this final summary after remote observation. The sections below retain
+chronological preparations and failed attempts.
 
 Phase 4 starts on `main` at
 `007396255b6afe6acef9cf80d8d7960a1290a1cc`, after the verified phase-3 push.
@@ -1496,3 +1497,35 @@ unchanged; only its two independently verified source stages are reused.
 The existing five native checks remain scoped to the identical 45 dependency
 artifacts. Phase-4 final evidence review and verified push are separate steps;
 security, runtime admission and production migration remain excluded.
+
+
+## Phase-4 compatibility boundary
+
+All nine required evidence joins passed formal validation: both builds, both
+complete source replays, both five-check native qualifications, Arrow 26 API
+behavior, application floor/packaging, and full source/installed suite with CLI.
+The tested task boundary is `02720c37d9e9662a618582dbca4800a5da004684`,
+following 49 chronological task commits. Independent spec and quality reviews
+approved binding digest
+`b13d138a7d197e9cc13b907f1016b1922b85a069f1bf6d3a38a2d6efd01ec9ae`.
+Their report hashes are respectively
+`fbb2d66f67d76d40917e9269c32ecfc081299bfd0d3c5369bb0f481d5a56372f`
+and `310f6e9546226f8ffb91a5742aa7f5152f3154cee2cfd37d91c8fdd6b2239a89`.
+
+The final manifest is `phase4/compatibility-phase4-concrete-1/manifest.final.1.json`,
+SHA-256 `2d2494edf6c4a4d0d7714d4a31f1ee053b046e5d699311df1b1de5320926f9bd`.
+The published candidate is `phase-4-compatibility-candidate.json`. Formal
+validation and publication execution hashes are respectively
+`1839167119734080febb8dc68c0f82f6b8749a72ded21741231ce43245cc2ba7`
+and `ab6b5617149270e2d3e51aa591ba5c28a7f35a2d30b2e2faa01a639d7b22b85b`.
+
+This documentation-only summary is deliberately separate from the tested task
+commit. After normal push and matching remote observation, the create-only
+`phase-4-compatibility-pushed.json` receipt must bind its final commit; fresh
+continuation into phase 5 must then pass before that phase executes. Later
+compatibility, live, benchmark and synthetic recovery tasks remain required.
+Existing security, legacy admission, runtime registration, production readiness
+and production migration flags remain false. The passing run's exact owned
+synthetic scratch was removed under independent review; all reports, logs and
+frozen inputs remain retained, cleanup execution SHA-256
+`322b5be1c533d0ae3e887df2cd707717e1eb334773cdc802f1c14773a3b8f004`.
