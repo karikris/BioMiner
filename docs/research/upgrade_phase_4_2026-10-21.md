@@ -412,3 +412,42 @@ providers, changed values in each Parquet codec and corrupted bzip2 output.
 This is qualification implementation, not observed native codec success.
 Actual codec, TLS and spatial checks await a newly qualified runtime; the two
 live native tests were explicitly excluded from this pure-executor run.
+
+## Task 4.1: private network build tool
+
+The new isolated builder pins curl 8.23.0, libxml2 2.15.4, libiconv 1.19,
+zlib 1.3.2 plus `df84af25`, and the same patched Ubuntu nghttp2 source version
+`1.68.0-2ubuntu0.2`. It retains the existing private OpenSSL 3.6.5 inputs.
+Six private prefix archives, full source/object/build inventories, terminal
+command receipts, static consumer maps and whole-archive PIC probes are
+required. Its pure verification interface returns the complete retained
+closure for downstream Arrow builds; a candidate receipt never admits a host.
+
+The installed nghttp2 archive failed actual whole-archive shared linking with
+`R_X86_64_PC32` against `stderr`. Its exact package identity was insufficient
+PIC evidence. Receipt `phase4/nghttp2-pic-preflight-1/execution.json` has SHA-256
+`84c1c2985108039a5d037c73667359df0adcfcf70dc6fb8dd2cd3fd742e0730b`.
+The replacement uses the same HTTP/2 version and changes no OS package.
+Official Launchpad source files and DSC checksums are retained. The local
+keyring could not verify the signing key; signature verification is explicitly
+unavailable. All three Debian patches applied in order without fuzz or offset,
+with 1,226 original/final file hashes and every intermediate changed-file hash
+retained in `phase4/nghttp2-source-access-1/exact-source-preparation-1/`.
+
+Root reproduced missing source/PIC-plan, ordered-patch and compile-evidence
+guards before implementation. Independent review then found that curl backend
+variants and relative archive-member paths escaped the provider rejection
+matcher. Both counterexamples were reproduced and corrected. The final exact
+helper/test pair passed 73 tests in 1.70 seconds; supervised receipt
+`phase4/network-nghttp2-focused-2/execution.json` has SHA-256
+`44955f18ce3c625eacbb6d11f35454eb60c9951e21bdcd9ca1aefcfddb6ccbd2`.
+The actual nine-input check also passed without creating a build generation;
+receipt `phase4/network-nghttp2-input-check-2/execution.json` has SHA-256
+`affbe05d6511e0c9f6c576245e86b155ade819fb3a90485cbe2fa1a3b74218a3`.
+Both have supervisor/runner exit 0 and no interruption. Independent SPEC and
+QUALITY review passed for those exact source hashes.
+
+These results qualify the build tool's guards and inputs. Actual private
+compilation, PIC/capability probes, Arrow consumer linkage and replacement
+runtime qualification remain pending. The current registered runtimes remain
+disabled and the phase security gates remain blocked.

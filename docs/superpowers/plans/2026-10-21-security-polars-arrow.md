@@ -141,8 +141,8 @@ Add corrective task-4.1 work before phase-4 admission: build a source-bound,
 private static network/XML prefix with curl 8.23.0, libxml2 2.15.4, libiconv 1.19,
 zlib 1.3.2 with `df84af25`, and the reviewed private OpenSSL 3.6.5. Preserve HTTP,
 HTTPS, HTTP/2, verified TLS, gzip and the enabled Arrow feature contract. Bind
-the exact nghttp2 archive, headers, distro security/backport evidence and actual
-PIC consumer proof; retain its unavailable source-archive evidence explicitly.
+the exact nghttp2 source, headers, distro security/backport evidence and actual
+PIC consumer proof. Preserve earlier source-access failures as history.
 Select one private zlib provider, exact imported targets and headers, then
 reject residual affected host providers in the final resolved ELF/link-map
 closure. Neither prefix compilation nor a configure inventory admits a runtime.
@@ -152,6 +152,17 @@ and four-runtime matrix. The old recipe, ordered compute patches and receipts
 remain byte-exact. Do not hide changed execution behind an old recipe hash.
 Qualify the corrected Arrow 25 and Arrow 26 installations before closing either
 finding or advancing the phase.
+
+The installed nghttp2 static archive failed the actual whole-archive shared
+link (`R_X86_64_PC32` against `stderr`): its package identity does not prove
+PIC compatibility. Replace that proposed input with a private PIC build of the
+same Ubuntu source version, `1.68.0-2ubuntu0.2`. The exact upstream archive,
+Debian archive, DSC and detached signature are now retained from the official
+Launchpad publication. DSC checksums match; the local archive keyring could
+not verify the signing key, so no verified-signature claim is allowed. Apply
+all three Debian patches in order with zero fuzz and retain each source hash
+transition. Require actual source/target/PIC compiler evidence and whole-archive
+shared-link proof. This changes the build, not the HTTP/2 version or OS package.
 
 With no safe fallback established, stop affected registered entrypoints at a
 durable boundary after fresh ownership, consumer and scheduler checks. Use a
