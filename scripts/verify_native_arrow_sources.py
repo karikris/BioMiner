@@ -1367,8 +1367,11 @@ def _lz4_metadata_outputs(layout, original, entrypoint, cache, version, graph_re
         _require(template.count(b"@PACKAGE_INIT@") == 1, "LZ4 package config template differs")
         before, after = template.split(b"@PACKAGE_INIT@")
         data = evidence.read(binary + "/lz4Config.cmake")
-        _require(data.startswith(before + b"####### Expanded from @PACKAGE_INIT@ by configure_package_config_file()")
-                 and data.endswith(after), "LZ4 package config template bytes differ")
+        # The pinned module's PACKAGE_INIT starts with LF. configure_file
+        # writes a native LF after every input line, including an unterminated EOF.
+        configured_suffix = after if after.endswith(b"\n") else after + b"\n"
+        _require(data.startswith(before + b"\n####### Expanded from @PACKAGE_INIT@ by configure_package_config_file()")
+                 and data.endswith(configured_suffix), "LZ4 package config template bytes differ")
         files[binary + "/lz4Config.cmake"] = [*common, template_ref,
                                                modules["Modules/CMakePackageConfigHelpers.cmake"]]
 

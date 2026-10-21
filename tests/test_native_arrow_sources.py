@@ -1568,7 +1568,7 @@ def use_remaining_source_owned_lz4_metadata(case, verifier, monkeypatch, *, chan
         template = template.replace(("@" + key + "@").encode(), value.encode())
     outputs["liblz4.pc"] = case.put(project["binary"] / "liblz4.pc", template)
     outputs["lz4Config.cmake"] = case.put(project["binary"] / "lz4Config.cmake", (
-        b"####### Expanded from @PACKAGE_INIT@ by configure_package_config_file() #######\n"
+        b"\n####### Expanded from @PACKAGE_INIT@ by configure_package_config_file() #######\n"
         b"# configured package prefix metadata\n"
         + contents["build/cmake/lz4Config.cmake.in"].replace(b"@PACKAGE_INIT@\n", b"")))
     for name in ("lz4cat.1", "unlz4.1"):
@@ -1942,4 +1942,82 @@ def test_arrow26_rejects_arrow25_only_xsimd_external_project(verifier, tmp_path,
     add_arrow25_header_only_xsimd(case, verifier, monkeypatch)
     case.refresh()
     with pytest.raises(ValueError, match="ExternalProject|unqualified"):
+        case.capture(verifier)
+
+
+def use_native_lf_lz4_package_configuration(case, verifier, monkeypatch, *, template_final_lf=False, change=None):
+    """Pinned CMake PACKAGE_INIT begins LF and configure_file terminates each line."""
+    project, _, _, _, _, _ = use_remaining_source_owned_lz4_metadata(case, verifier, monkeypatch)
+    old = project["archive"]
+    with tarfile.open(old["path"]) as archive:
+        contents = {member.name.split("/", 1)[1]: archive.extractfile(member).read()
+                    for member in archive.getmembers() if member.isfile()}
+    relative = "build/cmake/lz4Config.cmake.in"
+    template = b'@PACKAGE_INIT@\ninclude( "${CMAKE_CURRENT_LIST_DIR}/lz4Targets.cmake" )'
+    if template_final_lf:
+        template += b"\n"
+    contents[relative] = template
+    archive = case.bundle(Path(old["path"]), project["source"], contents)
+    project["archive"] = archive
+    case.archives = [{**row, "sha256": archive["sha256"]} if row["path"] == archive["path"] else row
+                     for row in case.archives]
+    monkeypatch.setitem(verifier.EP_ARCHIVE_SHA256, "lz4", archive["sha256"])
+    owner = case.cpp / "_deps/orc-src/cmake_modules/ThirdpartyToolchain.cmake"
+    for path in (Path(project["urlinfo"]["path"]), owner,
+                 case.arrow / "cpp/cmake_modules/ThirdpartyToolchain.cmake",
+                 case.arrow / "cpp/thirdparty/versions.txt"):
+        path.write_text(path.read_text().replace(old["sha256"], archive["sha256"]))
+    expansion = (b"\n####### Expanded from @PACKAGE_INIT@ by configure_package_config_file() #######\n"
+                 b"# configured by the pinned CMake module\n")
+    before, after = template.split(b"@PACKAGE_INIT@")
+    expected = before + expansion + after
+    if not expected.endswith(b"\n"):
+        expected += b"\n"
+    data = expected
+    if change == "missing_leading_lf":
+        data = data.removeprefix(b"\n")
+    elif change == "extra_leading_lf":
+        data = b"\n" + data
+    elif change == "missing_final_lf":
+        data = data.removesuffix(b"\n")
+    elif change == "extra_final_lf":
+        data += b"\n"
+    elif change == "changed_suffix":
+        data = data.replace(b"lz4Targets.cmake", b"foreignTargets.cmake")
+    elif change == "changed_template":
+        case.put(project["source"] / relative, template.replace(b"lz4Targets.cmake", b"foreignTargets.cmake"))
+    output = case.put(project["binary"] / "lz4Config.cmake", data)
+    refresh_lz4_owner(case, owner)
+    case.raw["toolchain_versions"] = {"cmake": "cmake version 4.2.3"}
+    case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+    return project, record(project["source"] / relative), output, expected
+
+
+@pytest.mark.parametrize("template_final_lf", [False, True], ids=["actual-no-template-eof-lf", "template-has-eof-lf"])
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_lz4_package_config_uses_pinned_module_leading_lf_and_native_configure_file_final_lf(
+        verifier, completed_source_case, tmp_path, monkeypatch, template_final_lf, retained):
+    case = completed_source_case
+    project, template, output, expected = use_native_lf_lz4_package_configuration(
+        case, verifier, monkeypatch, template_final_lf=template_final_lf)
+    assert Path(output["path"]).read_bytes() == expected
+    assert expected.startswith(b"\n####### Expanded") and expected.endswith(b"\n")
+    attestation = case.publish(verifier, tmp_path / "lz4-native-configure-file-lf.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    generated = {row["output"]["path"]: row for row in initial["attestation"]["external_projects"]["lz4"]["generated_outputs"]}
+    proof = generated[output["path"]]
+    assert proof["rule"] == "lz4-source-metadata-v1" and template in proof["inputs"]
+    assert record(project["binary"] / "CMakeCache.txt") in proof["inputs"]
+    assert output in initial["files"]
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["missing_leading_lf", "extra_leading_lf", "missing_final_lf",
+                                    "extra_final_lf", "changed_suffix", "changed_template"])
+def test_lz4_package_config_rejects_non_native_newline_prefix_suffix_or_changed_source_template(
+        verifier, completed_source_case, monkeypatch, change):
+    case = completed_source_case
+    use_native_lf_lz4_package_configuration(case, verifier, monkeypatch, change=change)
+    with pytest.raises(ValueError, match="template|source|package|LZ4"):
         case.capture(verifier)

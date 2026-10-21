@@ -1201,3 +1201,20 @@ The candidate remains unregistered. Supplemental source capture/replay, matrix,
 full application source/installed suites and CLI, live services, resources,
 canary/recovery and phase handshakes remain required. No runtime admission,
 production activation, security clearance or phase completion is claimed.
+
+## Pinned CMake package expansion newlines
+
+Actual source capture reached LZ4's package configuration. CMake 4.2.3's
+pinned package module begins its expansion with LF; configure_file also writes
+LF after the original template's unterminated final line. The source reader
+now checks those exact boundaries. It does not strip whitespace or accept
+arbitrary newline variants. Both actual Arrow families use this shape.
+
+Focused RED recorded eight failures and twelve passes in 1.80 seconds. All
+304 source-proof tests passed in 14.98 seconds, exit 0 without interruption;
+receipt SHA-256
+`145eda4b22e43e2e93f0a74f282167a1cc272f9c35e098ffc0439d4aa617e02e`.
+Independent review passed, SHA-256
+`31e90377ece5bea7aed6119c2b1dcbce80a6f8143eaa231c1ce7db738f66ba79`.
+All 284 previous test functions and every source-family/cohort/admission pin
+remain unchanged. Actual positive capture and retained replay remain pending.
