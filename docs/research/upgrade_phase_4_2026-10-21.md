@@ -1309,3 +1309,33 @@ needed after the existing depth-policy implementation.
 
 This tests one nine-package API cell. The four-cell matrix, full application
 suite and phase push are separate gates. Existing admission remains closed.
+
+
+## Compatibility-only phase handshakes
+
+The amended scope uses a separate developer-assistance evidence join, schema
+`biominer-upgrade-compatibility-phase/v1`. The existing production/security
+phase validator and runtime policies remain byte-identical. The new join does
+not call their admission gate or recursively inspect contained environments.
+It requires exact candidate, source, execution, whole application wheel and
+independent review identities. Phase 4 requires both builds, both complete
+source replays, both five-check native results, the target API result, the
+application floor and the full source/installed suite. Phases 5 and 6 require
+the remaining compatibility/live/resource and synthetic recovery evidence.
+
+The operator and tests remain outside Git as developer-assistance artifacts;
+SHA-256 identities are respectively
+`44ff68a2ef6b7542cadde614c07610f4dec60624696d9c465903b43af1859ee5`
+and `58de43e622b8e71d59b799230e5aedfa753d52aa593cb82515fd23218bbd986e`.
+All 90 controls passed in 1.04 seconds. Independent review closed five findings
+covering protected path aliases, source producers, artifact review subjects,
+harness/launcher roles and whole application installation backlinks. Review
+SHA-256 is
+`9ecd8a25362b38e85ffe11d4887ac6b3219b4611d1c3a421d2e31e2afb9eaf05`.
+
+Publication requires complete actual checks and separate spec/quality reviews
+bound to the manifest digest. A later documentation-only summary commit and
+observed equal local/remote `main` bind the create-only push receipt. Fresh
+continuation must pass before the next phase executes. Registration, runtime
+admission, security passage, legacy phase passage, production readiness and
+production migration remain false. No phase receipt has been published yet.
