@@ -1354,3 +1354,90 @@ def test_cmake_optional_ninja_compiler_fields_reject_unqualified_or_required_val
     use_cmake_optional_ninja_compiler_fields(case, change=change)
     with pytest.raises(ValueError, match="field|PIC|pic|compiler|variable|binding"):
         case.capture(verifier)
+
+
+def use_source_owned_cmake_exports(case, verifier, monkeypatch, *, configuration="", change=None):
+    project, _, owner = use_actual_cmake_ep_configuration(case, "lz4", verifier, monkeypatch)
+    old = project["archive"]
+    with tarfile.open(old["path"]) as archive:
+        contents = {member.name.split("/", 1)[1]: archive.extractfile(member).read()
+                    for member in archive.getmembers() if member.isfile()}
+    entrypoint = "build/cmake/CMakeLists.txt"
+    contents[entrypoint] += (
+        b'set(LZ4_PKG_INSTALLDIR "${CMAKE_INSTALL_LIBDIR}/cmake/lz4")\n'
+        b'install(TARGETS provider EXPORT lz4Targets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")\n'
+        b'export(EXPORT lz4Targets FILE ${CMAKE_CURRENT_BINARY_DIR}/lz4Targets.cmake NAMESPACE LZ4::)\n')
+    if change != "missing_install_declaration":
+        contents[entrypoint] += (
+            b'install(EXPORT lz4Targets FILE lz4Targets.cmake NAMESPACE LZ4:: '
+            b'DESTINATION ${LZ4_PKG_INSTALLDIR})\n')
+    archive = case.bundle(Path(old["path"]), project["source"], contents)
+    project["archive"] = archive
+    case.archives = [{**row, "sha256": archive["sha256"]} if row["path"] == archive["path"] else row
+                     for row in case.archives]
+    monkeypatch.setitem(verifier.EP_ARCHIVE_SHA256, "lz4", archive["sha256"])
+    for path in (Path(project["urlinfo"]["path"]), owner,
+                 case.arrow / "cpp/cmake_modules/ThirdpartyToolchain.cmake",
+                 case.arrow / "cpp/thirdparty/versions.txt"):
+        path.write_text(path.read_text().replace(old["sha256"], archive["sha256"]))
+    cache = project["binary"] / "CMakeCache.txt"
+    case.put(cache, cache.read_bytes() + (
+        "CMAKE_BUILD_TYPE:STRING=" + configuration + "\nCMAKE_INSTALL_LIBDIR:PATH=lib\n"
+        "CMAKE_INSTALL_PREFIX:PATH=" + str(project["static"].parent.parent) + "\n").encode())
+    destination = "lib/cmake/lz4"
+    folder = hashlib.md5(destination.encode(), usedforsecurity=False).hexdigest()
+    stem = "lz4Targets" if change != "wrong_name" else "unownedTargets"
+    if change == "wrong_digest":
+        folder = "0" * 32
+    suffix = configuration.lower() if configuration else "noconfig"
+    if change == "wrong_configuration":
+        suffix = "debug"
+    paths = [project["binary"] / (stem + ".cmake"),
+             project["binary"] / "CMakeFiles/Export" / folder / (stem + ".cmake"),
+             project["binary"] / "CMakeFiles/Export" / folder / (stem + "-" + suffix + ".cmake")]
+    for path in paths:
+        case.put(path, ("# Generated CMake export: " + path.name + "\n").encode())
+    script = ""
+    for index, path in enumerate(paths[1:]):
+        if change == "unreferenced_install_source" and index == 1:
+            continue
+        installed_source = path if change != "foreign_install_source" else case.root / "foreign" / path.name
+        script += ('file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/' + destination
+                   + '" TYPE FILE FILES "' + str(installed_source) + '")\n')
+    install_script = case.put(project["binary"] / "cmake_install.cmake", script.encode())
+    refresh_lz4_owner(case, owner)
+    return project, paths, record(cache), install_script
+
+
+@pytest.mark.parametrize("configuration", ["", "Release"], ids=["noconfig", "release"])
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_source_owned_cmake_exports_bind_original_declarations_and_install_records(
+        verifier, completed_source_case, tmp_path, monkeypatch, configuration, retained):
+    case = completed_source_case
+    project, paths, cache, install_script = use_source_owned_cmake_exports(
+        case, verifier, monkeypatch, configuration=configuration)
+    attestation = case.publish(verifier, tmp_path / "cmake-export-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    proof = initial["attestation"]["external_projects"]["lz4"]
+    generated = {row["output"]["path"]: row for row in proof["generated_outputs"]}
+    original_cmake = record(project["source"] / "build/cmake/CMakeLists.txt")
+    for index, path in enumerate(paths):
+        row = generated[str(path)]
+        assert row["rule"] == "cmake-export-file-v1"
+        assert row["output"] == record(path)
+        assert original_cmake in row["inputs"] and cache in row["inputs"]
+        if index:
+            assert install_script in row["inputs"]
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["wrong_name", "wrong_digest", "wrong_configuration",
+                                    "unreferenced_install_source", "foreign_install_source",
+                                    "missing_install_declaration"])
+def test_source_owned_cmake_exports_reject_unqualified_names_configurations_and_paths(
+        verifier, completed_source_case, monkeypatch, change):
+    case = completed_source_case
+    use_source_owned_cmake_exports(case, verifier, monkeypatch, change=change)
+    with pytest.raises(ValueError, match="unqualified|export|Export|install|source|configuration"):
+        case.capture(verifier)

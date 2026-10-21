@@ -1194,7 +1194,7 @@ def _cmake_configure_outputs(source, binary, original, evidence, *, entrypoint="
     return declared
 
 
-def _cmake_metadata(relative, source_cmake, version):
+def _cmake_metadata(relative, source_cmake, version, *, allow_source_exports=True):
     fixed = {".ninja_deps", ".ninja_log", "CMakeCache.txt", "build.ninja", "cmake_install.cmake",
              "install_manifest.txt", "CMakeFiles/rules.ninja", "CMakeFiles/InstallScripts.json",
              "CMakeFiles/TargetDirectories.txt", "CMakeFiles/cmake.check_cache",
@@ -1210,12 +1210,80 @@ def _cmake_metadata(relative, source_cmake, version):
         if relative.startswith(prefix) and relative[len(prefix):] in probes:
             return True
     export = re.fullmatch(r"CMakeFiles/Export/[0-9a-f]{32}/([^/]+?)(?:-release)?\.cmake", relative)
-    if export:
+    if export and allow_source_exports:
         # Export filenames/target names must be literally declared by the
         # pinned package CMake source; a directory-wide exemption is forbidden.
         name = export[1]
         return re.search(r"(?i)\b(?:EXPORT|FILE)\s+" + re.escape(name) + r"(?:\.cmake)?\b", source_cmake) is not None
     return False
+
+
+def _lz4_cmake_export_outputs(source, binary, original, entrypoint, cache, evidence):
+    text = _text(original[entrypoint]["data"])
+    declarations = re.findall(r"\b(export|install)\s*\(\s*EXPORT\s+([A-Za-z_][A-Za-z_0-9]*)\s*([^()]*)\)",
+                              text, re.I | re.S)
+    if not declarations:
+        return {}
+    cmake_ref = _source_reference(entrypoint, source, original, evidence)
+    cache_ref = evidence.reference(binary + "/CMakeCache.txt")
+    values = {"CMAKE_CURRENT_BINARY_DIR": binary}
+    if "CMAKE_INSTALL_LIBDIR" in cache:
+        values["CMAKE_INSTALL_LIBDIR"] = cache["CMAKE_INSTALL_LIBDIR"]
+    # Resolve only single literal source assignments, with explicit cycle and
+    # unresolved-variable rejection. This does not evaluate CMake code.
+    literals = {}
+    for key, value in re.findall(r'\bset\(\s*([A-Za-z_][A-Za-z_0-9]*)\s+("[^"\n]*"|[^\s()]+)\s*\)', text):
+        literals.setdefault(key, []).append(value.strip('"'))
+
+    def expand(value, active=()):
+        def replace(match):
+            key = match[1]
+            _require(key not in active, "CMake export destination has a cyclic source variable")
+            if key in values:
+                return values[key]
+            declared = literals.get(key, [])
+            _require(len(declared) == 1, "CMake export destination has an unqualified source variable")
+            return expand(declared[0], (*active, key))
+        result = re.sub(r"\$\{([A-Za-z_][A-Za-z_0-9]*)\}", replace, value)
+        _require("$" not in result, "CMake export destination has an unqualified expression")
+        return result
+
+    install_ref = evidence.reference(binary + "/cmake_install.cmake", optional=True)
+    install_records = [] if install_ref is None else re.findall(
+        r'\bfile\(\s*INSTALL\s+DESTINATION\s+"([^"]+)"\s+TYPE\s+FILE\s+FILES\s+"([^"]+)"\s*\)',
+        _text(evidence.resolver.read(install_ref)))
+    result = {}
+    for command, export_set, arguments in declarations:
+        args = shlex.split(arguments, comments=True)
+        _require(args.count("FILE") <= 1, "CMake export filename declaration is ambiguous")
+        filename = export_set + ".cmake"
+        if "FILE" in args:
+            index = args.index("FILE") + 1
+            _require(index < len(args), "CMake export filename declaration is missing")
+            filename = expand(args[index])
+        if command.lower() == "export":
+            path = _join(binary, filename)
+            _require(posixpath.dirname(path) == binary and path.endswith(".cmake"),
+                     "CMake build-tree export escapes its declared binary directory")
+            result[path] = [cmake_ref, cache_ref]
+            continue
+        _require(re.fullmatch(r"[A-Za-z_0-9.+-]+\.cmake", filename) is not None
+                 and args.count("DESTINATION") == 1,
+                 "CMake install export filename/destination declaration differs")
+        index = args.index("DESTINATION") + 1
+        _require(index < len(args), "CMake install export destination is missing")
+        destination = _relative(expand(args[index]))
+        configuration = cache.get("CMAKE_BUILD_TYPE", "")
+        _require(configuration in {"", "Debug", "Release", "RelWithDebInfo", "MinSizeRel"},
+                 "CMake install export configuration is unqualified")
+        suffix = configuration.lower() if configuration else "noconfig"
+        folder = hashlib.md5(destination.encode(), usedforsecurity=False).hexdigest()
+        prefix = binary + "/CMakeFiles/Export/" + folder + "/"
+        for name in (filename, filename.removesuffix(".cmake") + "-" + suffix + ".cmake"):
+            path = prefix + name
+            if ("${CMAKE_INSTALL_PREFIX}/" + destination, path) in install_records:
+                result[path] = [cmake_ref, cache_ref, install_ref]
+    return result
 
 
 def _cmake_project(name, layout, original, configuration, evidence, toolchain, version, captured):
@@ -1272,6 +1340,8 @@ def _cmake_project(name, layout, original, configuration, evidence, toolchain, v
     _require(cache.get("CMAKE_HOME_DIRECTORY", expected_home) == expected_home
              and cache.get("CMAKE_CACHEFILE_DIR", binary) == binary,
              "ExternalProject actual cache source/binary ownership differs")
+    exports = (_lz4_cmake_export_outputs(source, binary, original, entrypoint, cache, evidence)
+               if name == "lz4" else {})
     cmake_root = cache.get("CMAKE_ROOT")
     if cmake_root:
         for relative in ("CMakeCCompiler.cmake.in", "CMakeCXXCompiler.cmake.in", "CMakeSystem.cmake.in",
@@ -1299,7 +1369,10 @@ def _cmake_project(name, layout, original, configuration, evidence, toolchain, v
             generated.append(_generated_output("cmake-configure-file-v1", path,
                                                [*inputs, *declared[path]], command_record, evidence,
                                                original=original.get(row["relative"])))
-        elif _cmake_metadata(row["relative"], all_cmake, version):
+        elif path in exports:
+            generated.append(_generated_output("cmake-export-file-v1", path,
+                                               [*inputs, *exports[path]], command_record, evidence))
+        elif _cmake_metadata(row["relative"], all_cmake, version, allow_source_exports=name != "lz4"):
             generated.append(_generated_output("cmake-build-metadata-v1", path, inputs, command_record, evidence))
         elif path in executable_outputs or path.removesuffix(".map") in executable_outputs:
             block = executable_outputs.get(path, executable_outputs.get(path.removesuffix(".map")))

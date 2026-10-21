@@ -1042,3 +1042,19 @@ then passed in 8.57 seconds, exit 0 without interruption; execution receipt
 SHA-256 `13c0776d3a7ae78000ec8b679795ac07e8d0880838439bf44b83f544f4c17c6c`.
 Root review SHA-256 `aa6d93a6fecc92404175fdafa14e943a83ac214c1c63631de136f11919c73548`. Actual capture/replay
 and native/application qualification remain required; no runtime was admitted.
+
+## Source-owned LZ4 CMake export metadata
+
+Actual capture next reached LZ4’s `noconfig` install exports and root build-tree
+export. The reader qualifies these exact files from original CMake declarations,
+cache configuration, the destination-derived CMake folder and exact generated
+install-script source paths. Other projects retain their existing behavior.
+Unknown filenames, configurations, destinations and unowned install records
+remain rejected; this adds no directory exemption.
+
+Focused RED recorded eight failures and 12 passes in 1.49 seconds. All 221 tests
+passed in 10.06 seconds, exit 0 without interruption; receipt SHA-256
+`0f88a8ee1f1f5bf18692655e35ca7f7ec106ce28950246240bf4fb279993d271`.
+Root review SHA-256 `0a1a771cf92f942e186ebb9b5ee5e1e123560a634bd6d7436f5169da85e096de`. Actual source capture
+and retained replay remain pending. Independently, native S3 import failed on
+`X509_INFO_free`; source provenance does not clear that runtime failure.
