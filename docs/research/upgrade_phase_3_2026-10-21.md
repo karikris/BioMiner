@@ -7,9 +7,11 @@ SHA-256 `be7e78758322b74adec6e5a7ea820350d0a3946d3111aa5e7b6e78023afa8885`.
 The continuation gate returned `ready` for phase 3.
 
 Unrelated scientific changes remain outside this task's commits and tests.
-The frozen patched phase-2 fallback and active development environment are
-preserved. No production scientific run or hosted-service qualification is
-claimed here.
+This report records successive task evidence. Phase-2 artifacts remain historical
+evidence; later sections record the replacement of affected entrypoints and
+qualification of the current two-patch Arrow 25 fallback. The old environment
+is not a currently safe fallback. No production scientific run or hosted-service
+qualification is claimed here.
 
 ## Task 3.1: explicit list expansion
 
@@ -663,3 +665,190 @@ exited 0 and retained unchanged tested source hashes under
 its test SHA-256 is
 `67c170983cdc7f25c35351ca09bd98f7655b97e086240660f5e0bc9a9b20dca1`.
 These focused results do not replace the pending fresh full-suite prerequisite.
+
+## Qualified replacement pair and registered runtime migration
+
+The timeout correction is committed as
+`e6f32872c2fc113272d484ec1d0fbf64752c8007`, the final task-3.3 implementation
+boundary. Fresh pair 5 completed all 30 build commands in 176.685 seconds.
+Its archived application sources are identical across Polars 1.44.2 and
+2.0.0; both use the unchanged, independently reviewed two-patch Arrow wheel
+`25.0.1+biominer.d601668ee1b9`. The build receipts bind the new source boundary
+without rebuilding or relabelling that unchanged native artifact.
+
+Both runtimes passed all five native cases, including 30 Boolean/control
+observations across the pair, TLS, import orders, installed artifacts and
+checkpoint/resume. The prerequisite semantics and resource checks passed in
+29.24 and 23.59 seconds. The clean archived checkout then passed **3,219 tests
+in 98.25 seconds**, including the unchanged real compiler-descendant regression.
+Native and precheck outer supervisors and runners exited 0 with no interruption.
+All four installed console checks and the four-environment identity audit
+passed. These results supersede pair 4's failed prerequisite; its failure
+receipts remain preserved.
+
+The new shared development environment passed fresh verification and independent
+review. Its editable main checkout retains two unrelated scientific source/test
+deviations; neither is represented as qualified by the clean archived suite.
+The fresh registered-consumer inventory found no consumers or unknown processes
+in its declared readable same-user scope. The reviewed cutover repeated scans
+while holding the activation lock, atomically replaced `.venv`, verified the
+replacement, and retired the two exact old environment directories with mode
+`000`. Both execution probes returned `EACCES`; the final scoped scans remained
+clear. No jobs were killed or restarted. The outer cutover exited 0 in
+152.984 seconds without interruption.
+
+The shared target is `.native-runtime/development/arrow25-pair-5-shared/env`.
+The safe fallback is the immutable Polars-1 generation under
+`phase3/arrow25-pair-5/p1a25/assembly/.native-runtime/generations/qualified/env`
+in the external evidence root. Reopening either retired old environment would
+invalidate the security resolution; historical isolated unsafe pairs remain
+unapproved retained evidence.
+
+All paths below are relative to the external evidence root
+`/home/toffe/.local/state/biominer/upgrades/20261021/`:
+
+| Artifact | SHA-256 |
+|---|---|
+| `phase3/arrow25-pair-5/built-pair.json` | `db7b836d005779420868924d591190f46c3574e61d24546a1136743812f87015` |
+| `phase3/patched25-pair-5-native/paired-native-qualification.json` | `f35b64a1c0032e2f41ab67f8ce62bc327aa832c44efb702231ee7c1ec5b7123d` |
+| `phase3/patched25-pair-5-prechecks/prechecks.json` | `872b40748a6a889281fac8bb72bac5e8505bb9b369eb26534139f73830e0c3cf` |
+| `phase3/security-patched25-pair-5/pair-identity.json` | `22a55cd85d3d9d56760305747fcb972ef3637f26d9016208506856bf31c9da3b` |
+| `phase3/patched25-pair-5-shared/shared-development.json` | `19781eb89b37913f94df844b5e70d93d6dd487a94a64bd00a0fde6cd4dd3c753` |
+| `phase3/patched25-pair-5-cutover/migration.json` | `785a91770c84e315c640e176fff7bb9a5cb097efc04caf3c7b0ef78863127982` |
+| `phase3/patched25-pair-5-cutover-outer/execution.json` | `f815cddce49f4ccb82778361ff06541a1afdeff339f6a8a312025cb307837b3b` |
+| `phase3/patched25-pair-5-independent-review/security-evidence-review.json` | `d3f2f372cf4e12a51acebcbfd0a53115c3583deba8f9768d39f68900ef45bc47` |
+
+This is registered-local runtime evidence, not host-wide vulnerability clearance
+or coverage of other-user mappings, remote launchers or future manual launches.
+The final security report and official phase checks are recorded below;
+the external push handshake remains required. Live PostgreSQL/S3, Arrow 26,
+performance and production migration remain later phases; no scientific release
+is implied.
+
+The security finalizer then exited 0 with supervisor/runner exit 0 and no
+interruption. Its `phase3/security-patched25-pair-5-final/security-final.json`
+has SHA-256
+`7017b267c28212d70cc310b4f966cf96413b3aa7011573a8b06588ac525d2a31`.
+It retains all ten finding IDs and their original scopes, plus the separate
+lxml attestation gap, with evidence-bound resolved dispositions. The sliced
+Boolean correctness defect is retained as a prerequisite; no additional CVE or
+GHSA assignment is invented. Package/advisory coverage limits and native-SBOM
+limits remain explicit. Independent final security review is
+`phase3/patched25-pair-5-independent-review/final-security-review.json`, SHA-256
+`ef255e6967a77a7d82303fcd3cfa7043d9cc8bc91d8b4d9758858bcdd15afef6`.
+
+## Official gate interrupted by exhausted temporary storage
+
+The first official run at the corrected `e6f32872` boundary passed semantics
+in 34.70 seconds and resources in 23.67 seconds. Its full suite stopped with
+**267 failed, 2,189 passed, 28 errors in 82.63 seconds**, followed by pytest's
+internal `OSError: [Errno 28] No space left on device` while flushing output.
+The 36 GiB `/tmp` tmpfs was full. Individual failure details could not be
+rendered, so those counts do not establish 267 independent source regressions.
+The outer run exited 1 after 187.688 seconds; security did not run and no
+passing `phase.json` was produced. The failed outer receipt is
+`phase3/patched25-timeout-gate-run-1-outer/execution.json`, SHA-256
+`0b62c06004557731739707f8ad65ecbd670f14f88d4119be6518e2351d336ac0`.
+
+The retained diagnosis is
+`phase3/official-gate-tmpfs-diagnosis-1/diagnosis.json`, SHA-256
+`fd9064373f5446ff89af5631ffb434201b9844e15b9808b0e78c10925edbe2ef`.
+Independent blocked review is
+`phase3/patched25-pair-5-independent-review/official-gate-enospc-blocked-review.json`,
+SHA-256 `9e1f1845378593504c59f7d0342a1bde3c69a6342e3160764f56fbf2a8ded80a`.
+
+Moving pytest scratch outside `/tmp` would conflict with the native output
+policy; placing generated test files inside the archived checkout would conflict
+with its cleanliness check. Both checks remain enforced. Recovery therefore
+archives inactive, successful-test scratch owned by this task before removing
+any of it. Ownership and reference inspection identified six eligible roots
+without durable hash references into their contents; a failed-test root was
+explicitly excluded. The current failed run, referenced evidence and other
+sessions' temporary directories remain preserved. A fresh complete official
+run is required after verified capacity recovery; the failed run is not reused
+as passing evidence.
+
+The first scratch archival attempt stopped at its post-archive process check,
+without deleting any source files. That operator did not persist the rejected
+scan, so the original failure cannot be classified as an active consumer or an
+unreadable process. A later clear scan does not resolve that historical gap.
+The successor persists every sanitized scan before asserting, raises on traversal
+errors, and verifies owner read/search permission on every archived directory.
+It completed all six archives with supervisor/runner exit 0 and no interruption;
+its aggregate is `phase3/tmp-reclamation-2/archives.json`, SHA-256
+`d78a62675f9661ba90c6a4523a4cb2156ffdb3a10420e99ac4601321df0ed8c6`.
+The first failed attempt and its partial archives remain preserved separately.
+
+Independent archive and cleanup reviews passed before the exact six-root
+removal. Cleanup then exited 0 in 89.45 seconds with no interruption, retained
+the verified archives, and recovered 6,118,596,608 bytes available in `/tmp`.
+The independent actual-cleanup review confirms all six removals and preserves
+the excluded failed root and current failed-gate scratch. Its receipt is
+`phase3/tmp-reclamation-2/independent-cleanup-actual-review.json`, SHA-256
+`589a7443f8544f5a66bc41077f1c50c7551e1c10989476feb6b5b1059533a29f`.
+The actual removal receipt is `phase3/tmp-reclamation-2/cleanup/finished.json`,
+SHA-256 `70b454bf667f754b97abe140e276c27da5f01845e18a23125d8c6c9347415a95`. The retry requires a fresh
+4 GiB capacity observation before preparation and again immediately before
+execution; capacity is not reserved against concurrent writers. The tested
+source, native output policy, four check commands and security finding IDs
+remain unchanged.
+
+## Successful official phase-3 retry
+
+The fresh official run completed all four mandatory checks against the clean
+pair-5 P2 source snapshot at `e6f32872c2fc113272d484ec1d0fbf64752c8007`.
+Its emitted `python-phase3` launcher freshly verified the permanent runtime
+before each check and retained the unchanged isolated environment and supervisor.
+No partial result from the failed run was replayed.
+
+| Check / exact arguments after `python-phase3` | Actual result |
+|---|---|
+| `-m pytest -q scripts/upgrade_checks/test_polars_semantics_cases.py::test_paired_polars_versions_and_public_artifacts` | 1 passed in 48.11 seconds; no logical differences |
+| `-m pytest -q scripts/upgrade_checks/test_polars_resource_cases.py::test_polars_engine_spill_and_disk_exhaustion` | 1 passed in 23.16 seconds |
+| `-m pytest -q` | 3,219 passed in 95.24 seconds |
+| Pinned `read_security.py` with exact report, context and predecessor hashes | exit 0; ten finding IDs and one gap preserved with reviewed resolutions |
+
+The actual wrapper and security argv are bound by
+`phase3/patched25-capacity-gate-prepared-1/plan-reviewed.json`, SHA-256
+`e703827a03a804eb0ef2f740c015de7dfc02f30fb08d30da2ac4ca3be2568d5c`.
+The whole run finished in 247.912 seconds with supervisor and runner exit 0
+and no interruption. Its outer receipt is
+`phase3/patched25-capacity-gate-run-1-outer/execution.json`, SHA-256
+`990a1deebd689404087f4ff5aab466dcd5ee71253b63a99b33025ebd0ca99a78`.
+The immediately preceding capacity check observed 6,118,596,608 bytes free.
+
+The result candidate binds all bounded semantics/resource outputs, direct nested
+references, four command receipts/logs, capacity evidence and actual outer
+execution: `phase3/patched25-capacity-gate-run-1/phase.with-outputs.json`,
+SHA-256 `20e39bbb7ea2563423c5688c6ac12f93601b31e6b1b9874e24f12946701dfd34`
+with 628 unique artifact references. The original failed run, unclassified first
+archive failure, their partial artifacts and the successful recovery remain
+separate immutable evidence.
+
+| Task | Implementation commit |
+|---|---|
+| 3.1 | `18bc040d4dcabfbfc26b3c575cb6380bed86460c` |
+| 3.2 | `6255b0a26a88139a240e3790129f6813ead7ac34` |
+| 3.3, including corrective ancestry | `e6f32872c2fc113272d484ec1d0fbf64752c8007` |
+
+These checks establish the scoped Polars-2/patched-Arrow-25 compatibility and
+runtime security evidence. Arrow 26, the four-runtime matrix, live PostgreSQL/S3
+qualification, three-run performance comparison and final migration remain
+phases 4–6. No production scientific release or universal security clearance
+is claimed.
+
+Independent post-run spec and quality reviews approved the actual results with
+no findings. Their receipts have SHA-256
+`ba2b34f35440b2a47d3e9e25aec8d98726cff206d32d622c70b9b1777280c043`
+and `64f5eb80e79d0ca91078a1246d5b329316153d5e55ee0a418194b621f5886716`,
+respectively, beneath the run's `independent-post-run-reviews/` directory.
+The unchanged phase validator accepted the final reviewed candidate at
+`phase3/patched25-capacity-gate-run-1/phase.final-reviewed.json`, SHA-256
+`56e4a74237426298bc4398a51020db1eeb2a5a2d9dfc3eb50c2654175e18a0f5`.
+
+This report and its curated provenance form a separate documentation-only phase
+boundary. The create-only external `phase-3-pushed.json` handshake must bind the
+actual resulting main commit and observed remote SHA after push; its digest
+cannot be embedded here without circularity. Phase 4 implementation remains
+conditional on the existing continuation validator returning `ready` for that
+actual handshake. No manual success receipt substitutes for these checks.
