@@ -8,6 +8,7 @@ runtime checks is admitted. No command updates an existing environment.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import email
 import hashlib
 import importlib.util
@@ -158,30 +159,264 @@ ARROW_NETWORK_COMPONENTS = {
 ARROW_NETWORK_ZLIB_PATCH_SHA256 = '110ff14375733173d8aa54574473424fbd7dfe4b81f1ca34a759c6fe14b15b14'
 ARROW_NETWORK_ZLIB_ORIGINAL_SHA256 = '2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04'
 ARROW_NETWORK_ZLIB_PATCHED_SHA256 = '31d0da140edf382b82b13e2d87a22f59e158d9014ee026459e01cf437d0ab07d'
+# New cohort schemas retain the preceding never-admitted family pins unchanged.
+ARROW26_COHORT_FAMILY = 'arrow26-integrated-private-network-v3'
+ARROW25_COHORT_FAMILY = 'arrow25-two-compute-patches-private-network-v2'
+ARROW_COHORT_FAMILIES = {ARROW26_COHORT_FAMILY, ARROW25_COHORT_FAMILY}
+ARROW_SOURCE_ATTESTER_SHA256 = None
+ARROW_COHORT_METADATA_SHA256 = '584b47d20f2ec9ce3d3f98ed4e616c9b866de96d5033cd8f8406060b7d88a69f'
+ARROW_SDK_COHORT = {'aws_sdk_cpp': {'variable': 'AWSSDK',
+                 'version': '1.11.914',
+                 'build_version': 'd207a37ecb8dc33b5e131d0d59843d264b7f7e86',
+                 'commit': 'd207a37ecb8dc33b5e131d0d59843d264b7f7e86',
+                 'sha256': '108382fed71e70ada73d4aaa45e0ba54777f7eca6bbd44ac24b9af9ef54f069e',
+                 'filename': 'aws-sdk-cpp-d207a37ecb8dc33b5e131d0d59843d264b7f7e86.tar.gz',
+                 'url': 'https://github.com/aws/aws-sdk-cpp/archive/d207a37ecb8dc33b5e131d0d59843d264b7f7e86.tar.gz',
+                 'env': 'ARROW_AWSSDK_URL',
+                 'old_version': '1.11.778',
+                 'old_sha256': '06371849792f1a8633c3e0592a17b4700f39c748ad374f4e9a6592739ecc4d9c'},
+ 'aws_crt_cpp': {'variable': 'AWS_CRT_CPP',
+                 'version': '0.43.8',
+                 'build_version': '9c319786d1d83d5ace6a9de817dcfe1861003609',
+                 'commit': '9c319786d1d83d5ace6a9de817dcfe1861003609',
+                 'sha256': 'f107357efa7d6b9be783d96d49cdaf000fe881417c431ae9fe27faf1bb55f431',
+                 'filename': 'aws-crt-cpp-9c319786d1d83d5ace6a9de817dcfe1861003609.tar.gz',
+                 'url': 'https://github.com/awslabs/aws-crt-cpp/archive/9c319786d1d83d5ace6a9de817dcfe1861003609.tar.gz',
+                 'env': 'ARROW_AWS_CRT_CPP_URL',
+                 'old_version': 'v0.38.0',
+                 'old_sha256': 'f57b82f0a9e6890e4d47aa1c48b9324b5beb5b58000715c4c6ef9f147be13891'},
+ 'aws_c_auth': {'variable': 'AWS_C_AUTH',
+                'version': '4b5d524bf1a511b05e0fffe5bdc51800770b9427',
+                'build_version': '4b5d524bf1a511b05e0fffe5bdc51800770b9427',
+                'commit': '4b5d524bf1a511b05e0fffe5bdc51800770b9427',
+                'sha256': 'b4f6690b382abe049d543804f40230e667a95a18f64506ef7647925e8c6b9b67',
+                'filename': 'aws-c-auth-4b5d524bf1a511b05e0fffe5bdc51800770b9427.tar.gz',
+                'url': 'https://github.com/awslabs/aws-c-auth/archive/4b5d524bf1a511b05e0fffe5bdc51800770b9427.tar.gz',
+                'env': 'ARROW_AWS_C_AUTH_URL',
+                'old_version': 'v0.10.1',
+                'old_sha256': '85d737f0f735256f1931e85e4cadbe228d88698f7b59a9b390b49ef5d0778a43'},
+ 'aws_c_cal': {'variable': 'AWS_C_CAL',
+               'version': '8aa2a48a09f93c65d4cf06388e143a6584de6321',
+               'build_version': '8aa2a48a09f93c65d4cf06388e143a6584de6321',
+               'commit': '8aa2a48a09f93c65d4cf06388e143a6584de6321',
+               'sha256': '29706ab10a4d95a74db278925b82c85077c08224c0efe837841d2354555c8817',
+               'filename': 'aws-c-cal-8aa2a48a09f93c65d4cf06388e143a6584de6321.tar.gz',
+               'url': 'https://github.com/awslabs/aws-c-cal/archive/8aa2a48a09f93c65d4cf06388e143a6584de6321.tar.gz',
+               'env': 'ARROW_AWS_C_CAL_URL',
+               'old_version': 'v0.9.13',
+               'old_sha256': '80b7c6087b0af461b4483e4c9483aea2e0dac5d9fb2289b057159ea6032409e1'},
+ 'aws_c_common': {'variable': 'AWS_C_COMMON',
+                  'version': 'f7d471b1feaea9a310851672580f9ac7e031cfc0',
+                  'build_version': 'f7d471b1feaea9a310851672580f9ac7e031cfc0',
+                  'commit': 'f7d471b1feaea9a310851672580f9ac7e031cfc0',
+                  'sha256': 'a87a89fa6678fda59dd66ea9246e70d837bf71ecec39829ec712e6863d1453e4',
+                  'filename': 'aws-c-common-f7d471b1feaea9a310851672580f9ac7e031cfc0.tar.gz',
+                  'url': 'https://github.com/awslabs/aws-c-common/archive/f7d471b1feaea9a310851672580f9ac7e031cfc0.tar.gz',
+                  'env': 'ARROW_AWS_C_COMMON_URL',
+                  'old_version': 'v0.12.6',
+                  'old_sha256': '138822ecdcaff1d702f37d4751f245847d088592724921cc6bf61c232b198d6b'},
+ 'aws_c_compression': {'variable': 'AWS_C_COMPRESSION',
+                       'version': 'd8264e64f698341eb03039b96b4f44702a9b3f83',
+                       'build_version': 'd8264e64f698341eb03039b96b4f44702a9b3f83',
+                       'commit': 'd8264e64f698341eb03039b96b4f44702a9b3f83',
+                       'sha256': '537971fe42e989b638e0f436683357ed3d07f07b06b910b1c37ab3a8094bb8fd',
+                       'filename': 'aws-c-compression-d8264e64f698341eb03039b96b4f44702a9b3f83.tar.gz',
+                       'url': 'https://github.com/awslabs/aws-c-compression/archive/d8264e64f698341eb03039b96b4f44702a9b3f83.tar.gz',
+                       'env': 'ARROW_AWS_C_COMPRESSION_URL',
+                       'old_version': 'v0.3.2',
+                       'old_sha256': 'f93f5a5d8b3fee3a6d97b14ba279efacd4d4016ef9cc7dc4be7d43519ecfbe93'},
+ 'aws_c_event_stream': {'variable': 'AWS_C_EVENT_STREAM',
+                        'version': '51bef3c44e1058b1689751539170b2e0f589ccdb',
+                        'build_version': '51bef3c44e1058b1689751539170b2e0f589ccdb',
+                        'commit': '51bef3c44e1058b1689751539170b2e0f589ccdb',
+                        'sha256': 'b890d4940957d1ddade1a9d7de4adc37b7cb98dfdfdfec7436527fec8cb558df',
+                        'filename': 'aws-c-event-stream-51bef3c44e1058b1689751539170b2e0f589ccdb.tar.gz',
+                        'url': 'https://github.com/awslabs/aws-c-event-stream/archive/51bef3c44e1058b1689751539170b2e0f589ccdb.tar.gz',
+                        'env': 'ARROW_AWS_C_EVENT_STREAM_URL',
+                        'old_version': 'v0.7.0',
+                        'old_sha256': '88835b4c78462547917f622fd9dda45c991b7e356d9c07e2f0537d4d97fbd4fb'},
+ 'aws_c_http': {'variable': 'AWS_C_HTTP',
+                'version': '8aefd899fc3210bfd0e3fd414011a3cb708bf6e4',
+                'build_version': '8aefd899fc3210bfd0e3fd414011a3cb708bf6e4',
+                'commit': '8aefd899fc3210bfd0e3fd414011a3cb708bf6e4',
+                'sha256': '61b1770e2e3a2bf046005cbfa8e26d621d8f266f05d03589ebee36bb4a0ac39f',
+                'filename': 'aws-c-http-8aefd899fc3210bfd0e3fd414011a3cb708bf6e4.tar.gz',
+                'url': 'https://github.com/awslabs/aws-c-http/archive/8aefd899fc3210bfd0e3fd414011a3cb708bf6e4.tar.gz',
+                'env': 'ARROW_AWS_C_HTTP_URL',
+                'old_version': 'v0.10.13',
+                'old_sha256': 'd8352e7a1fb1996694a4dc31219ce03452882abf8d0858c104727f975e11b9c7'},
+ 'aws_c_io': {'variable': 'AWS_C_IO',
+              'version': '28e4eb351a536daf1627bf69279e50671f7729b5',
+              'build_version': '28e4eb351a536daf1627bf69279e50671f7729b5',
+              'commit': '28e4eb351a536daf1627bf69279e50671f7729b5',
+              'sha256': 'ea51cbe20981ed34b7a8c01a60c848e4ccb716a29cd740ead07ffd61be5169c3',
+              'filename': 'aws-c-io-28e4eb351a536daf1627bf69279e50671f7729b5.tar.gz',
+              'url': 'https://github.com/awslabs/aws-c-io/archive/28e4eb351a536daf1627bf69279e50671f7729b5.tar.gz',
+              'env': 'ARROW_AWS_C_IO_URL',
+              'old_version': 'v0.26.3',
+              'old_sha256': '521fd0848fca661130bbb7278a414d7a38bdcb9bc8ffa89f6660d84e5838a303'},
+ 'aws_c_mqtt': {'variable': 'AWS_C_MQTT',
+                'version': 'e35b9ca3f9fcbf1a972c831c5e79046ce56959d1',
+                'build_version': 'e35b9ca3f9fcbf1a972c831c5e79046ce56959d1',
+                'commit': 'e35b9ca3f9fcbf1a972c831c5e79046ce56959d1',
+                'sha256': '54d1987ce06eb7b39faace854818e9322d3df79cb310ada350beca0b12cb89cc',
+                'filename': 'aws-c-mqtt-e35b9ca3f9fcbf1a972c831c5e79046ce56959d1.tar.gz',
+                'url': 'https://github.com/awslabs/aws-c-mqtt/archive/e35b9ca3f9fcbf1a972c831c5e79046ce56959d1.tar.gz',
+                'env': 'ARROW_AWS_C_MQTT_URL',
+                'old_version': 'v0.15.2',
+                'old_sha256': '66f3f5edff4ad1f765a86d3342b6017d0f29f950c1c24f8c1edacdc895202edc'},
+ 'aws_c_s3': {'variable': 'AWS_C_S3',
+              'version': '226c3e6937e3d5f7db9e10651f7bd20575e98187',
+              'build_version': '226c3e6937e3d5f7db9e10651f7bd20575e98187',
+              'commit': '226c3e6937e3d5f7db9e10651f7bd20575e98187',
+              'sha256': 'a8f33816bf7aff38467fb15ca233a33a9113be78dad47c8a7ee30d323b42ba74',
+              'filename': 'aws-c-s3-226c3e6937e3d5f7db9e10651f7bd20575e98187.tar.gz',
+              'url': 'https://github.com/awslabs/aws-c-s3/archive/226c3e6937e3d5f7db9e10651f7bd20575e98187.tar.gz',
+              'env': 'ARROW_AWS_C_S3_URL',
+              'old_version': 'v0.12.0',
+              'old_sha256': '1a8a8ceda0585d52028a1f3daa5861f924e7d8d2f6a17bec05813dc0b74d6eed'},
+ 'aws_c_sdkutils': {'variable': 'AWS_C_SDKUTILS',
+                    'version': 'a1cc19f53b63658f1b1400b36f199eafeeb895a6',
+                    'build_version': 'a1cc19f53b63658f1b1400b36f199eafeeb895a6',
+                    'commit': 'a1cc19f53b63658f1b1400b36f199eafeeb895a6',
+                    'sha256': 'f8ef9e93b30f9833d9c9ea474110c8fa2d29fd78b885546b07e68558ece3bb1c',
+                    'filename': 'aws-c-sdkutils-a1cc19f53b63658f1b1400b36f199eafeeb895a6.tar.gz',
+                    'url': 'https://github.com/awslabs/aws-c-sdkutils/archive/a1cc19f53b63658f1b1400b36f199eafeeb895a6.tar.gz',
+                    'env': 'ARROW_AWS_C_SDKUTILS_URL',
+                    'old_version': 'v0.2.4',
+                    'old_sha256': '493cbed4fa57e0d4622fcff044e11305eb4fc12445f32c8861025597939175fc'},
+ 'aws_checksums': {'variable': 'AWS_CHECKSUMS',
+                   'version': '1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e',
+                   'build_version': '1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e',
+                   'commit': '1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e',
+                   'sha256': 'c58d8c5319319dcade0926da44ad12effecb21372983e22835a657a32f03c9c9',
+                   'filename': 'aws-checksums-1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e.tar.gz',
+                   'url': 'https://github.com/awslabs/aws-checksums/archive/1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e.tar.gz',
+                   'env': 'ARROW_AWS_CHECKSUMS_URL',
+                   'old_version': 'v0.2.10',
+                   'old_sha256': 'cb6509f75e42ee25c372a6d379e8582ce5179e5335183842e808f7d8abb0c314'},
+ 's2n_tls': {'variable': 'S2N_TLS',
+             'version': '1.7.12',
+             'build_version': '6459002cd61e4bf3bbc53db23f068b21da9ff6bd',
+             'commit': '6459002cd61e4bf3bbc53db23f068b21da9ff6bd',
+             'sha256': '94a57c4f4713cc20088b723bcdf0bb254e32a559ffcbed583e67fe3d8ddec442',
+             'filename': 's2n-tls-6459002cd61e4bf3bbc53db23f068b21da9ff6bd.tar.gz',
+             'url': 'https://github.com/aws/s2n-tls/archive/6459002cd61e4bf3bbc53db23f068b21da9ff6bd.tar.gz',
+             'env': 'ARROW_S2N_TLS_URL',
+             'old_version': 'v1.7.0',
+             'old_sha256': 'a6e8228e238239bb3c17b1eda3ed702bcbb2eaebc792eac4d754cc5619b0ea06'},
+ 'thrift': {'variable': 'THRIFT',
+            'version': '0.25.0',
+            'build_version': '0.25.0',
+            'commit': '27e8a425ffb498e190df3a12e239326bf5ba9ed6',
+            'sha256': '66da4707214c54c94bac082103dc67adaf9e08925662700f269170a7b534b214',
+            'filename': 'thrift-27e8a425ffb498e190df3a12e239326bf5ba9ed6.tar.gz',
+            'url': 'https://www.apache.org/dyn/closer.lua/thrift/0.25.0/thrift-0.25.0.tar.gz?action=download',
+            'env': 'ARROW_THRIFT_URL',
+            'old_version': '0.22.0',
+            'old_sha256': '794a0e455787960d9f27ab92c38e34da27e8deeda7a5db0e59dc64a00df8a1e5'},
+ 'grpc': {'variable': 'GRPC',
+          'version': '1.83.1',
+          'build_version': 'v1.83.1',
+          'commit': 'aae267021b1ac256f8b9038d0ef528c3798cc137',
+          'sha256': '60caa8397426d8a500e3e57ab6a49d1cb5aa62a36f2591eb9da3d77fa38ad8c9',
+          'filename': 'grpc-v1.83.1.tar.gz',
+          'url': 'https://github.com/grpc/grpc/archive/v1.83.1.tar.gz',
+          'env': 'ARROW_GRPC_URL',
+          'old_version': 'v1.76.0',
+          'old_sha256': '0af37b800953130b47c075b56683ee60bdc3eda3c37fc6004193f5b569758204'},
+ 'protobuf': {'variable': 'PROTOBUF',
+              'version': '35.1',
+              'build_version': 'v35.1',
+              'commit': '35cd01f9fe9afbeea38cc7b979a3b6bfcde82c03',
+              'sha256': 'f0b6838e7522a8da96126d487068c959bc624926368f3024ac8fd03abd0a1ac4',
+              'filename': 'protobuf-35.1.tar.gz',
+              'url': 'https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protobuf-35.1.tar.gz',
+              'env': 'ARROW_PROTOBUF_URL',
+              'old_version': 'v31.1',
+              'old_sha256': '12bfd76d27b9ac3d65c00966901609e020481b9474ef75c7ff4601ac06fa0b82'},
+ 'absl': {'variable': 'ABSL',
+          'version': '20250512.1',
+          'build_version': '20250512.1',
+          'commit': '76bb24329e8bf5f39704eb10d21b9a80befa7c81',
+          'sha256': '9b7a064305e9fd94d124ffa6cc358592eb42b5da588fb4e07d09254aa40086db',
+          'filename': 'absl-20250512.1.tar.gz',
+          'url': 'https://github.com/abseil/abseil-cpp/archive/20250512.1.tar.gz',
+          'env': 'ARROW_ABSL_URL',
+          'old_version': '20250127.0',
+          'old_sha256': '16242f394245627e508ec6bb296b433c90f8d914f73b9c026fddb905e27276e8'},
+ 'cares': {'variable': 'CARES',
+           'version': '1.34.9',
+           'build_version': '1.34.9',
+           'commit': 'bc91829cce983a35ec01f5dbc05465858a3df469',
+           'sha256': '9364b70a12eb59a06830fb488d9357f90100dff0d98b23ea3593a183d43e6f2f',
+           'filename': 'c-ares-1.34.9.tar.gz',
+           'url': 'https://github.com/c-ares/c-ares/releases/download/v1.34.9/c-ares-1.34.9.tar.gz',
+           'env': 'ARROW_CARES_URL',
+           'old_version': '1.34.6',
+           'old_sha256': '912dd7cc3b3e8a79c52fd7fb9c0f4ecf0aaa73e45efda880266a2d6e26b84ef5'},
+ 'rapidjson': {'variable': 'RAPIDJSON',
+               'version': '24b5e7a8b27f42fa16b96fc70aade9106cf7102f',
+               'build_version': '24b5e7a8b27f42fa16b96fc70aade9106cf7102f',
+               'commit': '24b5e7a8b27f42fa16b96fc70aade9106cf7102f',
+               'sha256': '2d2601a82d2d3b7e143a3c8d43ef616671391034bc46891a9816b79cf2d3e7a8',
+               'filename': 'rapidjson-24b5e7a8b27f42fa16b96fc70aade9106cf7102f.tar.gz',
+               'url': 'https://github.com/Tencent/rapidjson/archive/24b5e7a8b27f42fa16b96fc70aade9106cf7102f.tar.gz',
+               'env': 'ARROW_RAPIDJSON_URL',
+               'old_version': '232389d4f1012dddec4ef84861face2d2ba85709',
+               'old_sha256': 'b9290a9a6d444c8e049bd589ab804e0ccf2b05dc5984a19ed5ae75d090064806'},
+ 'jemalloc': {'variable': 'JEMALLOC',
+              'version': '5.3.1',
+              'build_version': '5.3.1',
+              'commit': '81034ce1f1373e37dc865038e1bc8eeecf559ce8',
+              'sha256': '3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92',
+              'filename': 'jemalloc-5.3.1.tar.bz2',
+              'url': 'https://github.com/jemalloc/jemalloc/releases/download/5.3.1/jemalloc-5.3.1.tar.bz2',
+              'env': 'ARROW_JEMALLOC_URL',
+              'old_version': '5.3.0',
+              'old_sha256': '2db82d1e7119df3e71b7640219b6dfe84789bc0537983c3b7ac4f7189aecfeaa'}}
+ARROW26_COHORT_BUILD_RECEIPT_SHA256 = None
+ARROW26_COHORT_ATTESTATION_SHA256 = None
+ARROW26_COHORT_SOURCE_REVISION = ARROW26_SOURCE_REVISION
+ARROW26_COHORT_ARCHIVE_SHA256 = ARROW26_ARCHIVE_SHA256
+ARROW26_COHORT_RECIPE_SHA256 = '1bc69557acd83f150040f5001fd8243b6bcf98250023990e6d22e179cf6264b1'
+ARROW26_COHORT_TRANSFORMATIONS = None
+ARROW26_COHORT_DEPENDENCIES = {**ARROW26_DEPENDENCIES, **ARROW_SDK_COHORT}
+ARROW25_COHORT_BUILD_RECEIPT_SHA256 = None
+ARROW25_COHORT_ATTESTATION_SHA256 = None
+ARROW25_COHORT_SOURCE_REVISION = ARROW25_NETWORK_SOURCE_REVISION
+ARROW25_COHORT_ARCHIVE_SHA256 = ARROW25_NETWORK_ARCHIVE_SHA256
+ARROW25_COHORT_RECIPE_SHA256 = '4f7df429cc94697f155b7e252a8d0241225b1ea5800319f44bb6fb7b08da9d9b'
+ARROW25_COHORT_TRANSFORMATIONS = None
+ARROW25_COHORT_DEPENDENCIES = {**ARROW25_NETWORK_DEPENDENCIES, **ARROW_SDK_COHORT}
 ARROW_PRIVATE_FAMILIES = {
-    ARROW26_PRIVATE_FAMILY: ('Arrow 26', 'ARROW26', '26.0.0', 'arrow26_build_receipt'),
-    ARROW25_NETWORK_FAMILY: ('Arrow 25', 'ARROW25_NETWORK', '25.0.1', 'arrow25_network_build_receipt'),
+    ARROW26_PRIVATE_FAMILY: ('Arrow 26', 'ARROW26', '26.0.0', 'arrow26_build_receipt', '26'),
+    ARROW25_NETWORK_FAMILY: ('Arrow 25', 'ARROW25_NETWORK', '25.0.1', 'arrow25_network_build_receipt', '25'),
+    ARROW26_COHORT_FAMILY: ('Arrow 26 cohort', 'ARROW26_COHORT', '26.0.0', 'arrow26_cohort_build_receipt', '26'),
+    ARROW25_COHORT_FAMILY: ('Arrow 25 cohort', 'ARROW25_COHORT', '25.0.1', 'arrow25_cohort_build_receipt', '25'),
 }
 
 
 def _arrow_private_pins(family):
     if family not in ARROW_PRIVATE_FAMILIES:
         raise ProfileError('unreviewed private Arrow family')
-    label, prefix, version, raw_field = ARROW_PRIVATE_FAMILIES[family]
-    return {'label': label, 'version': version, 'raw_field': raw_field,
+    label, prefix, version, raw_field, schema_kind = ARROW_PRIVATE_FAMILIES[family]
+    return {'label': label, 'version': version, 'raw_field': raw_field, 'schema_kind': schema_kind,
+            'requires_source_attestation': family in ARROW_COHORT_FAMILIES,
+            'attestation_sha256': globals()[prefix + '_ATTESTATION_SHA256'] if family in ARROW_COHORT_FAMILIES else None,
             **{name: globals()[prefix + '_' + suffix] for name, suffix in (
                 ('source_revision', 'SOURCE_REVISION'), ('archive_sha256', 'ARCHIVE_SHA256'),
                 ('recipe_sha256', 'RECIPE_SHA256'), ('transformations', 'TRANSFORMATIONS'),
                 ('dependencies', 'DEPENDENCIES'), ('raw_sha256', 'BUILD_RECEIPT_SHA256'))},
-            'sources': ARROW26_INTEGRATED_SOURCES if family == ARROW26_PRIVATE_FAMILY else ARROW25_NETWORK_SOURCES}
+            'sources': ARROW26_INTEGRATED_SOURCES if schema_kind == '26' else ARROW25_NETWORK_SOURCES}
 
 
 def _arrow_private_toolchain(raw, family):
-    return raw.get('toolchain') if family == ARROW26_PRIVATE_FAMILY else raw.get('builder', {}).get('toolchain')
+    return raw.get('toolchain') if _arrow_private_pins(family)['schema_kind'] == '26' else raw.get('builder', {}).get('toolchain')
 
 
 def _arrow_private_effective_versions(raw, family):
-    if family == ARROW26_PRIVATE_FAMILY:
+    if _arrow_private_pins(family)['schema_kind'] == '26':
         return raw.get('effective_versions')
     return {'pyarrow': raw.get('version'), 'openssl': raw.get('openssl', {}).get('version'),
             **{key: item.get('version') for key, item in raw.get('dependencies', {}).items()},
@@ -648,7 +883,120 @@ def _arrow_network_evidence(raw, manifest, pins, take, read, tree, rows, require
     return network
 
 
-def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retained_inputs=None) -> list[dict]:
+def _arrow_retained_symlinks(inventory, label, require):
+    """Resolve inventory links component by component without historical I/O."""
+    directories = set()
+    for name in inventory:
+        parts = name.split('/')
+        require(all(part not in ('', '.', '..') for part in parts), label + ' has unsafe symlink paths')
+        directories.update('/'.join(parts[:number]) for number in range(1, len(parts)))
+    for name in directories:
+        row = inventory.get(name)
+        require(row is None or row.get('type', 'file') == 'directory',
+                label + ' source tree has a non-directory inventory parent')
+    for name, row in inventory.items():
+        if row.get('type', 'file') != 'symlink':
+            continue
+        pending, resolved, active = deque(name.split('/')), [], set()
+        while pending:
+            component = pending.popleft()
+            if isinstance(component, tuple):
+                active.remove(component[1])
+                continue
+            if component in ('', '.'):
+                continue
+            if component == '..':
+                require(bool(resolved), label + ' symlink chain escapes source tree')
+                resolved.pop()
+                continue
+            candidate = '/'.join([*resolved, component])
+            target_row = inventory.get(candidate)
+            kind = target_row.get('type', 'file') if target_row is not None else 'directory'
+            if kind == 'symlink':
+                target = target_row.get('target')
+                require(isinstance(target, str) and bool(target) and not target.startswith('/')
+                        and '\\' not in target and '\x00' not in target,
+                        label + ' symlink target is unsafe')
+                require(candidate not in active, label + ' symlink chain is cyclic')
+                active.add(candidate)
+                # Expand links before later '..' components; normalizing a
+                # whole target first would discard directory-link semantics.
+                pending.extendleft(reversed([*target.split('/'), ('complete', candidate)]))
+            else:
+                # Preserve direct-mode handling of dangling in-root targets;
+                # source/archive equality is checked independently.
+                resolved.append(component)
+
+
+def _arrow_sdk_source_evidence(raw, family, pins, manifest, selected, attestation,
+                               retained_inputs, take, read, tree, rows, require):
+    """Verify a separately reviewed proof without rewriting frozen build history."""
+    require(isinstance(pins['attestation_sha256'], str)
+            and isinstance(ARROW_SOURCE_ATTESTER_SHA256, str),
+            'source attestation and verifier review pins are pending')
+    document = read(attestation, 'source attestation', pins['attestation_sha256'])
+    require(document.get('schema_version') == 1
+            and document.get('kind') == 'bundled_native_source_attestation'
+            and document.get('status') == 'source_attested' and document.get('ready') is False
+            and document.get('schema_kind') == pins['schema_kind']
+            and document.get('source_policy') == family,
+            'source attestation has the wrong family or status')
+    subject = document.get('subject')
+    require(isinstance(subject, dict), 'source attestation subject is missing')
+    require(isinstance(pins['raw_sha256'], str), 'completed raw receipt review pin is pending')
+    require(read(subject.get('raw_receipt'), 'attested raw receipt', pins['raw_sha256']) == raw,
+            'source attestation refers to another raw receipt')
+    for name in ('recipe', 'build_inputs', 'compiled_dependencies', 'compiled_sources', 'wheel'):
+        require(subject.get(name) == raw[name], 'source attestation subject differs: ' + name)
+        take(subject[name], 'attested ' + name)
+    cohort = read(document.get('cohort'), 'source cohort', ARROW_COHORT_METADATA_SHA256)
+    expected = ARROW_SDK_COHORT
+    metadata = rows(cohort.get('sources'), 'source cohort components')
+    require(len(metadata) == len(expected) and {row.get('name') for row in metadata} == set(expected),
+            'source cohort component set differs')
+    for row in metadata:
+        require({key: value for key, value in row.items() if key not in ('name', 'path')}
+                == expected[row['name']], 'source cohort metadata differs')
+    legacy = selected['forced_bundled_source_verification']
+    supplemental = document.get('supplemental')
+    require(document.get('legacy') == legacy and isinstance(supplemental, dict)
+            and set(supplemental) == set(expected) and not set(legacy) & set(supplemental)
+            and set(legacy) | set(supplemental)
+            == set(pins['dependencies']) - ({'zlib'} if pins['schema_kind'] == '26' else set()),
+            'source attestation must complete the exact disjoint bundled source set')
+    for name, component in supplemental.items():
+        require(isinstance(component, dict)
+                and component.get('archive') == manifest['dependencies'][name]['archive'],
+                name + ' attested archive differs from its owned build input')
+        take(component['archive'], name + ' attested archive', expected[name]['sha256'])
+        tree(component.get('source_root'), component.get('files'), name + ' attested source tree')
+    # Only a reviewed standalone verifier may interpret the source derivations.
+    # Load its exact bytes directly, avoiding cached bytecode or adjacent modules.
+    script = take(document.get('producer'), 'source verifier', ARROW_SOURCE_ATTESTER_SHA256)
+    source_bytes = script.read_bytes()
+    require(hashlib.sha256(source_bytes).hexdigest() == ARROW_SOURCE_ATTESTER_SHA256,
+            'source verifier changed before loading')
+    spec = importlib.util.spec_from_file_location('biominer_arrow_source_attestor', script)
+    require(spec is not None and spec.loader is not None, 'source verifier cannot be loaded')
+    module = importlib.util.module_from_spec(spec)
+    exec(compile(source_bytes, str(script), 'exec'), module.__dict__)
+    verified = module.verify_completed_attestation(
+        take(attestation, 'source attestation', pins['attestation_sha256']),
+        pins['attestation_sha256'], retained_inputs=retained_inputs)
+    require(script.read_bytes() == source_bytes, 'source verifier changed during verification')
+    require(isinstance(verified, dict) and verified.get('attestation') == document
+            and verified.get('supplemental') == supplemental and verified.get('legacy') == legacy,
+            'source verifier returned different proof identities')
+    receipt = verified.get('receipt')
+    require(isinstance(receipt, dict) and receipt.get('sha256') == pins['attestation_sha256'],
+            'source verifier returned another attestation receipt')
+    take(receipt, 'verified source attestation', pins['attestation_sha256'])
+    for item in rows(verified.get('files'), 'source attestation closure'):
+        take(item, 'source attestation retained input')
+
+
+def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retained_inputs=None,
+                            *, source_attestation=None) -> list[dict]:
     """Check the known 26 schemas and enumerate their exact retained byte closure.
 
     Nested JSON is never rewritten. During admission, historical descriptors
@@ -656,6 +1004,8 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
     source inventories. Host observations remain history, not retained inputs.
     """
     pins = _arrow_private_pins(family)
+    if not pins['requires_source_attestation'] and source_attestation is not None:
+        raise ProfileError(pins['label'] + ' does not accept a supplemental source attestation')
     family_label = pins['label']
     collected, verified = {}, {}
     retained_by_hash = None
@@ -714,8 +1064,11 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
             elif kind == 'symlink':
                 target = row.get('target')
                 require(isinstance(target, str) and not Path(target).is_absolute(), label + ' has an unsafe symlink')
-                resolved = (Path(root) / relative).parent / target
-                require(resolved.resolve().is_relative_to(Path(root).resolve()), label + ' symlink escapes source tree')
+                if retained_by_hash is None:
+                    resolved = (Path(root) / relative).parent / target
+                    require(resolved.resolve().is_relative_to(Path(root).resolve()), label + ' symlink escapes source tree')
+        if retained_by_hash is not None:
+            _arrow_retained_symlinks(result, label, require)
         return result
 
     required = {'recipe', 'build_inputs', 'source_verification', 'compiled_dependencies',
@@ -755,7 +1108,7 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
             and source.get('archive') == manifest['source_archive']
             and source.get('transformations') == pins['transformations'],
             'source verification lacks exact reviewed transformations')
-    if family == ARROW26_PRIVATE_FAMILY:
+    if pins['schema_kind'] == '26':
         require(source.get('integrated_sources') == expected_sources
                 and manifest.get('integrated_sources') == expected_sources,
                 'source verification lacks exact integrated fixes')
@@ -794,7 +1147,7 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
             and Path(context['openssl_prefix']).is_absolute(), 'build context is missing')
     source_root = Path(context['work']) / ('arrow-' + pins['source_revision'])
     initial_sources = tree(source_root, source.get('files'), 'verified Arrow tree')
-    if family == ARROW25_NETWORK_FAMILY:
+    if pins['schema_kind'] == '25':
         backend = source.get('backend')
         require(isinstance(backend, dict) and backend.get('path') == 'python/pyproject.toml'
                 and backend.get('backend') == '_build_backend' and backend.get('implementation') == 'scikit-build-core'
@@ -820,7 +1173,7 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
     distributions = rows(builder.get('distributions'), 'builder distributions')
     require(len(distributions) == len(ARROW26_BUILDER_PINS)
             and {row.get('name'): row.get('version') for row in distributions} == ARROW26_BUILDER_PINS
-            and (family != ARROW26_PRIVATE_FAMILY or raw.get('python_build_distributions') == distributions),
+            and (pins['schema_kind'] != '26' or raw.get('python_build_distributions') == distributions),
             'builder distributions differ from approved pins')
     for row in distributions:
         for name in ('wheel', 'metadata', 'record'):
@@ -864,6 +1217,9 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
                 and item.get('sha256') == dependency_pins['sha256'], name + ' dependency pin differs')
         take(item.get('archive'), name + ' source archive', dependency_pins['sha256'])
         require(effective_versions.get(name) == dependency_pins['version'], name + ' effective version differs')
+        if pins['requires_source_attestation'] and name in ARROW_SDK_COHORT:
+            require(all(item.get(key) == value for key, value in ARROW_SDK_COHORT[name].items())
+                    and item.get('role') == 'bundled_provider', name + ' source metadata differs')
     openssl = manifest.get('openssl')
     require(isinstance(openssl, dict) and openssl.get('version') == '3.6.5'
             and openssl.get('source_commit') == 'c8bd5a57108599ac650bbae77fcabe3109dab2e8'
@@ -921,7 +1277,9 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
     common_flags = {'CMAKE_C_COMPILER': context['cc'], 'CMAKE_CXX_COMPILER': context['cxx'],
                     **{name: context['python'] for name in ('Python3_EXECUTABLE', 'Python_EXECUTABLE', 'PYTHON_EXECUTABLE')},
                     **private_flags}
-    bundled = ('simdjson', 'uriparser', 'Boost') if family == ARROW26_PRIVATE_FAMILY else ('Boost',)
+    bundled = ('simdjson', 'uriparser', 'Boost') if pins['schema_kind'] == '26' else ('Boost',)
+    if pins['requires_source_attestation']:
+        bundled += ('AWSSDK', 'gRPC', 'Protobuf', 'absl', 'c-ares', 'Thrift', 'jemalloc', 'RapidJSON')
     cpp_expected = {
         **common_flags, **{'ARROW_' + name: 'ON' for name in ARROW26_FEATURES},
         **{'ARROW_WITH_' + name: 'ON' for name in ARROW26_CODECS},
@@ -932,8 +1290,10 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
         'ARROW_JEMALLOC': 'ON', 'ARROW_MIMALLOC': 'ON', 'PARQUET_REQUIRE_ENCRYPTION': 'ON',
         'CMAKE_MAKE_PROGRAM': builder['toolchain']['ninja']['path'],
     }
-    if family == ARROW26_PRIVATE_FAMILY:
+    if pins['schema_kind'] == '26':
         cpp_expected['URIPARSER_BUILD_TESTS'] = 'OFF'
+    elif pins['requires_source_attestation']:
+        cpp_expected['CUSTOM_MEMORY_MANAGEMENT'] = 'OFF'
     cpp_flags = flags(commands['cpp_configure'], '-D')
     require(commands['cpp_configure'][:7] == [builder['toolchain']['cmake']['path'], '-S',
             str(source_root / 'cpp'), '-B', str(Path(context['work']) / 'cpp-build'), '-G', 'Ninja']
@@ -943,7 +1303,7 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
         'ACERO', 'AZURE', 'DATASET', 'FLIGHT', 'GCS', 'HDFS', 'ORC', 'PARQUET', 'S3',
         'SUBSTRAIT', 'PARQUET_ENCRYPTION')}, 'PYARROW_GANDIVA': 'OFF', 'PYARROW_BUNDLE_ARROW_CPP': 'ON'}
     packages = ['Arrow', 'ArrowCompute', 'ArrowAcero', 'ArrowDataset', 'ArrowFlight', 'ArrowSubstrait', 'Parquet']
-    if family == ARROW26_PRIVATE_FAMILY:
+    if pins['schema_kind'] == '26':
         packages.append('ArrowS3')
     python_expected.update({name + '_DIR': str(Path(context['work']) / 'arrow-prefix/lib/cmake' / name)
                            for name in packages})
@@ -955,7 +1315,7 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
             == ['--config-setting=build.tool-args=-j' + str(budget['maximum_jobs'])]
             and all(python_flags.get(key) == value for key, value in python_expected.items()),
             'Python build command omits reviewed features or exceeds the compiler budget')
-    build = raw['build'] if family == ARROW26_PRIVATE_FAMILY else raw
+    build = raw['build'] if pins['schema_kind'] == '26' else raw
     require(isinstance(build, dict) and all(build.get(k) == value for k, value in manifest.items())
             and build.get('build_inputs') == raw['build_inputs'] and build.get('wheel_version') == version,
             'compiled build history differs from immutable inputs')
@@ -971,7 +1331,7 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
     require(all(final_sources.get(name) == value for name, value in initial_sources.items())
             and set(final_sources) - set(initial_sources) <= {'python/pyarrow/_generated_version.py'},
             'compiled source tree differs from the verified source tree')
-    consumers = rows(compiled.get('integrated_header_consumers' if family == ARROW26_PRIVATE_FAMILY else 'patched_header_consumers'), 'integrated header consumers')
+    consumers = rows(compiled.get('integrated_header_consumers' if pins['schema_kind'] == '26' else 'patched_header_consumers'), 'integrated header consumers')
     expected_consumers = {str(source_root / name): value for name, value in pins['sources'].items()
                           if Path(name).name in ('scalar_if_else.cc', 'vector_replace.cc')}
     require(len(consumers) == len(expected_consumers)
@@ -1061,13 +1421,19 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
         source_records.append({json.dumps(item, sort_keys=True, separators=(',', ':'))
                                for item in row['files']})
     forced = selected.get('forced_bundled_source_verification')
-    require(isinstance(forced, dict) and set(forced) == set(pins['dependencies']) - ({'zlib'} if family == ARROW26_PRIVATE_FAMILY else set()),
+    required_forced = ({'simdjson', 'uriparser', 'boost'} if pins['schema_kind'] == '26' else {'boost'})
+    if not pins['requires_source_attestation']:
+        required_forced = set(pins['dependencies']) - ({'zlib'} if pins['schema_kind'] == '26' else set())
+    require(isinstance(forced, dict) and set(forced) == required_forced,
             'bundled dependency source verification is incomplete')
     for name, files in forced.items():
         required_records = {json.dumps(item, sort_keys=True, separators=(',', ':'))
                             for item in rows(files, name + ' source verification')}
         require(sum(required_records <= observed for observed in source_records) == 1,
                 name + ' verified source lacks its exact source tree')
+    if pins['requires_source_attestation']:
+        _arrow_sdk_source_evidence(raw, family, pins, manifest, selected, source_attestation,
+                                  retained_inputs, take, read, tree, rows, require)
     python_selected = {row['path']: row['sha256'] for row in python_files}
     private_selected = {row['path']: row['sha256'] for row in private_static}
     for name in ('native_inputs', 'static_archives', 'downloaded_archives'):
@@ -1145,12 +1511,13 @@ def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retain
     return list(collected.values())
 
 
-def _arrow_private_checked(raw, base, family, retained_inputs=None):
+def _arrow_private_checked(raw, base, family, retained_inputs=None, *, source_attestation=None):
     try:
-        return _arrow_private_evidence(raw, base, family, retained_inputs)
+        return _arrow_private_evidence(raw, base, family, retained_inputs,
+                                       source_attestation=source_attestation)
     except ProfileError:
         raise
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, tarfile.TarError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError, tarfile.TarError) as error:
         raise ProfileError(_arrow_private_pins(family)['label'] + ' malformed private build evidence: ' + str(error)) from error
 
 
@@ -1176,7 +1543,8 @@ def _arrow_private_security(receipt, base, version, family):
     if not matches:
         raise ProfileError(label + ' raw receipt must be a retained input')
     raw = _read_json(_file(matches[0], base, label + ' raw receipt'))
-    _arrow_private_checked(raw, base, family, receipt['inputs'])
+    _arrow_private_checked(raw, base, family, receipt['inputs'],
+                           source_attestation=receipt.get('bundled_source_attestation'))
     if (receipt.get('source_policy') != family or receipt.get('version') != version
             or raw.get('version') != version or receipt['wheel_sha256'] != raw['wheel_sha256']
             or receipt['source_revision'] != raw['source_revision']
@@ -1189,11 +1557,17 @@ def _arrow_private_security(receipt, base, version, family):
 
 
 def _arrow26_security(receipt, base, version):
-    return _arrow_private_security(receipt, base, version, ARROW26_PRIVATE_FAMILY)
+    family = receipt.get('source_policy', ARROW26_PRIVATE_FAMILY)
+    if _arrow_private_pins(family)['schema_kind'] != '26':
+        raise ProfileError('Arrow 26 receipt has the wrong source family')
+    return _arrow_private_security(receipt, base, version, family)
 
 
 def _arrow25_network_security(receipt, base, version):
-    return _arrow_private_security(receipt, base, version, ARROW25_NETWORK_FAMILY)
+    family = receipt.get('source_policy', ARROW25_NETWORK_FAMILY)
+    if _arrow_private_pins(family)['schema_kind'] != '25':
+        raise ProfileError('Arrow 25 receipt has the wrong source family')
+    return _arrow_private_security(receipt, base, version, family)
 
 
 def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Path:
@@ -1266,7 +1640,8 @@ def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Pat
         if artifact['version'].startswith('26.0.0+biominer.'):
             _arrow26_security(receipt, receipt_path.parent, artifact['version'])
         else:
-            if 'arrow25_network_build_receipt' in receipt or receipt.get('source_policy') == ARROW25_NETWORK_FAMILY:
+            if ('arrow25_network_build_receipt' in receipt or 'arrow25_cohort_build_receipt' in receipt
+                    or receipt.get('source_policy') in ARROW_PRIVATE_FAMILIES):
                 _arrow25_network_security(receipt, receipt_path.parent, artifact['version'])
             else:
                 _arrow_security(receipt, receipt_path.parent, artifact['version'])
@@ -1552,7 +1927,8 @@ def build(profile: str | Path, output: str | Path) -> dict[str, Any]:
     for item in doc['artifacts']:
         if item.get('name') == 'pyarrow' and str(item.get('version', '')).startswith('25.'):
             source = _read_json(_file(item.get('source_receipt'), path.parent, 'Arrow 25 source receipt'))
-            if 'arrow25_network_build_receipt' in source or source.get('source_policy') == ARROW25_NETWORK_FAMILY:
+            if ('arrow25_network_build_receipt' in source or 'arrow25_cohort_build_receipt' in source
+                    or source.get('source_policy') in ARROW_PRIVATE_FAMILIES):
                 raise ProfileError('Arrow 25 private-network profile rebuild is unsupported; use the reviewed isolated recipe')
     _inputs(doc, path.parent)
     if not doc['recipes']:

@@ -72,6 +72,42 @@ def test_private_arrow25_incomplete_raw_receipt_uses_its_distinct_normalizer(tmp
         assembler.normalize_arrow25_network_receipt(raw, path)
 
 
+@pytest.mark.parametrize('family,version,normalizer', [
+    ('arrow26-integrated-private-network-v3', '26.0.0', 'normalize_arrow26_receipt'),
+    ('arrow25-two-compute-patches-private-network-v2', '25.0.1', 'normalize_arrow25_network_receipt'),
+])
+def test_cohort_arrow_normalization_requires_separate_source_attestation(
+        tmp_path, family, version, normalizer):
+    path = tmp_path / 'cohort-raw.json'
+    raw = {'schema_version': 1, 'name': 'pyarrow', 'status': 'compiled_unverified',
+           'source_policy': family, 'version': version + '+biominer.0123456789ab'}
+    path.write_text(json.dumps(raw))
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match='source attestation'):
+        getattr(assembler, normalizer)(raw, path)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('supplied', ['path', 'sha256'])
+def test_cohort_arrow_source_attestation_arguments_must_be_paired(tmp_path, supplied):
+    kwargs = {'arrow_source_attestation': tmp_path / 'proof.json'} if supplied == 'path' else {
+        'arrow_source_attestation_sha256': 'a' * 64}
+    output = tmp_path / 'uncreated.lock'
+    with pytest.raises(ValueError, match='source attestation.*together'):
+        assembler.assemble(tmp_path, output, tmp_path / 'absent-python', **kwargs)
+    assert not output.exists()
+
+
+def test_cohort_arrow_attestation_is_not_silently_ignored_without_arrow(tmp_path):
+    proof = tmp_path / 'proof.json'
+    proof.write_text('{}')
+    output = tmp_path / 'uncreated.lock'
+    with pytest.raises(ValueError, match='source attestation was not used'):
+        assembler.assemble(tmp_path, output, tmp_path / 'absent-python',
+            arrow_source_attestation=proof, arrow_source_attestation_sha256=assembler.sha256(proof))
+    assert not output.exists()
+
+
 def test_preservation_keeps_exact_toolchain_bytes(tmp_path):
     script = Path(__file__).parents[1] / 'scripts/assemble_native_profile.py'
     spec = importlib.util.spec_from_file_location('assembler', script)

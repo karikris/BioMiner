@@ -80,7 +80,8 @@ def preserve_inputs(receipt, directory):
 
 
 
-def _normalize_private_arrow_receipt(raw, path, family):
+def _normalize_private_arrow_receipt(raw, path, family, *, source_attestation=None,
+                                     source_attestation_sha256=None, schema_kind=None):
     """Preserve raw/nested bytes and publish a separate finite-family wrapper."""
     if __package__:
         runtime = importlib.import_module(f'{__package__}.native_runtime')
@@ -90,12 +91,25 @@ def _normalize_private_arrow_receipt(raw, path, family):
         spec.loader.exec_module(runtime)
     pins = runtime._arrow_private_pins(family)
     label = pins['label']
+    if schema_kind is not None and pins['schema_kind'] != schema_kind:
+        raise runtime.ProfileError('Arrow ' + schema_kind + ' raw receipt has the wrong source family')
+    if (source_attestation is None) != (source_attestation_sha256 is None):
+        raise ValueError(label + ' source attestation and SHA256 must be supplied together')
+    if pins['requires_source_attestation'] and source_attestation is None:
+        raise ValueError(label + ' requires a separate source attestation')
+    if not pins['requires_source_attestation'] and source_attestation is not None:
+        raise ValueError(label + ' does not accept a supplemental source attestation')
+    attestation = None
+    if source_attestation is not None:
+        attestation = file_record(Path(source_attestation).absolute())
+        if attestation['sha256'] != source_attestation_sha256:
+            raise ValueError(label + ' source attestation checksum differs')
     path = Path(path).absolute()
     if json.loads(path.read_bytes()) != raw:
         raise ValueError(label + ' raw receipt changed before normalization')
-    inputs = runtime._arrow_private_checked(raw, path.parent, family)
+    inputs = runtime._arrow_private_checked(raw, path.parent, family, source_attestation=attestation)
     raw_record = file_record(path)
-    inputs.append(raw_record)
+    inputs = list({(item['path'], item['sha256']): item for item in [*inputs, raw_record]}.values())
     inputs = [dict(item, kind='private-arrow-build-input') for item in inputs]
     receipt = {'schema_version': 1, 'name': 'pyarrow', 'version': raw['version'],
                'source_policy': family, 'wheel_sha256': raw['wheel_sha256'],
@@ -106,6 +120,8 @@ def _normalize_private_arrow_receipt(raw, path, family):
                'effective_versions': runtime._arrow_private_effective_versions(raw, family),
                'native_files': raw.get('native_files', []), pins['raw_field']: raw_record,
                'limitations': ['Retained exact source/build evidence only; isolated rebuild, installed native qualification and independent security review remain required.']}
+    if attestation is not None:
+        receipt['bundled_source_attestation'] = attestation
     runtime._arrow_private_security(receipt, path.parent, raw['version'], family)
     wheel = raw.get('wheel')
     wheel_path = runtime._file(wheel, path.parent, label + ' raw wheel')
@@ -124,21 +140,25 @@ def _normalize_private_arrow_receipt(raw, path, family):
             raise ValueError(label + ' wheel has the wrong Python/platform ABI')
         libraries = ['arrow', 'arrow_compute', 'arrow_acero', 'arrow_dataset', 'arrow_flight',
                      'arrow_substrait', 'parquet']
-        if family == runtime.ARROW26_PRIVATE_FAMILY:
+        if pins['schema_kind'] == '26':
             libraries.append('arrow_s3')
-        abi = '2600' if family == runtime.ARROW26_PRIVATE_FAMILY else '2500'
+        abi = '2600' if pins['schema_kind'] == '26' else '2500'
         for library in libraries:
             if bundle.read('pyarrow/lib' + library + '.so.' + abi)[:4] != b'\x7fELF':
                 raise ValueError(label + ' wheel lacks required native libraries')
     return receipt
 
 
-def normalize_arrow26_receipt(raw, path):
-    return _normalize_private_arrow_receipt(raw, path, 'arrow26-integrated-private-network-v2')
+def normalize_arrow26_receipt(raw, path, *, source_attestation=None, source_attestation_sha256=None):
+    family = raw.get('source_policy', 'arrow26-integrated-private-network-v2')
+    return _normalize_private_arrow_receipt(raw, path, family, source_attestation=source_attestation,
+                                           source_attestation_sha256=source_attestation_sha256, schema_kind='26')
 
 
-def normalize_arrow25_network_receipt(raw, path):
-    return _normalize_private_arrow_receipt(raw, path, 'arrow25-two-compute-patches-private-network-v1')
+def normalize_arrow25_network_receipt(raw, path, *, source_attestation=None, source_attestation_sha256=None):
+    family = raw.get('source_policy', 'arrow25-two-compute-patches-private-network-v1')
+    return _normalize_private_arrow_receipt(raw, path, family, source_attestation=source_attestation,
+                                           source_attestation_sha256=source_attestation_sha256, schema_kind='25')
 
 
 def deployment_host_inventory(profile, expected):
@@ -243,10 +263,13 @@ def preserve_deployment_host(root, deployment):
 
 def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer_receipt=None,
              lxml_receipt=None, psycopg_receipt=None, arrow_receipt=None,
-             deployment_host_profile=None, deployment_host_profile_sha256=None):
+             deployment_host_profile=None, deployment_host_profile_sha256=None,
+             arrow_source_attestation=None, arrow_source_attestation_sha256=None):
     root, output, python = root.absolute(), output.absolute(), python.absolute()
     if output.exists() or output.is_symlink():
         raise FileExistsError(f'profile already exists; choose a new output path: {output}')
+    if (arrow_source_attestation is None) != (arrow_source_attestation_sha256 is None):
+        raise ValueError('Arrow source attestation and SHA256 must be supplied together')
     if (deployment_host_profile is None) != (deployment_host_profile_sha256 is None):
         raise ValueError('deployment host profile and SHA256 must be supplied together')
     deployment = (deployment_host_inventory(deployment_host_profile, deployment_host_profile_sha256)
@@ -277,6 +300,7 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
            'extension_policy': {}, 'pending_artifacts': [],
            'limitations': ['Host patching, complete acceptance, entrypoint migration and promotion required.',
                            'Live PostgreSQL and S3 checks unrun.']}
+    attestation_used = False
     for key, name in (('base_lock', 'uv.lock'), ('project', 'pyproject.toml')):
         if (root / name).is_file():
             doc[key] = file_record(root / name)
@@ -341,11 +365,19 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
         if not isinstance(version, str):
             raise ValueError(f'{name} receipt needs effective wheel version')
         if name == 'pyarrow' and version.startswith('26.'):
-            receipt = normalize_arrow26_receipt(receipt, path)
+            receipt = normalize_arrow26_receipt(receipt, path,
+                source_attestation=arrow_source_attestation,
+                source_attestation_sha256=arrow_source_attestation_sha256)
+            attestation_used = arrow_source_attestation is not None
             path = preserve_receipt(receipt, root / '.native-runtime/build-materials', name)
-        if name == 'pyarrow' and (receipt.get('source_policy') == 'arrow25-two-compute-patches-private-network-v1'
+        if name == 'pyarrow' and (receipt.get('source_policy') in (
+                                    'arrow25-two-compute-patches-private-network-v1',
+                                    'arrow25-two-compute-patches-private-network-v2')
                                   or receipt.get('kind') == 'corrective_arrow25_private_network_build'):
-            receipt = normalize_arrow25_network_receipt(receipt, path)
+            receipt = normalize_arrow25_network_receipt(receipt, path,
+                source_attestation=arrow_source_attestation,
+                source_attestation_sha256=arrow_source_attestation_sha256)
+            attestation_used = arrow_source_attestation is not None
             path = preserve_receipt(receipt, root / '.native-runtime/build-materials', name)
         source_descriptor = receipt.get('source_receipt')
         if isinstance(source_descriptor, dict):
@@ -372,7 +404,8 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
         doc['artifacts'].append({'name': name, 'version': version,
                                  **wheel, 'source_receipt': file_record(path),
                                  **({'source_policy': receipt['source_policy']} if receipt.get('source_policy') in (
-                                    'arrow25-two-compute-patches-private-network-v1', 'arrow26-integrated-private-network-v2') else {})})
+                                    'arrow25-two-compute-patches-private-network-v1', 'arrow26-integrated-private-network-v2',
+                                    'arrow25-two-compute-patches-private-network-v2', 'arrow26-integrated-private-network-v3') else {})})
         doc['inputs'].append(file_record(path) | {'kind': 'build-receipt'})
         for item in receipt.get('native_files', []):
             item = dict(item)
@@ -387,6 +420,8 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
         if name == 'duckdb':
             doc['extension_policy'] = {'policy_id': receipt['policy_id'],
                                        'allowlist': receipt.get('extension_policy', {}).get('extensions', [])}
+    if arrow_source_attestation is not None and not attestation_used:
+        raise ValueError('Arrow source attestation was not used by a supported Arrow family')
     for name in ('openssl', 'libssl3t64', 'libssl-dev', 'libpq5'):
         policy = subprocess.run(['apt-cache', 'policy', name], capture_output=True, text=True, check=True).stdout
         doc['host_packages'].append({'name': name, 'architecture': 'amd64', 'origin': 'Ubuntu',
@@ -399,7 +434,8 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
             doc['checks'].append({'name': name, 'script': file_record(checks),
                 'args': ['--check', name, '--profile', '{profile}', '--generation', '{generation}']})
     private_arrow = any(item.get('name') == 'pyarrow' and (
-        item.get('source_policy') in ('arrow25-two-compute-patches-private-network-v1', 'arrow26-integrated-private-network-v2')
+        item.get('source_policy') in ('arrow25-two-compute-patches-private-network-v1', 'arrow26-integrated-private-network-v2',
+                                    'arrow25-two-compute-patches-private-network-v2', 'arrow26-integrated-private-network-v3')
         or item['version'].startswith('26.')) for item in doc['artifacts'])
     for script in ('native_runtime.py', 'check_native_runtime.py', 'check_native_tls.py',
                    'build_native_psycopg.py', 'build_native_arrow.py', 'build_native_duckdb.py',
@@ -475,6 +511,10 @@ def main():
                         help='Explicit preserved Psycopg build receipt')
     parser.add_argument('--arrow-receipt', type=Path,
                         help='Explicit preserved or newly qualified Arrow build receipt')
+    parser.add_argument('--arrow-source-attestation', type=Path,
+                        help='Separate post-build source proof for the explicit Arrow cohort family')
+    parser.add_argument('--arrow-source-attestation-sha256',
+                        help='Required SHA256 of the exact separate Arrow source proof')
     parser.add_argument('--deployment-host-profile', type=Path,
                         help='Explicit pinned deployment host inventory; never selects its historical wheels')
     parser.add_argument('--deployment-host-profile-sha256',
@@ -483,7 +523,8 @@ def main():
     print(json.dumps(assemble(args.root, args.output, args.python, args.preserve_inputs,
                               args.duckdb_receipt, args.biominer_receipt, args.lxml_receipt,
                               args.psycopg_receipt, args.arrow_receipt,
-                              args.deployment_host_profile, args.deployment_host_profile_sha256), sort_keys=True))
+                              args.deployment_host_profile, args.deployment_host_profile_sha256,
+                              args.arrow_source_attestation, args.arrow_source_attestation_sha256), sort_keys=True))
 
 
 if __name__ == '__main__':

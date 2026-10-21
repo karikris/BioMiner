@@ -8,6 +8,7 @@ import platform
 import sys
 import zipfile
 import copy
+import shutil
 from pathlib import Path
 
 import pytest
@@ -235,6 +236,24 @@ def test_arrow26_family_reaches_its_own_receipt_policy(profile):
 def test_private_arrow25_family_has_a_separate_closed_admission_policy(tmp_path):
     with pytest.raises(runtime.ProfileError, match='Arrow 25.*raw receipt'):
         runtime._arrow25_network_security({'inputs': []}, tmp_path, '25.0.1+biominer.0123456789ab')
+
+
+@pytest.mark.parametrize('family,kind,recipe_sha256', [
+    ('arrow26-integrated-private-network-v3', '26',
+     '1bc69557acd83f150040f5001fd8243b6bcf98250023990e6d22e179cf6264b1'),
+    ('arrow25-two-compute-patches-private-network-v2', '25',
+     '4f7df429cc94697f155b7e252a8d0241225b1ea5800319f44bb6fb7b08da9d9b'),
+])
+def test_cohort_arrow_family_has_distinct_closed_pins_and_schema_kind(family, kind, recipe_sha256):
+    pins = runtime._arrow_private_pins(family)
+    assert pins['schema_kind'] == kind
+    assert pins['recipe_sha256'] == recipe_sha256
+    assert pins['raw_sha256'] is None
+    assert pins['attestation_sha256'] is None
+    assert runtime.ARROW26_BUILD_RECEIPT_SHA256 is None
+    assert runtime.ARROW25_NETWORK_BUILD_RECEIPT_SHA256 is None
+    assert runtime.ARROW26_RECIPE_SHA256 == '3bd6d35656f89fa71d1eaccd63477f5a94fbe074a56368af5b372660bbeac567'
+    assert runtime.ARROW25_NETWORK_RECIPE_SHA256 == 'c73a4e5b11c3abea2391a65587362c073c6b97ee6f36c83bc8e0c909ff870a4d'
 
 
 def test_private_arrow25_rebuild_rejects_before_inputs_probes_or_outputs(profile, tmp_path, monkeypatch):
@@ -661,7 +680,7 @@ def test_complete_arrow26_raw_chain_is_normalized_and_admitted(profile, tmp_path
 def refresh_arrow26_fixture(fixture, monkeypatch):
     """Refresh envelopes/local version so corruption reaches nested policies."""
     raw, material = fixture['raw'], fixture['material']
-    private25 = raw.get('source_policy') == runtime.ARROW25_NETWORK_FAMILY
+    private25 = raw.get('source_policy') in (runtime.ARROW25_NETWORK_FAMILY, runtime.ARROW25_COHORT_FAMILY)
     if private25:
         previous = json.loads(Path(raw['build_inputs']['path']).read_bytes())
         build = {key: raw[key] for key in previous}
@@ -687,8 +706,246 @@ def refresh_arrow26_fixture(fixture, monkeypatch):
             archive.writestr(name, value)
     raw['wheel']['sha256'] = raw['wheel_sha256'] = digest(wheel_path)
     fixture['record'] = material('build-receipt.json', raw)
-    monkeypatch.setattr(runtime, ('ARROW25_NETWORK' if private25 else 'ARROW26') + '_BUILD_RECEIPT_SHA256',
+    prefix = {runtime.ARROW25_COHORT_FAMILY: 'ARROW25_COHORT',
+              runtime.ARROW26_COHORT_FAMILY: 'ARROW26_COHORT'}.get(
+                  raw.get('source_policy'), 'ARROW25_NETWORK' if private25 else 'ARROW26')
+    monkeypatch.setattr(runtime, prefix + '_BUILD_RECEIPT_SHA256',
                         fixture['record']['sha256'])
+
+
+EXPECTED_COHORT_COMPONENTS = {
+    'aws_sdk_cpp', 'aws_crt_cpp', 'aws_c_auth', 'aws_c_cal', 'aws_c_common',
+    'aws_c_compression', 'aws_c_event_stream', 'aws_c_http', 'aws_c_io', 'aws_c_mqtt',
+    'aws_c_s3', 'aws_c_sdkutils', 'aws_checksums', 's2n_tls', 'thrift', 'grpc',
+    'protobuf', 'absl', 'cares', 'rapidjson', 'jemalloc',
+}
+
+
+def cohort_arrow_build_fixture(root, monkeypatch, kind, *, symlinks=False):
+    """Exercise adapter trust/retention; the standalone verifier has its own proof tests."""
+    fixture = arrow26_build_fixture(root, monkeypatch, family=kind)
+    raw, material = fixture['raw'], fixture['material']
+    family = runtime.ARROW25_COHORT_FAMILY if kind == '25' else runtime.ARROW26_COHORT_FAMILY
+    prefix = 'ARROW25_COHORT' if kind == '25' else 'ARROW26_COHORT'
+    old_prefix = 'ARROW25_NETWORK' if kind == '25' else 'ARROW26'
+    build = raw if kind == '25' else raw['build']
+    raw['source_policy'] = build['source_policy'] = family
+    source = json.loads(Path(raw['source_verification']['path']).read_bytes())
+    source['source_policy'] = family
+    raw['source_verification'] = build['source_verification'] = material('source-verification.json', source)
+    selected = json.loads(Path(raw['compiled_dependencies']['path']).read_bytes())
+    sdk = copy.deepcopy(runtime.ARROW_SDK_COHORT)
+    assert set(sdk) == EXPECTED_COHORT_COMPONENTS
+    supplemental, closure = {}, []
+    for name, metadata in sdk.items():
+        source_root = (root / 'cpp-build/jemalloc_ep-prefix/src/jemalloc_ep' if name == 'jemalloc'
+                       else root / 'cpp-build/_deps' / (name.replace('_', '-') + '-src'))
+        source_file = material(str(source_root.relative_to(root)) + '/source.h', 'source for ' + name)
+        links = {'alias.h': 'source.h', 'chain.h': 'alias.h'} if symlinks and name == 'grpc' else {}
+        for relative, target in links.items():
+            (source_root / relative).symlink_to(target)
+        packed = io.BytesIO()
+        with tarfile.open(fileobj=packed, mode='w:gz') as archive:
+            data = Path(source_file['path']).read_bytes()
+            member = tarfile.TarInfo(name + '/source.h')
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+            for relative, target in links.items():
+                member = tarfile.TarInfo(name + '/' + relative)
+                member.type, member.linkname = tarfile.SYMTYPE, target
+                archive.addfile(member)
+        archive_record = material('inputs/' + metadata['filename'], packed.getvalue())
+        metadata['sha256'] = archive_record['sha256']
+        build['dependencies'][name] = {**metadata, 'archive': archive_record, 'role': 'bundled_provider'}
+        files = [{'relative': 'source.h', 'type': 'file', 'sha256': source_file['sha256']}]
+        files.extend({'relative': relative, 'type': 'symlink', 'target': target}
+                     for relative, target in links.items())
+        files.sort(key=lambda row: row['relative'])
+        supplemental[name] = {'kind': 'external_project' if name == 'jemalloc' else 'fetchcontent',
+                              'archive': archive_record, 'source_root': str(source_root),
+                              'files': files, 'generated_derivations': []}
+        selected['source_trees'].append({'path': str(source_root), 'files': files})
+        closure.extend((archive_record, source_file))
+    raw['compiled_dependencies'] = material('compiled-dependencies.json', selected)
+    if kind == '26':
+        raw['effective_versions'].update({name: row['version'] for name, row in sdk.items()})
+    build['commands']['cpp_configure'].extend('-D' + name + '_SOURCE=BUNDLED' for name in (
+        'AWSSDK', 'gRPC', 'Protobuf', 'absl', 'c-ares', 'Thrift', 'jemalloc', 'RapidJSON'))
+    if kind == '25':
+        build['commands']['cpp_configure'].append('-DCUSTOM_MEMORY_MANAGEMENT=OFF')
+    for suffix in ('ARCHIVE_SHA256', 'RECIPE_SHA256', 'TRANSFORMATIONS'):
+        monkeypatch.setattr(runtime, prefix + '_' + suffix, getattr(runtime, old_prefix + '_' + suffix))
+    monkeypatch.setattr(runtime, 'ARROW_SDK_COHORT', sdk)
+    dependency_pins = {**getattr(runtime, old_prefix + '_DEPENDENCIES'), **sdk}
+    monkeypatch.setattr(runtime, prefix + '_DEPENDENCIES', dependency_pins)
+    refresh_arrow26_fixture(fixture, monkeypatch)
+    cohort = material('cohort.json', {'sources': [dict(row, name=name,
+        path=build['dependencies'][name]['archive']['path']) for name, row in sdk.items()]})
+    monkeypatch.setattr(runtime, 'ARROW_COHORT_METADATA_SHA256', cohort['sha256'])
+    # A deliberately tiny reviewed verifier fixture verifies closure hashes. The
+    # production proof engine is independently tested with real archive trees.
+    producer = material('source-verifier.py', '''import hashlib,json
+from pathlib import Path
+def verify_completed_attestation(path, expected_sha256, *, retained_inputs=None):
+    path=Path(path)
+    if hashlib.sha256(path.read_bytes()).hexdigest()!=expected_sha256:
+        raise ValueError('attestation changed')
+    doc=json.loads(path.read_bytes())
+    index={row['sha256']:row for row in retained_inputs or []}
+    files=[]
+    for record in doc['closure']:
+        selected=index.get(record['sha256']) if retained_inputs is not None else record
+        if selected is None or hashlib.sha256(Path(selected['path']).read_bytes()).hexdigest()!=record['sha256']:
+            raise ValueError('source closure changed')
+        files.append(selected)
+    return {'receipt':{'path':str(path),'sha256':expected_sha256},'attestation':doc,
+            'files':files,'supplemental':doc['supplemental'],'legacy':doc['legacy']}
+''')
+    monkeypatch.setattr(runtime, 'ARROW_SOURCE_ATTESTER_SHA256', producer['sha256'])
+    subject = {name: raw[name] for name in (
+        'recipe', 'build_inputs', 'compiled_dependencies', 'compiled_sources', 'wheel')}
+    subject['raw_receipt'] = fixture['record']
+    document = {'schema_version': 1, 'kind': 'bundled_native_source_attestation',
+        'status': 'source_attested', 'ready': False, 'schema_kind': kind, 'source_policy': family,
+        'producer': producer, 'subject': subject, 'cohort': cohort,
+        'legacy': selected['forced_bundled_source_verification'], 'supplemental': supplemental,
+        'external_projects': {}, 'closure': [*closure, cohort, producer, *subject.values()]}
+    attestation = material('source-attestation.json', document)
+    monkeypatch.setattr(runtime, prefix + '_ATTESTATION_SHA256', attestation['sha256'])
+    fixture.update(attestation=attestation, attestation_doc=document, prefix=prefix, kind=kind)
+    return fixture
+
+
+def retained_cohort_with_symlinks(tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = cohort_arrow_build_fixture(tmp_path / 'historical', monkeypatch, '26', symlinks=True)
+    wrapper = assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']),
+        source_attestation=Path(fixture['attestation']['path']),
+        source_attestation_sha256=fixture['attestation']['sha256'])
+    wrapper = assembler.preserve_inputs(wrapper, tmp_path / 'retained')
+    shutil.rmtree(fixture['root'])
+    return fixture, wrapper
+
+
+def test_cohort_arrow_retained_symlink_chain_never_traverses_historical_paths(tmp_path, monkeypatch):
+    fixture, wrapper = retained_cohort_with_symlinks(tmp_path, monkeypatch)
+    historical = fixture['root']
+    for name in ('resolve', 'stat', 'lstat', 'readlink'):
+        original = getattr(Path, name)
+
+        def guarded(path, *args, _original=original, **kwargs):
+            if path.is_relative_to(historical):
+                pytest.fail('retained source proof traversed a historical path: ' + str(path))
+            return _original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, name, guarded)
+    runtime._arrow_private_security(wrapper, tmp_path, fixture['raw']['version'], runtime.ARROW26_COHORT_FAMILY)
+
+
+@pytest.mark.parametrize('damage', ['absolute', 'escaping', 'self_cycle', 'pair_cycle', 'escaping_chain'])
+def test_cohort_arrow_retained_inventory_rejects_invalid_symlink_chains(tmp_path, monkeypatch, damage):
+    from scripts import assemble_native_profile as assembler
+    fixture, wrapper = retained_cohort_with_symlinks(tmp_path, monkeypatch)
+    document = fixture['attestation_doc']
+    files = document['supplemental']['grpc']['files']
+    by_name = {row['relative']: row for row in files}
+    if damage == 'absolute':
+        by_name['alias.h']['target'] = '/outside/source.h'
+    elif damage == 'escaping':
+        by_name['alias.h']['target'] = '../outside/source.h'
+    elif damage == 'self_cycle':
+        by_name['alias.h']['target'] = 'alias.h'
+    elif damage == 'pair_cycle':
+        by_name['alias.h']['target'] = 'chain.h'
+    else:
+        files.extend([{'relative': 'a', 'type': 'directory'}, {'relative': 'c', 'type': 'directory'},
+                      {'relative': 'a/b', 'type': 'symlink', 'target': '../c'}])
+        by_name['alias.h']['target'] = 'a/b/../../outside'
+    files.sort(key=lambda row: row['relative'])
+    path = tmp_path / 'changed-proof.json'
+    path.write_text(json.dumps(document))
+    attestation = assembler.file_record(path)
+    monkeypatch.setattr(runtime, fixture['prefix'] + '_ATTESTATION_SHA256', attestation['sha256'])
+    wrapper['bundled_source_attestation'] = attestation
+    wrapper['inputs'].append(attestation)
+    with pytest.raises(runtime.ProfileError, match='symlink|source tree'):
+        runtime._arrow_private_security(wrapper, tmp_path, fixture['raw']['version'], runtime.ARROW26_COHORT_FAMILY)
+
+
+@pytest.mark.parametrize('kind', ['25', '26'])
+@pytest.mark.parametrize('preserve', [False, True])
+def test_complete_cohort_arrow_retains_separate_proof_and_raw_bytes(profile, tmp_path, monkeypatch, kind, preserve):
+    from scripts import assemble_native_profile as assembler
+    fixture = cohort_arrow_build_fixture(tmp_path / 'cohort', monkeypatch, kind)
+    raw_bytes = Path(fixture['record']['path']).read_bytes()
+    normalize = assembler.normalize_arrow25_network_receipt if kind == '25' else assembler.normalize_arrow26_receipt
+    wrapper = normalize(fixture['raw'], Path(fixture['record']['path']),
+        source_attestation=Path(fixture['attestation']['path']),
+        source_attestation_sha256=fixture['attestation']['sha256'])
+    assert wrapper['bundled_source_attestation'] == fixture['attestation']
+    assert Path(fixture['record']['path']).read_bytes() == raw_bytes
+    forced = fixture['attestation_doc']['legacy']
+    assert set(forced) == ({'boost'} if kind == '25' else {'simdjson', 'uriparser', 'boost'})
+    assert set(fixture['attestation_doc']['supplemental']) == EXPECTED_COHORT_COMPONENTS
+    if preserve:
+        historical = copy.deepcopy(wrapper['inputs'])
+        wrapper = assembler.preserve_inputs(wrapper, tmp_path / 'retained')
+        for row in historical:
+            Path(row['path']).unlink(missing_ok=True)
+    wheel_record = (next(row for row in wrapper['inputs']
+                         if row['sha256'] == fixture['raw']['wheel_sha256'])
+                    if preserve else fixture['raw']['wheel'])
+    wrapper_path = assembler.preserve_receipt(wrapper, tmp_path / 'wrappers', 'pyarrow')
+    profile[1]['artifacts'][1] = {'name': 'pyarrow', 'version': fixture['raw']['version'],
+        **wheel_record, 'source_receipt': assembler.file_record(wrapper_path)}
+    assert runtime.verify_artifacts(rewrite(profile))['ready'] is False
+
+
+@pytest.mark.parametrize('kind', ['25', '26'])
+@pytest.mark.parametrize('damage', ['family', 'subject', 'missing', 'extra', 'legacy', 'archive', 'source', 'producer'])
+def test_cohort_arrow_attestation_cannot_relabel_or_omit_inputs(tmp_path, monkeypatch, kind, damage):
+    from scripts import assemble_native_profile as assembler
+    fixture = cohort_arrow_build_fixture(tmp_path / 'cohort', monkeypatch, kind)
+    doc = fixture['attestation_doc']
+    if damage == 'family':
+        doc['source_policy'] = runtime.ARROW25_COHORT_FAMILY if kind == '26' else runtime.ARROW26_COHORT_FAMILY
+    elif damage == 'subject':
+        doc['subject']['wheel'] = doc['subject']['recipe']
+    elif damage == 'missing':
+        doc['supplemental'].pop('grpc')
+    elif damage == 'extra':
+        doc['supplemental']['unreviewed'] = doc['supplemental']['grpc']
+    elif damage == 'legacy':
+        doc['legacy'] = {}
+    elif damage == 'archive':
+        doc['supplemental']['grpc']['archive'] = doc['supplemental']['protobuf']['archive']
+    elif damage == 'source':
+        Path(doc['supplemental']['grpc']['source_root'], 'source.h').write_text('changed original source')
+    else:
+        Path(doc['producer']['path']).write_text('raise RuntimeError("unreviewed verifier executed")\n')
+    fixture['attestation'] = fixture['material']('source-attestation.json', doc)
+    monkeypatch.setattr(runtime, fixture['prefix'] + '_ATTESTATION_SHA256', fixture['attestation']['sha256'])
+    normalize = assembler.normalize_arrow25_network_receipt if kind == '25' else assembler.normalize_arrow26_receipt
+    with pytest.raises(runtime.ProfileError):
+        normalize(fixture['raw'], Path(fixture['record']['path']),
+            source_attestation=Path(fixture['attestation']['path']),
+            source_attestation_sha256=fixture['attestation']['sha256'])
+
+
+@pytest.mark.parametrize('kind', ['25', '26'])
+def test_cohort_arrow_rebuild_rejects_before_legacy_probes(profile, tmp_path, monkeypatch, kind):
+    artifact = profile[1]['artifacts'][1]
+    artifact['version'] = ('25.0.1' if kind == '25' else '26.0.0') + '+biominer.0123456789ab'
+    path = Path(artifact['source_receipt']['path'])
+    receipt = json.loads(path.read_bytes())
+    receipt['source_policy'] = runtime.ARROW25_COHORT_FAMILY if kind == '25' else runtime.ARROW26_COHORT_FAMILY
+    path.write_text(json.dumps(receipt));artifact['source_receipt']['sha256'] = digest(path)
+    monkeypatch.setattr(runtime, '_inputs', lambda *args: pytest.fail('cohort rebuild reached legacy inputs'))
+    monkeypatch.setattr(runtime, '_python', lambda *args: pytest.fail('cohort rebuild reached Python probe'))
+    output = tmp_path / 'uncreated'
+    with pytest.raises(runtime.ProfileError, match='rebuild.*unsupported'):
+        runtime.build(rewrite(profile), output)
+    assert not output.exists()
 
 
 @pytest.mark.parametrize('damage', [

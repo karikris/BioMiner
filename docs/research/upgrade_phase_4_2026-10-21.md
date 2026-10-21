@@ -824,3 +824,33 @@ The new CMake cases use `LANGUAGES NONE` to verify actual target reuse,
 fallback, effective consumer includes and export generation without compiling.
 Independent reviews passed for each recipe. New full candidate configurations
 and compilation remain required; these tests do not admit a runtime.
+
+## Finite cohort receipt adapters
+
+The new Arrow 25 and 26 source policies now have separate finite receipt
+adapters. Dispatch uses the explicit Arrow schema, retaining the seven-library
+ABI-2500 and eight-library ABI-2600 contracts. A separate
+`bundled_source_attestation` field binds supplemental source evidence without
+rewriting raw build receipts. Normalization requires paired attestation path
+and checksum arguments, preserves copied inputs, and rejects unsupported
+legacy rebuild dispatch. Actual receipt, attestation, verifier and transformation
+review pins remain closed. Historical source policies and their pins remain
+unchanged.
+
+Independent review found that retained source symlinks could still resolve
+through historical directories. A regression reproduced that traversal and
+three invalid-chain cases: four failures, two passes in 0.62 seconds. The
+correction resolves recorded path components and link chains without historical
+filesystem access, preserving direct-mode checks. Focused GitHits inspection
+of CPython 3.14.7's `posixpath.realpath` informed the component ordering and
+cycle handling; its filesystem implementation was not copied.
+
+The complete adapter suites then passed 294 tests in 11.22 seconds, exit 0
+without interruption. Execution receipt SHA-256 is
+`94bf25598c2b527e3eaa914c930e5d750ff91cd8fcae49d78aad80a8a37d518b`.
+The independent review addendum closes the relocation finding; SHA-256 is
+`51f3bb4024325be55ee7329dbb4b1946a4b72f85ad1f904cb3661f65db1d3145`.
+The legacy admission function and protected historical assignments remain
+byte-exact. Actual final source attestation, native wheel qualification and
+the application compatibility checks remain separate tasks. No runtime is
+activated by this adapter change.
