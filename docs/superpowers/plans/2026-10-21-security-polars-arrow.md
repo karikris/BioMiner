@@ -115,6 +115,51 @@ This is an established correctness defect; no additional CVE, GHSA or memory
 exploit is asserted. Identity checks passing for the allocation-only wheel do
 not satisfy native qualification or close the allocation security finding.
 
+### Execution correction: transitive network and compression providers
+
+During phase 4, the complete configured-provider inventory and the retained
+Arrow 25 ELF receipt exposed a separate system zlib provider through system
+curl and libxml2. Ubuntu marks the installed zlib package as affected by
+[CVE-2026-85091](https://ubuntu.com/security/CVE-2026-85091), and the installed
+curl package as affected by
+[CVE-2026-19931](https://ubuntu.com/security/CVE-2026-19931).
+The patched private zlib used by lxml does not repair this separate provider.
+Retain the material applicability conflict: the advisory describes 1.3.1.2–1.3.2,
+Ubuntu also marks older packages vulnerable and questions the affected range,
+and the earlier exact 1.3.1 source inspection lacks the later stale-pointer
+branch. This review does not newly prove exploitability of installed 1.3.1 or
+erase that source evidence. Replacing Arrow's provider removes the conflicting
+host dependency; the independent curl finding already blocks its admission.
+
+Reopen `NATIVE-ZLIB-CVE-2026-85091` in its existing
+`shared_and_approved_runtime` scope and add the separately confirmed
+`NATIVE-CURL-CVE-2026-19931` finding in that scope. Preserve earlier receipts as
+historical observations. Their previous resolved statuses do not establish
+current safety of the registered Arrow 25 development or fallback runtimes.
+
+Add corrective task-4.1 work before phase-4 admission: build a source-bound,
+private static network/XML prefix with curl 8.23.0, libxml2 2.15.4, libiconv 1.19,
+zlib 1.3.2 with `df84af25`, and the reviewed private OpenSSL 3.6.5. Preserve HTTP,
+HTTPS, HTTP/2, verified TLS, gzip and the enabled Arrow feature contract. Bind
+the exact nghttp2 archive, headers, distro security/backport evidence and actual
+PIC consumer proof; retain its unavailable source-archive evidence explicitly.
+Select one private zlib provider, exact imported targets and headers, then
+reject residual affected host providers in the final resolved ELF/link-map
+closure. Neither prefix compilation nor a configure inventory admits a runtime.
+
+Build a separate corrective Arrow 25 recipe and policy for the safe fallback
+and four-runtime matrix. The old recipe, ordered compute patches and receipts
+remain byte-exact. Do not hide changed execution behind an old recipe hash.
+Qualify the corrected Arrow 25 and Arrow 26 installations before closing either
+finding or advancing the phase.
+
+With no safe fallback established, stop affected registered entrypoints at a
+durable boundary after fresh ownership, consumer and scheduler checks. Use a
+separate pytest-only executor for synthetic policy/build-tool tests. Preserve
+unowned workloads, scientific artifacts and historical evidence; do not kill
+jobs or modify OS packages. Continue isolated remediation, keeping the phase
+and installed security gates blocked until replacement qualification succeeds.
+
 ### Required target behavior
 
 - Targets: Polars 2.0.0 (`>=2.0.0,<3`) and custom Arrow

@@ -10,11 +10,12 @@ SHA-256 `6e245740835a0ac928ca55ac76844757179c30654f7a69af2e7527d0f5139fe6`.
 External paths are relative to
 `/home/toffe/.local/state/biominer/upgrades/20261021/`.
 
-The qualified two-patch Arrow 25 recipe and artifacts remain unchanged for
-fallback and four-runtime testing. Unrelated scientific work remains outside
-this task. Arrow 26 installation, runtime qualification, phase completion and
-production promotion are not established by preparatory research or builder
-tooling checks.
+The two-patch Arrow 25 recipe and artifacts remain unchanged as historical
+evidence. Current provider research below reopened their transitive zlib
+exposure and identified an applicable curl vulnerability; a corrected fallback
+is required. Unrelated scientific work remains outside this task. Arrow 26
+installation, runtime qualification, phase completion and production promotion
+are not established by preparatory research or builder tooling checks.
 
 ## Task 4.1: exact source and isolated builder
 
@@ -212,6 +213,95 @@ external native inputs: `phase4/configured-native-provider-audit-2.json`, SHA-25
 It establishes provider identity for a configured superset. Final linkage,
 current source/advisory applicability and a fresh successful configuration remain
 required before runtime admission. The next run uses a new generation 3.
+
+### Security correction: actual transitive zlib and curl exposure
+
+The configured-provider audit led to inspection of the actual Arrow 25 receipt
+at `.native-runtime/arrow25-security-slices-20261021-1/build/build-receipt.json`.
+It records system `libz.so.1.3.1`, `libcurl.so.4.8.0` and
+`libxml2.so.16.1.2`, with the same bytes selected during Arrow 26 configuration.
+Both system network/XML libraries directly require `libz.so.1`.
+
+Ubuntu marks the installed zlib source package
+`1:1.3.dfsg+really1.3.1-1ubuntu3.1` vulnerable to
+[CVE-2026-85091](https://ubuntu.com/security/CVE-2026-85091). The installed curl
+source package `8.18.0-1ubuntu2.8` remains vulnerable to Negotiate ambient-user
+connection reuse,
+[CVE-2026-19931](https://ubuntu.com/security/CVE-2026-19931). Its October
+backports fix other issues and do not close this finding. The private patched
+zlib in lxml does not fix the separately loaded system provider.
+
+The zlib applicability conflict was already recorded in phase 2 and must not be
+presented as new proof of exploitability. The advisory describes 1.3.1.2–1.3.2;
+Ubuntu marks older packages vulnerable while questioning the affected range.
+The earlier exact 1.3.1 source inspection found no `gz_vacate` or `state->again`
+branch introduced by `81cc0beb`. That source evidence remains valid within its
+stated scope, including the separately inspected DuckDB static 1.3.1 source.
+It does not establish whole-zlib safety or erase Ubuntu's unresolved older-version
+classification. Arrow's replacement uses the patched provider and removes that
+host dependency. The independently confirmed curl finding already blocks the
+current Arrow runtime.
+
+`NATIVE-ZLIB-CVE-2026-85091` is reopened in its existing scope;
+`NATIVE-CURL-CVE-2026-19931` is an additional finding in
+`shared_and_approved_runtime`. Prior phase-3 receipts remain historical,
+including their earlier security dispositions. Neither the current development
+environment nor its registered Arrow 25 fallback is currently established safe.
+Phase-4 admission and advancement remain blocked.
+
+The corrective source choice is private curl 8.23.0, libxml2 2.15.4, libiconv
+1.19, patched zlib 1.3.2 and private OpenSSL 3.6.5. The curl source archive was
+downloaded and matched the immutable upstream release-asset digest; the other
+source inputs were copied from exact retained archives and rehashed.
+`phase4/private-network-inputs-1/inputs.json` has SHA-256
+`82b6ef34cfa93ccffd9e9493335e280e537d01c180f323adb665cab0e188af14`.
+The source-choice receipt has SHA-256
+`7a18833bf4521e6161be46d6d84783f8578a5c17d9aa0cf4ce4f8d2c58a976c9`.
+HTTP/2 must retain its exact reviewed nghttp2 provider and pass an actual PIC
+consumer link. Exact distro source-archive/patch bytes for nghttp2 were not
+obtained; official source-package/backport evidence and installed-byte checks
+are scoped separately. Complete native/host security clearance is not claimed.
+
+Eight GitHits package-information calls, batched reviews, eight changelog calls
+and source search/grep/read/status results were retained alongside official
+upstream and Ubuntu evidence. GitHits has no vcpkg vulnerability dataset; zero
+rows did not establish safety. The 100-artifact research inventory is
+`phase4/native-provider-research-78778aaa-1/provider-security-research.json`,
+SHA-256 `341864bb5e7d65bc78e46783d499f06b495495bd665e0574f96da980a2d2d7df`.
+
+A separate immutable pytest executor now contains only the five existing pure
+Python test-tool distributions, copied from 506 exact recorded files. Its
+initial probe loaded no Arrow, curl, libxml2 or system zlib library. It is not a
+BioMiner fallback. Its receipt is
+`.native-runtime/pytest-executor-20261021-1/executor.json`, SHA-256
+`5481049905dd8e59871aa3c686fa0e9baa94ec362612be0d34281a66bf8d4b08`;
+the supervised provisioning receipt is
+`phase4/pytest-executor-provision-1/execution.json`, SHA-256
+`d6a35079a612930d5bd00d9847e1eef64e1be1a624c6a66abdd9295cb1515443`,
+with supervisor/runner exit 0 and no interruption.
+
+Containment then completed with supervisor/runner exit 0 and no interruption.
+A fresh inventory under the cutover lock covered the two registered runtime
+roots, exact bootstrap identities, readable same-user consumers, nine scheduler
+commands and visible launcher configuration. No eligible active workload or
+matching launcher was found. Only the exact development and fallback environment
+root directories were changed from mode 0555 to 0000, using verified directory
+descriptors and durable intent records. No job was stopped or restarted; the
+`.venv` alias still points at its now-disabled target. Their payload bytes and
+historical receipts remain intact. There is no currently qualified safe fallback.
+
+The actual containment receipt is
+`phase4/current25-containment-1/containment.json`, SHA-256
+`9080b152f07c57b5976bbf473274199312076f6d5a1b5a31217519c550233a76`;
+execution receipt `phase4/current25-containment-execution-1/execution.json` has
+SHA-256 `4a1859d2c222c0b942a783ba14e17b7aefe0668ebb0ea4a289d7bc086f95bd23`.
+Independent source review approved the descriptor-bound mutation and intent
+journal: SHA-256
+`2e99ed859cc7e383798c4b97944d357523bd4e5fa6697f2a2ecd5653524de067`.
+Other users, remote schedulers and future reconstructed/manual environments
+remain outside this scope. Private-provider builds and replacement runtime
+qualification remain required; containment does not pass the phase-4 security
+gate.
 
 ## Task 4.2: storage API compatibility
 
