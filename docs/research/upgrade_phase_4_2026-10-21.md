@@ -1218,3 +1218,19 @@ Independent review passed, SHA-256
 `31e90377ece5bea7aed6119c2b1dcbce80a6f8143eaa231c1ce7db738f66ba79`.
 All 284 previous test functions and every source-family/cohort/admission pin
 remain unchanged. Actual positive capture and retained replay remain pending.
+
+## Original LZ4 version macro comments
+
+The next actual capture found trailing comments on all three original LZ4
+version constants. The reader now counts every definition before parsing an
+integer with one optional trailing comment. Duplicate, malformed and expression
+values remain rejected. No family, archive, cohort or admission pin changed.
+
+Focused RED recorded twelve failures and eight passes in 1.95 seconds. All
+324 tests passed in 16.20 seconds, exit 0 without interruption; receipt SHA-256
+`dd0fc3577d176362b80a03db0046e0327e00ba6a142476ca032fb6ce7b1bbf76`.
+Independent review passed, SHA-256
+`3e9c9469d02ac75ec2f5aa219dbc09c6496b47eba632c0d9dc46a5e675696c1b`.
+A bounded diagnostic returned source proofs for all eight actual Arrow 25
+ExternalProjects; this component diagnostic is not a complete attestation.
+Combined capture/public verification/retained replay remain pending.

@@ -1384,10 +1384,14 @@ def _lz4_metadata_outputs(layout, original, entrypoint, cache, version, graph_re
         template_ref = _source_reference("lib/liblz4.pc.in", source, original, evidence)
         header_ref = _source_reference("lib/lz4.h", source, original, evidence)
         header = _text(evidence.resolver.read(header_ref))
-        versions = [re.findall(r"^#define LZ4_VERSION_" + name + r"\s+([0-9]+)\s*$", header, re.M)
-                    for name in ("MAJOR", "MINOR", "RELEASE")]
-        _require(all(len(value) == 1 for value in versions), "LZ4 pkg-config source version is ambiguous")
-        values = {"PREFIX": prefix, "VERSION": ".".join(value[0] for value in versions)}
+        definitions = [re.findall(r"^[ \t]*#[ \t]*define[ \t]+LZ4_VERSION_" + name + r"\b([^\r\n]*)$",
+                                  header, re.M) for name in ("MAJOR", "MINOR", "RELEASE")]
+        # Count every definition before accepting a decimal value with one
+        # optional trailing comment; a second malformed definition still conflicts.
+        constant = r"[ \t]+([0-9]+)[ \t]*(?:/\*(?:(?!\*/)[^\r\n])*\*/[ \t]*|//[^\r\n]*)?"
+        versions = [re.fullmatch(constant, rows[0]) if len(rows) == 1 else None for rows in definitions]
+        _require(all(value is not None for value in versions), "LZ4 pkg-config source version is ambiguous")
+        values = {"PREFIX": prefix, "VERSION": ".".join(value[1] for value in versions)}
         for key, cache_key, default in (("LIBDIR", "CMAKE_INSTALL_LIBDIR", "lib"),
                                         ("INCLUDEDIR", "CMAKE_INSTALL_INCLUDEDIR", "include")):
             directory = cache.get(cache_key, default)

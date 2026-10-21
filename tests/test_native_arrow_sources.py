@@ -2021,3 +2021,74 @@ def test_lz4_package_config_rejects_non_native_newline_prefix_suffix_or_changed_
     use_native_lf_lz4_package_configuration(case, verifier, monkeypatch, change=change)
     with pytest.raises(ValueError, match="template|source|package|LZ4"):
         case.capture(verifier)
+
+
+def use_lz4_commented_version_constants(case, verifier, monkeypatch, *, comments="block", change=None):
+    project, _, _, _, _, _ = use_remaining_source_owned_lz4_metadata(case, verifier, monkeypatch)
+    old = project["archive"]
+    with tarfile.open(old["path"]) as archive:
+        contents = {member.name.split("/", 1)[1]: archive.extractfile(member).read()
+                    for member in archive.getmembers() if member.isfile()}
+    lines = [b"#define LZ4_VERSION_MAJOR    1", b"#define LZ4_VERSION_MINOR   10",
+             b"#define LZ4_VERSION_RELEASE  0"]
+    if comments == "block":
+        lines = [line + comment for line, comment in zip(lines, (
+            b"    /* for breaking interface changes  */",
+            b"    /* for new (non-breaking) interface capabilities */",
+            b"    /* for tweaks, bug-fixes, or development */"), strict=True)]
+    elif comments == "line":
+        lines = [line + b" // original version constant" for line in lines]
+    if change == "duplicate_comment":
+        lines.append(b"#define LZ4_VERSION_MINOR 99 /* conflicting definition */")
+    elif change == "duplicate_expression":
+        lines.append(b"#define LZ4_VERSION_MINOR (5 + 5)")
+    elif change == "expression":
+        lines[1] = b"#define LZ4_VERSION_MINOR (5 + 5)"
+    elif change == "comment_breakout":
+        lines[1] = b"#define LZ4_VERSION_MINOR 10 /* closed */ + 1 /* reopened */"
+    elif change == "unterminated":
+        lines[1] = b"#define LZ4_VERSION_MINOR 10 /* unterminated comment"
+    elif change == "missing":
+        lines.pop(1)
+    contents["lib/lz4.h"] = b"\n".join(lines) + b"\n"
+    archive = case.bundle(Path(old["path"]), project["source"], contents)
+    project["archive"] = archive
+    case.archives = [{**row, "sha256": archive["sha256"]} if row["path"] == archive["path"] else row
+                     for row in case.archives]
+    monkeypatch.setitem(verifier.EP_ARCHIVE_SHA256, "lz4", archive["sha256"])
+    owner = case.cpp / "_deps/orc-src/cmake_modules/ThirdpartyToolchain.cmake"
+    for path in (Path(project["urlinfo"]["path"]), owner,
+                 case.arrow / "cpp/cmake_modules/ThirdpartyToolchain.cmake",
+                 case.arrow / "cpp/thirdparty/versions.txt"):
+        path.write_text(path.read_text().replace(old["sha256"], archive["sha256"]))
+    refresh_lz4_owner(case, owner)
+    case.raw["toolchain_versions"] = {"cmake": "cmake version 4.2.3"}
+    case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+    return project, record(project["source"] / "lib/lz4.h"), record(project["binary"] / "liblz4.pc")
+
+
+@pytest.mark.parametrize("comments", ["block", "line"], ids=["actual-block-comments", "single-line-comments"])
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_lz4_pkgconfig_version_accepts_only_original_decimal_constants_with_trailing_comments(
+        verifier, completed_source_case, tmp_path, monkeypatch, comments, retained):
+    case = completed_source_case
+    project, header, output = use_lz4_commented_version_constants(case, verifier, monkeypatch, comments=comments)
+    assert b"Version: 1.10.0\n" in Path(output["path"]).read_bytes()
+    attestation = case.publish(verifier, tmp_path / "lz4-commented-source-version.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    generated = {row["output"]["path"]: row for row in initial["attestation"]["external_projects"]["lz4"]["generated_outputs"]}
+    assert generated[output["path"]]["rule"] == "lz4-source-metadata-v1"
+    assert header in generated[output["path"]]["inputs"] and header in initial["files"]
+    assert output in initial["files"] and record(project["source"] / "lib/liblz4.pc.in") in initial["files"]
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["duplicate_comment", "duplicate_expression", "expression",
+                                    "comment_breakout", "unterminated", "missing"])
+def test_lz4_pkgconfig_version_rejects_duplicate_non_integer_or_unclosed_original_definitions(
+        verifier, completed_source_case, monkeypatch, change):
+    case = completed_source_case
+    use_lz4_commented_version_constants(case, verifier, monkeypatch, comments="bare", change=change)
+    with pytest.raises(ValueError, match="LZ4|version|ambiguous|integer|constant"):
+        case.capture(verifier)
