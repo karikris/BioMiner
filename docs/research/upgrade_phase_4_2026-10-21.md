@@ -943,3 +943,44 @@ Independent root review verified that reversing only these four literal
 updates reproduces both complete baseline files; review SHA-256 is
 `7915caf9877619ede41fbe3ab0510fdb453acbfdb9560b9c3252b07c2bf6cc19`.
 This binds recipe identity only; no candidate artifact is admitted.
+
+## Completed-build source-proof capture and retained replay
+
+The standalone provenance tool now captures a separate completed-build
+attestation and verifies it through the same pure reader. It binds the raw
+receipt, recipe, build inputs, source inventories, selected dependencies and
+wheel; verifies the exact disjoint 21-member supplemental and three/one-member
+legacy sets; and describes all seven ExternalProjects. Individually qualified
+generated outputs retain original-source replacements, generator/template and
+command inputs, source/object/PIC/archive relationships and selected linker-map
+members. Wheel ELF and external native inventories are rehashed. The tool
+executes no recipe, generator, compiler or native inspection command.
+
+The create-only CLI writes outside the frozen build tree. Retained replay uses
+only the supplied checksum-selected copies, rejects missing evidence and never
+falls back to historical source paths. These are provenance checks; a positive
+source record does not establish that a wheel imports or satisfies runtime
+admission. The two recipe bindings match the newly committed Azure fixes.
+Actual artifact, attestation, transformation and verifier admission pins remain
+closed.
+
+Root-owned initial orchestration RED recorded 56 failures and 37 passes in
+2.36 seconds; the first implementation passed 93 tests in 3.34 seconds.
+Independent review then identified three concrete issues: inconsistent raw and
+manifest work roots, LZ4's nested `build/cmake` entrypoint, and CMake's literal
+ExternalProject placeholders differing from expanded stamp commands. Focused
+regressions reproduced four failures in 0.37 seconds and 16 failures with
+26 passes in 2.64 seconds. GitHits inspection of exact CMake 4.2.3 source
+confirmed when those placeholders are written and expanded.
+
+The correction enforces matching work roots, validates the finite owned source
+and binary substitutions, retains exact stamp equality, and binds LZ4's nested
+entrypoint to its source-owned ORC declaration. All 139 tests passed in
+5.68 seconds, exit 0 without interruption; execution receipt SHA-256 is
+`86f9dea4153225cb6b2f04406f85ec4f4a855f1b07946f05c248162312cddccd`.
+Independent review closes all three findings within source/test scope;
+addendum SHA-256 is
+`9f94aa00820d2c8b179c0b51eefb5da70a0b1d4029f7eedf39507c2ebe56b762`.
+The original 93 tests and six reviewed primitive functions remain unchanged.
+Actual final-build capture, retained replay and native/application qualification
+remain required. Phase 4 is incomplete.
