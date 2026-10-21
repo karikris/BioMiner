@@ -3,6 +3,38 @@
 Approved in conversation on 21 October 2026. Starting `main`:
 `5bac7f168c1b257184615baf1524f12d5c580bc6`.
 
+## Current scope: dependency and compatibility implementation
+
+The user subsequently requested implementation without the cybersecurity
+component. This direction supersedes further advisory research, security
+investigation and numeric stress-probe work in the earlier plan. Preserve
+completed evidence and existing runtime containment; the additional RapidJSON
+counter probe and proposed arithmetic patch are excluded and have not been
+compiled or executed. Continue the already selected dependency cohort.
+
+The remaining implementation has four evidence handshakes:
+
+1. Finish the two candidate recipes with the same finite source cohort, explicit
+   bundled providers, all existing capabilities and the Arrow 26 uriparser
+   compilation correction. Run their focused suites and independent review;
+   commit each coherent task to `main`.
+2. Verify build provenance, configure fresh Arrow 25 and 26 generations, review
+   actual inputs, and compile sequentially within the four-frontend limit.
+   Preserve failed generations and use new ones whenever source inputs change.
+   Verify wheel contents, imports, capabilities and ordinary API behavior.
+3. Test Polars 1/2 against both new Arrow candidates using the same bounded
+   synthetic fixtures. Verify storage, malformed-input rejection, null/offset
+   behavior, packaging and CLI; perform the previously authorized disposable
+   PostgreSQL/S3 checks and paired resource comparisons where executable.
+4. Complete the compatibility report and candidate recovery/canary checks,
+   recording exact commits, test/artifact hashes and verified phase pushes.
+
+Keep candidate compatibility qualification distinct from production runtime
+admission. Do not weaken existing admission checks, label an unresolved
+security gate passed, or reactivate either contained environment. Any remaining
+activation condition stays explicit in the final report. Push completed phases
+under the existing cadence; unrelated scientific work remains untouched.
+
 ## Execution contract
 
 Use subagent-driven implementation and independent spec/quality review.
