@@ -35,6 +35,24 @@ security gate passed, or reactivate either contained environment. Any remaining
 activation condition stays explicit in the final report. Push completed phases
 under the existing cadence; unrelated scientific work remains untouched.
 
+## Remaining compatibility phases
+
+This table supersedes the security, admission and production-migration portions
+of the historical task table and gates below. The separate compatibility
+handshake is documented in `docs/research/upgrade_phase_4_2026-10-21.md`.
+Existing runtime admission policies remain closed.
+
+| Phase | Remaining tasks and handshake |
+|---|---|
+| 4 | Complete both candidate source/build/native proofs, target API behavior, application floor, and full source/installed suite with CLI. Review the joined evidence, commit the phase summary, push `main`, verify the remote SHA, and record continuation to phase 5. |
+| 5 | Run the four-cell compatibility matrix, disposable PostgreSQL/S3 checks with verified cleanup, and three paired resource repetitions. Reuse the full application suite only for identical frozen inputs. Commit each task, review the phase evidence, push the summary and record continuation to phase 6. |
+| 6 | Run bounded synthetic canary and interrupted-run recovery on the distinct target and comparison applications. Compare logical outputs, explicit provenance differences and cleanup. Commit each task and the final reviewed compatibility report, then push and verify `main`. |
+
+These phases establish candidate compatibility only. Further cybersecurity
+research, security clearance, runtime admission, production workload migration
+and a currently safe production fallback are outside this amended request;
+none may be represented as passed by these handshakes.
+
 ## Execution contract
 
 Use subagent-driven implementation and independent spec/quality review.

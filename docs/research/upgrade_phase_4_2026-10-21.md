@@ -1427,3 +1427,46 @@ Reports/logs remain retained; only that successful diagnostic's own synthetic
 scratch was removed. The complete installed 4,254-case suite and three CLI
 checks are now running. No full installed, phase or runtime-admission pass is
 claimed by this diagnostic.
+
+
+## Package-only installed fixture traversal
+
+The next complete installed run passed 4,253 cases and failed one source-scan
+case. All 4,254 setup and teardown phases passed; frozen inputs were unchanged.
+The fixture view's `src` link exposed all third-party site-packages, including
+a non-UTF-8 Python test fixture. This is a runner coverage error, rather than
+an application dependency failure. The failed report remains unchanged.
+
+GitHits inspection of CPython 3.14.7 `Path.rglob` confirms that recursive
+symlink traversal defaults to false. A single BioMiner directory link would
+therefore make that scan empty. The correction must preserve all 331 installed
+application payload files, including the exact nonempty 330-file Python set,
+using real readonly directory scaffolding and individual installed-file links.
+It must keep the existing strict module origin and hash checks.
+
+The terminal run's 179,248 temporary fixture entries, containing 1,202,147,880
+regular-file bytes, were copied, fsynced and byte/mode/link verified before
+reclaiming only its report-bound temporary tree. The retention execution
+SHA-256 is `89a5a344810c8aea77a79f551a3214a254ff11b60f884e0411077c066d710c9e`.
+Original test reports, logs and the failed qualification remain retained.
+
+
+The corrected runner SHA-256 is
+`f5e90c2d69067f9215a9ef45b0798e98bb47e651bc05f93d8680be5a632dca29`.
+The new controls reproduced the issue: nine failed and 17 passed before the
+correction. The first complete control run passed 71 and exposed three
+fault-injection setup errors: replacing a readonly directory requires making
+that owned synthetic fixture writable first. Only the two setup chmod lines
+changed; all assertions remained. The second complete run passed all 74
+controls in 0.32 seconds. Independent SPEC/QUALITY, context and focused
+coordinator review passed, SHA-256
+`40883bf4dc9934be5a811ab2112ece2ddcfbeeb510004c90f9141839a76040c5`.
+
+Actual metadata-only source-reuse preflight passed. The sole observed failing
+case then passed all three phases with exact installed origins, unchanged
+frozen inputs, and verified removal of only its successful diagnostic scratch.
+Its execution SHA-256 is
+`90022848c842c5d7d5b0fc3f7ee91bca14eba6b87c8f9578d8506698ce1afb7b`.
+The complete installed run and three CLI checks have started with context 5;
+the original successful 4,254-case source proof remains explicit reused evidence.
+Full installed success and phase publication remain pending at this checkpoint.
