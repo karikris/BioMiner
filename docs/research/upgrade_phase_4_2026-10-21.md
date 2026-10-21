@@ -1339,3 +1339,35 @@ observed equal local/remote `main` bind the create-only push receipt. Fresh
 continuation must pass before the next phase executes. Registration, runtime
 admission, security passage, legacy phase passage, production readiness and
 production migration remain false. No phase receipt has been published yet.
+
+
+## Final application packaging and isolated comparison installations
+
+The target application wheel was built from committed source `a0aac4e`, with
+its Arrow 26 floor. Whole wheel SHA-256 is
+`beb4036f9f0b71c76a148cd3b82676e1a701d3c66cf8acd837915ae8e338ceff`.
+Its 331 package files exactly match committed source and the earlier Arrow
+25-compatible application wheel. The only changed member payloads are
+`METADATA` and `RECORD`; the only metadata field change is the Arrow requirement.
+Every wheel RECORD hash and size was checked. Payload verification SHA-256 is
+`577b78375fcbb507e818093075df2130e89bcabf3ecadf9d855bc5474d015757`.
+
+Both applications now have separate offline, frozen, 46-distribution
+installations, each with its correct Arrow wheel and application metadata.
+The target installation has 8,703 inventory entries; its receipt SHA-256 is
+`2d28378cd7c56b599f9eb242bc039b86e1dddced61947000016051a4aeff90dd`.
+The Arrow 25 comparison installation has 8,704 entries; receipt SHA-256 is
+`776d0e0c013c5a098c8194bc0b281f5f9ccc6385dd3a480ee97c5f1e6ae0c281`.
+The latter retains application commit `b9dce6e` and its original Arrow 25 floor;
+the target wheel was not installed under Arrow 25. The independent source
+snapshots include complete tests/configuration and private Git metadata.
+Materialization checks preserved both original 45-package dependency prefixes.
+
+These are unregistered comparison installations, not production entrypoints.
+Full source/installed test execution and installed CLI remain pending. Two
+failed full-suite attempts are retained: 20 tests exposed the runner's pytest
+scratch outside `/tmp`; relocating all output to `/tmp` then exposed one test
+requiring HOME outside `/tmp`. All 21 affected cases pass with separate private
+`/tmp` pytest scratch and retained HOME/reports outside it. The reviewed runner
+correction leaves every product guard and test unchanged. The complete suite
+is rerunning with this correction; no full-suite success is claimed yet.
