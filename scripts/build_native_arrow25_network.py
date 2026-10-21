@@ -58,6 +58,14 @@ TOOLCHAIN_PATCHES = (
      "  fetchcontent_makeavailable(cares)\n  set_target_properties(c-ares PROPERTIES UNITY_BUILD OFF)"),
     ("  fetchcontent_makeavailable(grpc)",
      "  set(CMAKE_UNITY_BUILD OFF)\n  fetchcontent_makeavailable(grpc)"),
+    ('  add_library(RapidJSON INTERFACE IMPORTED)\n'
+     '  target_include_directories(RapidJSON INTERFACE "${rapidjson_SOURCE_DIR}/include")\n'
+     '  add_dependencies(RapidJSON rapidjson)',
+     '  if(NOT TARGET RapidJSON)\n'
+     '    add_library(RapidJSON INTERFACE IMPORTED)\n'
+     '  endif()\n'
+     '  target_include_directories(RapidJSON INTERFACE "$<BUILD_INTERFACE:${rapidjson_SOURCE_DIR}/include>")\n'
+     '  add_dependencies(RapidJSON rapidjson)'),
     ('set(MAKE_BUILD_ARGS "-j${NPROC}")', 'set(MAKE_BUILD_ARGS "-j1")'),
 )
 

@@ -796,3 +796,31 @@ The common finite 21-member cohort matches retained input SHA-256
 `584b47d20f2ec9ce3d3f98ed4e616c9b866de96d5033cd8f8406060b7d88a69f`.
 Both recipes require fresh candidate generations and keep their existing
 configuration/compilation approval boundary. Phase 4 remains in progress.
+
+## RapidJSON target compatibility correction
+
+Arrow 26 generation 5 failed configuration in 215.011 seconds with exit 1,
+no interruption or cleanup error, and at most one compiler frontend. The newer
+RapidJSON source provides an `INTERFACE` target named `RapidJSON`; Arrow's
+wrapper attempted to create the same target again. ORC's download completed
+and was not the cause. The failed generation and checkpoint remain intact;
+raw receipt SHA-256 is
+`c72cd5e6b6f1c414c7e169910c300f02589955b3b092621f242e922e3da078fc`.
+
+GitHits inspection of both pinned Arrow wrappers and RapidJSON's exact source
+showed a second requirement: the upstream target provides only an install
+include and exports its metadata. Both recipes now preserve that target,
+create the original imported fallback only when absent, and add the source
+include through `BUILD_INTERFACE`. This makes headers available to Arrow
+without embedding the build source directory in installed exports. The custom
+target dependency and all other recipe code, source pins and capabilities are
+unchanged. Arrow 26's correction is committed at `89ce72b`.
+
+Parent-owned RED observed six failures and two passes in the eight new cases.
+The corrected complete suites passed 432 tests in 6.68 seconds, exit 0 without
+interruption; execution receipt SHA-256 is
+`7767382db00e9f322021e9154664492c72e33927d0c92518ec485071c24c1510`.
+The new CMake cases use `LANGUAGES NONE` to verify actual target reuse,
+fallback, effective consumer includes and export generation without compiling.
+Independent reviews passed for each recipe. New full candidate configurations
+and compilation remain required; these tests do not admit a runtime.
