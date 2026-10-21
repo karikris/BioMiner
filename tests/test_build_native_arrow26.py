@@ -602,7 +602,7 @@ def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
         dependency_archive = tmp_path / f"{name}.tar.gz"
         dependency_archive.write_bytes(f"approved {name} fixture".encode())
         monkeypatch.setitem(recipe.DEPENDENCIES[name], "sha256", digest(dependency_archive.read_bytes()))
-        argv.extend([f"--{name}-archive", str(dependency_archive)])
+        argv.extend(["--" + name.replace("_", "-") + "-archive", str(dependency_archive)])
     configured_result = recipe.main(argv + ["--configure-only"])
     if zlib_cache == "foreign_alias":
         assert configured_result != 0
@@ -612,7 +612,7 @@ def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
         return
     assert configured_result == 0
     manifest = json.loads((work / "build-inputs.json").read_bytes())
-    assert manifest["source_policy"] == "arrow26-integrated-private-network-v2"
+    assert manifest["source_policy"] == "arrow26-integrated-private-network-v3"
     assert manifest["network"]["helper"] == record(work / "private-network-helper.py")
     assert manifest["network"]["receipt"] == record(receipt_path)
     assert manifest["provider_cmake"] == record(work / "private-network.cmake")
@@ -1214,3 +1214,528 @@ def test_final_link_maps_cannot_treat_an_unused_load_as_consumed_private_code(re
     final.write_text("\n".join(lines) + "\n")
     with pytest.raises(ValueError, match="final.*consumed archive member" + (".*" + unused if unused else "")):
         recipe.verify_link_maps(work, network_inputs[2], {"static_archives": archives}, network=network)
+
+
+# These security source pins are an independent test oracle. They were reviewed
+# in recipe-cohort-1.json (584b47d2...); tests never read that external artifact.
+EXPECTED_SDK_COHORT = {
+    "aws_sdk_cpp": {
+        "variable": "AWSSDK",
+        "version": "1.11.914",
+        "build_version": "d207a37ecb8dc33b5e131d0d59843d264b7f7e86",
+        "commit": "d207a37ecb8dc33b5e131d0d59843d264b7f7e86",
+        "sha256": "108382fed71e70ada73d4aaa45e0ba54777f7eca6bbd44ac24b9af9ef54f069e",
+        "filename": "aws-sdk-cpp-d207a37ecb8dc33b5e131d0d59843d264b7f7e86.tar.gz",
+        "env": "ARROW_AWSSDK_URL",
+        "old_version": "1.11.778",
+        "old_sha256": "06371849792f1a8633c3e0592a17b4700f39c748ad374f4e9a6592739ecc4d9c",
+        "url": "https://github.com/aws/aws-sdk-cpp/archive/d207a37ecb8dc33b5e131d0d59843d264b7f7e86.tar.gz"
+    },
+    "aws_crt_cpp": {
+        "variable": "AWS_CRT_CPP",
+        "version": "0.43.8",
+        "build_version": "9c319786d1d83d5ace6a9de817dcfe1861003609",
+        "commit": "9c319786d1d83d5ace6a9de817dcfe1861003609",
+        "sha256": "f107357efa7d6b9be783d96d49cdaf000fe881417c431ae9fe27faf1bb55f431",
+        "filename": "aws-crt-cpp-9c319786d1d83d5ace6a9de817dcfe1861003609.tar.gz",
+        "env": "ARROW_AWS_CRT_CPP_URL",
+        "old_version": "v0.38.0",
+        "old_sha256": "f57b82f0a9e6890e4d47aa1c48b9324b5beb5b58000715c4c6ef9f147be13891",
+        "url": "https://github.com/awslabs/aws-crt-cpp/archive/9c319786d1d83d5ace6a9de817dcfe1861003609.tar.gz"
+    },
+    "aws_c_auth": {
+        "variable": "AWS_C_AUTH",
+        "version": "4b5d524bf1a511b05e0fffe5bdc51800770b9427",
+        "build_version": "4b5d524bf1a511b05e0fffe5bdc51800770b9427",
+        "commit": "4b5d524bf1a511b05e0fffe5bdc51800770b9427",
+        "sha256": "b4f6690b382abe049d543804f40230e667a95a18f64506ef7647925e8c6b9b67",
+        "filename": "aws-c-auth-4b5d524bf1a511b05e0fffe5bdc51800770b9427.tar.gz",
+        "env": "ARROW_AWS_C_AUTH_URL",
+        "old_version": "v0.10.1",
+        "old_sha256": "85d737f0f735256f1931e85e4cadbe228d88698f7b59a9b390b49ef5d0778a43",
+        "url": "https://github.com/awslabs/aws-c-auth/archive/4b5d524bf1a511b05e0fffe5bdc51800770b9427.tar.gz"
+    },
+    "aws_c_cal": {
+        "variable": "AWS_C_CAL",
+        "version": "8aa2a48a09f93c65d4cf06388e143a6584de6321",
+        "build_version": "8aa2a48a09f93c65d4cf06388e143a6584de6321",
+        "commit": "8aa2a48a09f93c65d4cf06388e143a6584de6321",
+        "sha256": "29706ab10a4d95a74db278925b82c85077c08224c0efe837841d2354555c8817",
+        "filename": "aws-c-cal-8aa2a48a09f93c65d4cf06388e143a6584de6321.tar.gz",
+        "env": "ARROW_AWS_C_CAL_URL",
+        "old_version": "v0.9.13",
+        "old_sha256": "80b7c6087b0af461b4483e4c9483aea2e0dac5d9fb2289b057159ea6032409e1",
+        "url": "https://github.com/awslabs/aws-c-cal/archive/8aa2a48a09f93c65d4cf06388e143a6584de6321.tar.gz"
+    },
+    "aws_c_common": {
+        "variable": "AWS_C_COMMON",
+        "version": "f7d471b1feaea9a310851672580f9ac7e031cfc0",
+        "build_version": "f7d471b1feaea9a310851672580f9ac7e031cfc0",
+        "commit": "f7d471b1feaea9a310851672580f9ac7e031cfc0",
+        "sha256": "a87a89fa6678fda59dd66ea9246e70d837bf71ecec39829ec712e6863d1453e4",
+        "filename": "aws-c-common-f7d471b1feaea9a310851672580f9ac7e031cfc0.tar.gz",
+        "env": "ARROW_AWS_C_COMMON_URL",
+        "old_version": "v0.12.6",
+        "old_sha256": "138822ecdcaff1d702f37d4751f245847d088592724921cc6bf61c232b198d6b",
+        "url": "https://github.com/awslabs/aws-c-common/archive/f7d471b1feaea9a310851672580f9ac7e031cfc0.tar.gz"
+    },
+    "aws_c_compression": {
+        "variable": "AWS_C_COMPRESSION",
+        "version": "d8264e64f698341eb03039b96b4f44702a9b3f83",
+        "build_version": "d8264e64f698341eb03039b96b4f44702a9b3f83",
+        "commit": "d8264e64f698341eb03039b96b4f44702a9b3f83",
+        "sha256": "537971fe42e989b638e0f436683357ed3d07f07b06b910b1c37ab3a8094bb8fd",
+        "filename": "aws-c-compression-d8264e64f698341eb03039b96b4f44702a9b3f83.tar.gz",
+        "env": "ARROW_AWS_C_COMPRESSION_URL",
+        "old_version": "v0.3.2",
+        "old_sha256": "f93f5a5d8b3fee3a6d97b14ba279efacd4d4016ef9cc7dc4be7d43519ecfbe93",
+        "url": "https://github.com/awslabs/aws-c-compression/archive/d8264e64f698341eb03039b96b4f44702a9b3f83.tar.gz"
+    },
+    "aws_c_event_stream": {
+        "variable": "AWS_C_EVENT_STREAM",
+        "version": "51bef3c44e1058b1689751539170b2e0f589ccdb",
+        "build_version": "51bef3c44e1058b1689751539170b2e0f589ccdb",
+        "commit": "51bef3c44e1058b1689751539170b2e0f589ccdb",
+        "sha256": "b890d4940957d1ddade1a9d7de4adc37b7cb98dfdfdfec7436527fec8cb558df",
+        "filename": "aws-c-event-stream-51bef3c44e1058b1689751539170b2e0f589ccdb.tar.gz",
+        "env": "ARROW_AWS_C_EVENT_STREAM_URL",
+        "old_version": "v0.7.0",
+        "old_sha256": "88835b4c78462547917f622fd9dda45c991b7e356d9c07e2f0537d4d97fbd4fb",
+        "url": "https://github.com/awslabs/aws-c-event-stream/archive/51bef3c44e1058b1689751539170b2e0f589ccdb.tar.gz"
+    },
+    "aws_c_http": {
+        "variable": "AWS_C_HTTP",
+        "version": "8aefd899fc3210bfd0e3fd414011a3cb708bf6e4",
+        "build_version": "8aefd899fc3210bfd0e3fd414011a3cb708bf6e4",
+        "commit": "8aefd899fc3210bfd0e3fd414011a3cb708bf6e4",
+        "sha256": "61b1770e2e3a2bf046005cbfa8e26d621d8f266f05d03589ebee36bb4a0ac39f",
+        "filename": "aws-c-http-8aefd899fc3210bfd0e3fd414011a3cb708bf6e4.tar.gz",
+        "env": "ARROW_AWS_C_HTTP_URL",
+        "old_version": "v0.10.13",
+        "old_sha256": "d8352e7a1fb1996694a4dc31219ce03452882abf8d0858c104727f975e11b9c7",
+        "url": "https://github.com/awslabs/aws-c-http/archive/8aefd899fc3210bfd0e3fd414011a3cb708bf6e4.tar.gz"
+    },
+    "aws_c_io": {
+        "variable": "AWS_C_IO",
+        "version": "28e4eb351a536daf1627bf69279e50671f7729b5",
+        "build_version": "28e4eb351a536daf1627bf69279e50671f7729b5",
+        "commit": "28e4eb351a536daf1627bf69279e50671f7729b5",
+        "sha256": "ea51cbe20981ed34b7a8c01a60c848e4ccb716a29cd740ead07ffd61be5169c3",
+        "filename": "aws-c-io-28e4eb351a536daf1627bf69279e50671f7729b5.tar.gz",
+        "env": "ARROW_AWS_C_IO_URL",
+        "old_version": "v0.26.3",
+        "old_sha256": "521fd0848fca661130bbb7278a414d7a38bdcb9bc8ffa89f6660d84e5838a303",
+        "url": "https://github.com/awslabs/aws-c-io/archive/28e4eb351a536daf1627bf69279e50671f7729b5.tar.gz"
+    },
+    "aws_c_mqtt": {
+        "variable": "AWS_C_MQTT",
+        "version": "e35b9ca3f9fcbf1a972c831c5e79046ce56959d1",
+        "build_version": "e35b9ca3f9fcbf1a972c831c5e79046ce56959d1",
+        "commit": "e35b9ca3f9fcbf1a972c831c5e79046ce56959d1",
+        "sha256": "54d1987ce06eb7b39faace854818e9322d3df79cb310ada350beca0b12cb89cc",
+        "filename": "aws-c-mqtt-e35b9ca3f9fcbf1a972c831c5e79046ce56959d1.tar.gz",
+        "env": "ARROW_AWS_C_MQTT_URL",
+        "old_version": "v0.15.2",
+        "old_sha256": "66f3f5edff4ad1f765a86d3342b6017d0f29f950c1c24f8c1edacdc895202edc",
+        "url": "https://github.com/awslabs/aws-c-mqtt/archive/e35b9ca3f9fcbf1a972c831c5e79046ce56959d1.tar.gz"
+    },
+    "aws_c_s3": {
+        "variable": "AWS_C_S3",
+        "version": "226c3e6937e3d5f7db9e10651f7bd20575e98187",
+        "build_version": "226c3e6937e3d5f7db9e10651f7bd20575e98187",
+        "commit": "226c3e6937e3d5f7db9e10651f7bd20575e98187",
+        "sha256": "a8f33816bf7aff38467fb15ca233a33a9113be78dad47c8a7ee30d323b42ba74",
+        "filename": "aws-c-s3-226c3e6937e3d5f7db9e10651f7bd20575e98187.tar.gz",
+        "env": "ARROW_AWS_C_S3_URL",
+        "old_version": "v0.12.0",
+        "old_sha256": "1a8a8ceda0585d52028a1f3daa5861f924e7d8d2f6a17bec05813dc0b74d6eed",
+        "url": "https://github.com/awslabs/aws-c-s3/archive/226c3e6937e3d5f7db9e10651f7bd20575e98187.tar.gz"
+    },
+    "aws_c_sdkutils": {
+        "variable": "AWS_C_SDKUTILS",
+        "version": "a1cc19f53b63658f1b1400b36f199eafeeb895a6",
+        "build_version": "a1cc19f53b63658f1b1400b36f199eafeeb895a6",
+        "commit": "a1cc19f53b63658f1b1400b36f199eafeeb895a6",
+        "sha256": "f8ef9e93b30f9833d9c9ea474110c8fa2d29fd78b885546b07e68558ece3bb1c",
+        "filename": "aws-c-sdkutils-a1cc19f53b63658f1b1400b36f199eafeeb895a6.tar.gz",
+        "env": "ARROW_AWS_C_SDKUTILS_URL",
+        "old_version": "v0.2.4",
+        "old_sha256": "493cbed4fa57e0d4622fcff044e11305eb4fc12445f32c8861025597939175fc",
+        "url": "https://github.com/awslabs/aws-c-sdkutils/archive/a1cc19f53b63658f1b1400b36f199eafeeb895a6.tar.gz"
+    },
+    "aws_checksums": {
+        "variable": "AWS_CHECKSUMS",
+        "version": "1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e",
+        "build_version": "1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e",
+        "commit": "1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e",
+        "sha256": "c58d8c5319319dcade0926da44ad12effecb21372983e22835a657a32f03c9c9",
+        "filename": "aws-checksums-1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e.tar.gz",
+        "env": "ARROW_AWS_CHECKSUMS_URL",
+        "old_version": "v0.2.10",
+        "old_sha256": "cb6509f75e42ee25c372a6d379e8582ce5179e5335183842e808f7d8abb0c314",
+        "url": "https://github.com/awslabs/aws-checksums/archive/1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e.tar.gz"
+    },
+    "s2n_tls": {
+        "variable": "S2N_TLS",
+        "version": "1.7.12",
+        "build_version": "6459002cd61e4bf3bbc53db23f068b21da9ff6bd",
+        "commit": "6459002cd61e4bf3bbc53db23f068b21da9ff6bd",
+        "sha256": "94a57c4f4713cc20088b723bcdf0bb254e32a559ffcbed583e67fe3d8ddec442",
+        "filename": "s2n-tls-6459002cd61e4bf3bbc53db23f068b21da9ff6bd.tar.gz",
+        "env": "ARROW_S2N_TLS_URL",
+        "old_version": "v1.7.0",
+        "old_sha256": "a6e8228e238239bb3c17b1eda3ed702bcbb2eaebc792eac4d754cc5619b0ea06",
+        "url": "https://github.com/aws/s2n-tls/archive/6459002cd61e4bf3bbc53db23f068b21da9ff6bd.tar.gz"
+    },
+    "thrift": {
+        "variable": "THRIFT",
+        "version": "0.25.0",
+        "build_version": "0.25.0",
+        "commit": "27e8a425ffb498e190df3a12e239326bf5ba9ed6",
+        "sha256": "66da4707214c54c94bac082103dc67adaf9e08925662700f269170a7b534b214",
+        "filename": "thrift-27e8a425ffb498e190df3a12e239326bf5ba9ed6.tar.gz",
+        "env": "ARROW_THRIFT_URL",
+        "old_version": "0.22.0",
+        "old_sha256": "794a0e455787960d9f27ab92c38e34da27e8deeda7a5db0e59dc64a00df8a1e5",
+        "url": "https://www.apache.org/dyn/closer.lua/thrift/0.25.0/thrift-0.25.0.tar.gz?action=download"
+    },
+    "grpc": {
+        "variable": "GRPC",
+        "version": "1.83.1",
+        "build_version": "v1.83.1",
+        "commit": "aae267021b1ac256f8b9038d0ef528c3798cc137",
+        "sha256": "60caa8397426d8a500e3e57ab6a49d1cb5aa62a36f2591eb9da3d77fa38ad8c9",
+        "filename": "grpc-v1.83.1.tar.gz",
+        "env": "ARROW_GRPC_URL",
+        "old_version": "v1.76.0",
+        "old_sha256": "0af37b800953130b47c075b56683ee60bdc3eda3c37fc6004193f5b569758204",
+        "url": "https://github.com/grpc/grpc/archive/v1.83.1.tar.gz"
+    },
+    "protobuf": {
+        "variable": "PROTOBUF",
+        "version": "35.1",
+        "build_version": "v35.1",
+        "commit": "35cd01f9fe9afbeea38cc7b979a3b6bfcde82c03",
+        "sha256": "f0b6838e7522a8da96126d487068c959bc624926368f3024ac8fd03abd0a1ac4",
+        "filename": "protobuf-35.1.tar.gz",
+        "env": "ARROW_PROTOBUF_URL",
+        "old_version": "v31.1",
+        "old_sha256": "12bfd76d27b9ac3d65c00966901609e020481b9474ef75c7ff4601ac06fa0b82",
+        "url": "https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protobuf-35.1.tar.gz"
+    },
+    "absl": {
+        "variable": "ABSL",
+        "version": "20250512.1",
+        "build_version": "20250512.1",
+        "commit": "76bb24329e8bf5f39704eb10d21b9a80befa7c81",
+        "sha256": "9b7a064305e9fd94d124ffa6cc358592eb42b5da588fb4e07d09254aa40086db",
+        "filename": "absl-20250512.1.tar.gz",
+        "env": "ARROW_ABSL_URL",
+        "old_version": "20250127.0",
+        "old_sha256": "16242f394245627e508ec6bb296b433c90f8d914f73b9c026fddb905e27276e8",
+        "url": "https://github.com/abseil/abseil-cpp/archive/20250512.1.tar.gz"
+    },
+    "cares": {
+        "variable": "CARES",
+        "version": "1.34.9",
+        "build_version": "1.34.9",
+        "commit": "bc91829cce983a35ec01f5dbc05465858a3df469",
+        "sha256": "9364b70a12eb59a06830fb488d9357f90100dff0d98b23ea3593a183d43e6f2f",
+        "filename": "c-ares-1.34.9.tar.gz",
+        "env": "ARROW_CARES_URL",
+        "old_version": "1.34.6",
+        "old_sha256": "912dd7cc3b3e8a79c52fd7fb9c0f4ecf0aaa73e45efda880266a2d6e26b84ef5",
+        "url": "https://github.com/c-ares/c-ares/releases/download/v1.34.9/c-ares-1.34.9.tar.gz"
+    },
+    "rapidjson": {
+        "variable": "RAPIDJSON",
+        "version": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f",
+        "build_version": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f",
+        "commit": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f",
+        "sha256": "2d2601a82d2d3b7e143a3c8d43ef616671391034bc46891a9816b79cf2d3e7a8",
+        "filename": "rapidjson-24b5e7a8b27f42fa16b96fc70aade9106cf7102f.tar.gz",
+        "env": "ARROW_RAPIDJSON_URL",
+        "old_version": "232389d4f1012dddec4ef84861face2d2ba85709",
+        "old_sha256": "b9290a9a6d444c8e049bd589ab804e0ccf2b05dc5984a19ed5ae75d090064806",
+        "url": "https://github.com/Tencent/rapidjson/archive/24b5e7a8b27f42fa16b96fc70aade9106cf7102f.tar.gz"
+    },
+    "jemalloc": {
+        "variable": "JEMALLOC",
+        "version": "5.3.1",
+        "build_version": "5.3.1",
+        "commit": "81034ce1f1373e37dc865038e1bc8eeecf559ce8",
+        "sha256": "3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92",
+        "filename": "jemalloc-5.3.1.tar.bz2",
+        "env": "ARROW_JEMALLOC_URL",
+        "old_version": "5.3.0",
+        "old_sha256": "2db82d1e7119df3e71b7640219b6dfe84789bc0537983c3b7ac4f7189aecfeaa",
+        "url": "https://github.com/jemalloc/jemalloc/releases/download/5.3.1/jemalloc-5.3.1.tar.bz2"
+    }
+}
+
+
+def test_sdk_cohort_requires_exact_reviewed_source_inputs(recipe):
+    assert recipe.SOURCE_POLICY == "arrow26-integrated-private-network-v3"
+    assert set(recipe.DEPENDENCIES) == {
+        "simdjson", "uriparser", "boost", "zlib", *EXPECTED_SDK_COHORT,
+    }
+    for name, expected in EXPECTED_SDK_COHORT.items():
+        assert {key: recipe.DEPENDENCIES[name].get(key) for key in expected} == expected
+        assert "path" not in recipe.DEPENDENCIES[name]
+
+
+@pytest.fixture
+def cohort_source_inputs(recipe, source_inputs, monkeypatch):
+    """Use independent original assignments, including when recipe pins drift."""
+    archive, work, files = source_inputs
+    versions_path = "cpp/thirdparty/versions.txt"
+    lines = files[versions_path].decode().splitlines()
+    for expected in EXPECTED_SDK_COHORT.values():
+        for assignment in (
+            f"ARROW_{expected['variable']}_BUILD_VERSION={expected['old_version']}",
+            f"ARROW_{expected['variable']}_BUILD_SHA256_CHECKSUM={expected['old_sha256']}",
+        ):
+            if assignment not in lines:
+                lines.append(assignment)
+    lines.append("ARROW_UNRELATED_BUILD_VERSION=keep-this-exactly")
+    files[versions_path] = ("\n".join(lines) + "\n").encode()
+    toolchain_path = "cpp/cmake_modules/ThirdpartyToolchain.cmake"
+    toolchain = files[toolchain_path].decode()
+    uri_anchor = "  fetchcontent_makeavailable(uriparser)"
+    if uri_anchor in toolchain:
+        toolchain = toolchain.replace(uri_anchor + "\n", "")
+    toolchain += "function(build_uriparser)\n" + uri_anchor + "\nendfunction()\n"
+    toolchain += "function(unrelated_target)\n  set(CMAKE_UNITY_BUILD ON)\nendfunction()\n"
+    files[toolchain_path] = toolchain.encode()
+    files["cpp/thirdparty/uri-feature-test-fixture.c"] = (
+        b"#define _DEFAULT_SOURCE\n#include <stdlib.h>\n"
+        b"void *unchanged_feature_test(void *p) { return reallocarray(p, 2, 4); }\n")
+    archive_at(archive, f"arrow-{recipe.ARROW_COMMIT}", files,
+               {"python/NOTICE.txt": "../NOTICE.txt"})
+    monkeypatch.setattr(recipe, "ARROW_ARCHIVE_SHA256", digest(archive.read_bytes()))
+    return archive, work, files
+
+
+def test_sdk_cohort_source_transformation_updates_every_reviewed_assignment(
+        recipe, cohort_source_inputs):
+    archive, work, files = cohort_source_inputs
+    source, evidence = recipe.prepare_source(archive, work, resume=False)
+    versions = (source / "cpp/thirdparty/versions.txt").read_text()
+    assignments = dict(line.split("=", 1) for line in versions.splitlines()
+                       if line.startswith("ARROW_") and "=" in line)
+    for expected in EXPECTED_SDK_COHORT.values():
+        assert assignments[f"ARROW_{expected['variable']}_BUILD_VERSION"] == expected["build_version"]
+        assert assignments[f"ARROW_{expected['variable']}_BUILD_SHA256_CHECKSUM"] == expected["sha256"]
+    assert assignments["ARROW_UNRELATED_BUILD_VERSION"] == "keep-this-exactly"
+    for name, data in files.items():
+        if name not in {"cpp/cmake_modules/ThirdpartyToolchain.cmake", "cpp/thirdparty/versions.txt"}:
+            assert (source / name).read_bytes() == data
+    assert recipe.prepare_source(archive, work, resume=True) == (source, evidence)
+
+
+def test_uriparser_unity_fix_only_changes_its_target(recipe, cohort_source_inputs):
+    archive, work, files = cohort_source_inputs
+    source, _ = recipe.prepare_source(archive, work, resume=False)
+    toolchain = (source / "cpp/cmake_modules/ThirdpartyToolchain.cmake").read_text()
+    uri_body = toolchain.split("function(build_uriparser)\n", 1)[1].split("endfunction()", 1)[0]
+    assert uri_body == (
+        "  fetchcontent_makeavailable(uriparser)\n"
+        "  set_target_properties(uriparser PROPERTIES UNITY_BUILD OFF)\n")
+    assert "function(unrelated_target)\n  set(CMAKE_UNITY_BUILD ON)\nendfunction()\n" in toolchain
+    uri_source = "cpp/thirdparty/uri-feature-test-fixture.c"
+    assert (source / uri_source).read_bytes() == files[uri_source]
+    commands = recipe.build_commands(source, work, work / "openssl",
+        network_prefix=work / "network", python="/python", cc="/cc", cxx="/cxx", jobs=4)
+    assert "-DCMAKE_UNITY_BUILD=ON" in commands["cpp_configure"]
+
+
+@pytest.mark.parametrize("name", ["aws_sdk_cpp", "grpc", "rapidjson", "jemalloc"])
+@pytest.mark.parametrize("field", ["version", "checksum"])
+@pytest.mark.parametrize("change", ["missing", "duplicate", "prefixed", "suffixed"])
+def test_sdk_source_rejects_changed_or_ambiguous_original_assignments(
+        recipe, cohort_source_inputs, monkeypatch, name, field, change):
+    archive, work, files = cohort_source_inputs
+    pin = EXPECTED_SDK_COHORT[name]
+    suffix = "BUILD_VERSION" if field == "version" else "BUILD_SHA256_CHECKSUM"
+    original = pin["old_version"] if field == "version" else pin["old_sha256"]
+    assignment = f"ARROW_{pin['variable']}_{suffix}={original}"
+    if change == "missing":
+        replacement = "REMOVED_ASSIGNMENT=unreviewed"
+    elif change == "duplicate":
+        replacement = assignment + "\n" + assignment
+    elif change == "prefixed":
+        replacement = "UNOWNED_" + assignment
+    else:
+        replacement = assignment + "0"
+    path = "cpp/thirdparty/versions.txt"
+    assert files[path].count((assignment + "\n").encode()) == 1
+    files[path] = files[path].replace((assignment + "\n").encode(), (replacement + "\n").encode())
+    archive_at(archive, f"arrow-{recipe.ARROW_COMMIT}", files,
+               {"python/NOTICE.txt": "../NOTICE.txt"})
+    monkeypatch.setattr(recipe, "ARROW_ARCHIVE_SHA256", digest(archive.read_bytes()))
+
+    with pytest.raises(ValueError, match="anchor|assignment"):
+        recipe.prepare_source(archive, work, resume=False)
+    assert not work.exists()
+
+
+@pytest.mark.parametrize("name", [
+    "ARROW_AWSSDK_URL", "ARROW_GRPC_URL", "ARROW_SUBSTRAIT_URL", "ARROW_UNREVIEWED_URL",
+])
+def test_inherited_fetch_urls_cannot_enter_the_build_environment(recipe, monkeypatch, name):
+    monkeypatch.setenv(name, "/unowned/poisoned-source.tar.gz")
+    env = recipe.build_environment(4, python="/python", cc="/cc", cxx="/cxx")
+    assert name not in env
+    assert not any(key.startswith("ARROW_") and key.endswith("_URL") for key in env)
+
+
+@pytest.fixture
+def cohort_cli(recipe, cohort_source_inputs, builder_inputs, network_inputs, tmp_path, monkeypatch):
+    """Run real argument/input/copy/manifest/stage guards with fake tool work."""
+    archive, work, _ = cohort_source_inputs
+    builder_receipt, builder_hash, builder, _ = builder_inputs
+    network_receipt, helper, openssl, descriptor = network_inputs
+    original_relative_to = Path.is_relative_to
+    monkeypatch.setattr(Path, "is_relative_to", lambda self, *other:
+        False if other in (("/tmp",), ("/var/tmp",)) else original_relative_to(self, *other))
+    monkeypatch.setattr(recipe, "probe_builder", lambda value: {"identity": "frozen test builder"})
+    monkeypatch.setattr(recipe, "validate_python_runtime", lambda value:
+        {"source_build": "synthetic-python", "files": []})
+    monkeypatch.setattr(recipe, "validate_openssl", lambda *args: {"version": "3.6.5"})
+    monkeypatch.setattr(recipe, "expected_generated_version", lambda *args: b"exact test version\n")
+    monkeypatch.setattr(recipe.subprocess, "check_output", lambda *args, **kwargs: "fixture tool version\n")
+    selected = {"targets": [], "boost_components": [], "boost_selection": {},
+                "forced_bundled_source_verification": {}, "static_archives": [],
+                "downloaded_archives": [], "source_trees": []}
+    monkeypatch.setattr(recipe, "capture_dependencies", lambda *args, **kwargs: selected)
+    argv = ["--archive", str(archive), "--work", str(work), "--openssl-prefix", str(openssl),
+            "--builder-receipt", str(builder_receipt), "--builder-receipt-sha256", builder_hash,
+            "--network-receipt", str(network_receipt),
+            "--network-receipt-sha256", digest(network_receipt.read_bytes()),
+            "--network-helper", str(helper), "--python", builder["python"]["path"],
+            "--cc", builder["toolchain"]["cc"]["path"], "--cxx", builder["toolchain"]["cxx"]["path"]]
+    archives, payloads = {}, {}
+    for name in ("simdjson", "uriparser", "boost", "zlib", *EXPECTED_SDK_COHORT):
+        path = tmp_path / (name + ".fixture.tar.gz")
+        payloads[name] = ("reviewed source fixture: " + name).encode()
+        path.write_bytes(payloads[name])
+        archives[name] = path
+        if name in recipe.DEPENDENCIES:
+            monkeypatch.setitem(recipe.DEPENDENCIES[name], "sha256", digest(payloads[name]))
+        argv.extend(["--" + name.replace("_", "-") + "-archive", str(path)])
+    for pin in EXPECTED_SDK_COHORT.values():
+        monkeypatch.setenv(pin["env"], "/unowned/poisoned-source.tar.gz")
+    monkeypatch.setenv("ARROW_UNREVIEWED_URL", "/unowned/not-in-cohort.tar.gz")
+    state = {"argv": argv, "archives": archives, "payloads": payloads,
+             "work": work, "stages": [], "mutate_copy": None}
+
+    def configure(stage_work, name, command, env):
+        assert name == "configure"
+        state["stages"].append({"name": name, "command": command, "env": dict(env)})
+        context = {"work": str(work), "openssl_prefix": str(openssl),
+                   "network_prefix": descriptor["prefix"], "python": builder["python"]["path"],
+                   "cc": builder["toolchain"]["cc"]["path"], "cxx": builder["toolchain"]["cxx"]["path"]}
+        cache = work / "cpp-build/CMakeCache.txt"
+        cache.parent.mkdir(exist_ok=True)
+        cache.write_text("\n".join(f"{key}:STRING={value}" for key, value in
+                                   recipe.expected_cache(context, stage="cpp").items()) + "\n")
+        if state["mutate_copy"]:
+            pin = EXPECTED_SDK_COHORT[state["mutate_copy"]]
+            (work / "inputs" / pin["filename"]).write_bytes(b"changed after configure")
+        return {"command": command, "exit_code": 0}
+
+    monkeypatch.setattr(recipe, "run_stage", configure)
+    return state
+
+
+def test_sdk_cohort_cli_captures_all_owned_inputs_and_ignores_inherited_urls(recipe, cohort_cli):
+    state = cohort_cli
+    assert recipe.main(state["argv"] + ["--configure-only"]) == 0
+    work = state["work"]
+    manifest = json.loads((work / "build-inputs.json").read_bytes())
+    receipt = json.loads((work / "build-receipt.json").read_bytes())
+    assert manifest["source_policy"] == "arrow26-integrated-private-network-v3"
+    assert set(manifest["dependencies"]) == {"simdjson", "uriparser", "boost", "zlib", *EXPECTED_SDK_COHORT}
+    assert receipt["build_inputs"] == record(work / "build-inputs.json")
+    assert receipt["dependencies"] == manifest["dependencies"]
+    assert receipt["status"] == "configured_unverified"
+    assert len(state["stages"]) == 1
+    env = state["stages"][0]["env"]
+    assert "ARROW_UNREVIEWED_URL" not in env
+    for name, pin in EXPECTED_SDK_COHORT.items():
+        captured = manifest["dependencies"][name]
+        copied = work / "inputs" / pin["filename"]
+        assert copied.read_bytes() == state["payloads"][name]
+        assert captured["archive"] == record(copied)
+        assert captured["sha256"] == digest(state["payloads"][name])
+        assert captured["role"] == "bundled_provider"
+        for key, expected in pin.items():
+            if key != "sha256":
+                assert captured[key] == expected
+        assert env[pin["env"]] == str(copied)
+        assert copied != state["archives"][name]
+    assert set(manifest["features"]) == {
+        "ACERO", "AZURE", "COMPUTE", "CSV", "DATASET", "FILESYSTEM", "FLIGHT",
+        "GCS", "HDFS", "JSON", "ORC", "PARQUET", "S3", "SUBSTRAIT",
+    }
+    assert set(manifest["codecs"]) == {"BROTLI", "BZ2", "LZ4", "SNAPPY", "ZLIB", "ZSTD"}
+    assert manifest["dependencies"]["zlib"]["role"] == "retained_source_pin_only"
+    assert manifest["network"]["helper"] == record(work / "private-network-helper.py")
+    assert manifest["provider_cmake"] == record(work / "private-network.cmake")
+    assert manifest["compiler_budget"] == {
+        "maximum_jobs": 4, "outer_ninja_jobs": 4, "nested_cmake_jobs": 1, "nested_make_jobs": 1,
+    }
+
+
+@pytest.mark.parametrize("name", tuple(EXPECTED_SDK_COHORT))
+def test_each_sdk_archive_is_a_required_explicit_cli_input(recipe, cohort_cli, name, capsys):
+    state = cohort_cli
+    argv = list(state["argv"])
+    option = "--" + name.replace("_", "-") + "-archive"
+    offset = argv.index(option)
+    del argv[offset:offset + 2]
+    with pytest.raises(SystemExit) as error:
+        recipe.main(argv + ["--check"])
+    assert error.value.code == 2
+    assert option in capsys.readouterr().err
+    assert not state["work"].exists()
+    assert state["stages"] == []
+
+
+@pytest.mark.parametrize("name", tuple(EXPECTED_SDK_COHORT))
+def test_sdk_archive_checksum_is_checked_before_any_generation(recipe, cohort_cli, name, capsys):
+    state = cohort_cli
+    state["archives"][name].write_bytes(b"unreviewed source")
+    with pytest.raises(SystemExit) as error:
+        recipe.main(state["argv"] + ["--check"])
+    assert error.value.code == 2
+    assert name + " archive checksum mismatch" in capsys.readouterr().err
+    assert not state["work"].exists()
+    assert state["stages"] == []
+
+
+@pytest.mark.parametrize("name", tuple(EXPECTED_SDK_COHORT))
+def test_every_captured_sdk_archive_is_immutable_across_configure(recipe, cohort_cli, name, capsys):
+    state = cohort_cli
+    state["mutate_copy"] = name
+    assert recipe.main(state["argv"] + ["--configure-only"]) != 0
+    assert "immutable build input checksum mismatch" in capsys.readouterr().err
+    assert len(state["stages"]) == 1
+    receipt = json.loads((state["work"] / "build-receipt.json").read_bytes())
+    assert receipt["status"] == "failed"
+    assert not (state["work"] / "configured-inputs.json").exists()
+
+
+@pytest.mark.parametrize("package", [
+    "AWSSDK", "gRPC", "Protobuf", "absl", "c-ares", "Thrift", "jemalloc", "RapidJSON",
+])
+def test_reviewed_sdk_sources_cannot_resolve_to_host_providers(recipe, tmp_path, package):
+    commands = recipe.build_commands(tmp_path / "source", tmp_path / "work", tmp_path / "openssl",
+        network_prefix=tmp_path / "network", python="/python", cc="/cc", cxx="/cxx", jobs=4)
+    assert f"-D{package}_SOURCE=BUNDLED" in commands["cpp_configure"]
+    cache, entries, context = cache_fixture(recipe, tmp_path)
+    recipe.verify_cache(cache, context, stage="cpp")
+    entries[package + "_SOURCE"] = "SYSTEM"
+    cache.write_text("\n".join(f"{key}:STRING={value}" for key, value in entries.items()) + "\n")
+    with pytest.raises(ValueError, match=package + "_SOURCE"):
+        recipe.verify_cache(cache, context, stage="cpp")
