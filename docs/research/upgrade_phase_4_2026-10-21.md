@@ -1286,3 +1286,26 @@ candidate is `26.0.0+biominer.58dcc66d447e`. Stock wheel qualification and Pytho
 The final application wheel, full source/installed suites and CLI, actual
 single-cell API qualification, and phase completion/push remain pending.
 Existing admission policies and contained environments remain unchanged.
+
+
+## Actual Arrow 26 API qualification
+
+The unregistered Polars 2 / custom Arrow 26 cell passed both import orders and
+all 59 ordinary API cases, without skips. Reader-depth observations verified
+that depth 22 rejects limit 21 and accepts limit 22 and the default 100;
+depth 102 rejects the default limit. Local and fake-S3 readers yielded no
+records from rejected input, preserved input bytes and closed streams. Brotli,
+gzip, LZ4, Snappy and Zstandard Parquet plus bzip2 stream round trips passed.
+
+The result is `single_cell_arrow26_api_passed`, SHA-256
+`6271cb9e280a742f5adbc5d5e1d31ef2023cb24750ce0cfdbf77f2543d6727a2`.
+The inner supervised command exited 0 without interruption in 55.775 seconds.
+The finite proof-family correction passed 11 controls; independent code/context
+review passed, SHA-256
+`ae50e3448852aff75cf779a00e3757d252f6bf0647f574fd667ea6c56096cb98`.
+Upstream release/source audit is retained with task 4.2, including 330 package
+source files and 1,420 calls inspected. No additional application API change was
+needed after the existing depth-policy implementation.
+
+This tests one nine-package API cell. The four-cell matrix, full application
+suite and phase push are separate gates. Existing admission remains closed.
