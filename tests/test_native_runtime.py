@@ -5,6 +5,7 @@ import json
 import platform
 import sys
 import zipfile
+import copy
 from pathlib import Path
 
 import pytest
@@ -209,6 +210,662 @@ def test_valid_artifact_inventory_is_candidate_not_ready(profile):
     result = runtime.verify_artifacts(profile[0])
     assert result['status'] == 'candidate'
     assert result['ready'] is False
+
+
+def test_arrow26_family_reaches_its_own_receipt_policy(profile):
+    """Selecting 26 must not run the preserved Arrow 25 backport policy."""
+    artifact = profile[1]['artifacts'][1]
+    artifact['version'] = '26.0.0+biominer.0123456789ab'
+    path = Path(artifact['path'])
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('pyarrow.dist-info/METADATA',
+                        'Metadata-Version: 2.1\nName: pyarrow\nVersion: ' + artifact['version'] + '\n')
+        archive.writestr('pyarrow.dist-info/WHEEL',
+                        'Wheel-Version: 1.0\nTag: cp314-cp314-linux_x86_64\n')
+    receipt = json.loads(Path(artifact['source_receipt']['path']).read_text())
+    artifact['sha256'] = receipt['wheel_sha256'] = digest(path)
+    replace_arrow_receipt(profile, receipt)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26.*raw receipt'):
+        runtime.verify_artifacts(profile[0])
+
+
+def arrow26_build_fixture(root, monkeypatch):
+    """Complete tiny synthetic 26 chain; these module-local pins admit no real build."""
+    root.mkdir()
+
+    def material(name, data):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not isinstance(data, str):
+            data = json.dumps(data, sort_keys=True, separators=(',', ':')) + '\n'
+        path.write_text(data)
+        return {'path': str(path), 'sha256': digest(path)}
+
+    def inventory(directory):
+        return [{'relative': p.relative_to(directory).as_posix(), 'type': 'file',
+                 'sha256': digest(p)} for p in sorted(directory.rglob('*')) if p.is_file()]
+
+    revision = '446167169a0dc547e00e1bc29f417a40c0ca267a'
+    source = root / ('arrow-' + revision)
+    source.mkdir()
+    integrated = {}
+    for name in ('copy_data_internal.h', 'scalar_if_else.cc', 'vector_replace.cc',
+                 'vector_replace_test.cc'):
+        relative = 'cpp/src/arrow/compute/kernels/' + name
+        integrated[relative] = material(source.relative_to(root).as_posix() + '/' + relative,
+                                        'synthetic integrated ' + name)['sha256']
+    transformations = []
+    for relative in ('cpp/cmake_modules/ThirdpartyToolchain.cmake', 'cpp/thirdparty/versions.txt'):
+        item = material(source.relative_to(root).as_posix() + '/' + relative,
+                        'synthetic reviewed transformed ' + relative)
+        transformations.append({'relative': relative, 'original_sha256': 'a' * 64,
+                                'sha256': item['sha256']})
+    archive = material('arrow.tar.gz', 'synthetic Arrow 26 archive')
+    recipe = material('build-recipe.py', 'synthetic exact reviewed Arrow26 recipe')
+    source_verification = material('source-verification.json', {
+        'schema_version': 1, 'source_revision': revision, 'archive': archive,
+        'integrated_sources': [{'relative': k, 'sha256': v} for k, v in sorted(integrated.items())],
+        'transformations': transformations, 'files': inventory(source),
+    })
+    toolchain = {name: material('tools/' + name, 'synthetic approved ' + name)
+                 for name in ('cc', 'cxx', 'cmake', 'ninja', 'ld')}
+    build_python = material('builder/bin/python', 'synthetic approved Python')
+    builder_pins = {'build': '1.6.1', 'cython': '3.3.0', 'libcst': '1.9.0',
+                    'numpy': '2.5.4', 'packaging': '26.3', 'pathspec': '1.1.1',
+                    'pyproject-hooks': '1.3.3', 'pyyaml': '6.0.3',
+                    'scikit-build-core': '1.1.1', 'setuptools': '84.2.1',
+                    'setuptools-scm': '10.3.4', 'vcs-versioning': '2.6.0'}
+    distributions = []
+    for name, version in builder_pins.items():
+        distributions.append({'name': name, 'version': version,
+            'metadata': material('builder/' + name + '/METADATA',
+                                 f'Name: {name}\nVersion: {version}\n'),
+            'record': material('builder/' + name + '/RECORD', 'synthetic package record'),
+            'wheel': material('builder-wheels/' + name + '.whl', 'synthetic builder wheel ' + name)})
+    builder = {'schema_version': 1, 'kind': 'arrow26_python_builder', 'status': 'frozen_verified',
+               'python': build_python, 'base_python': build_python,
+               'requirements': material('requirements.txt', 'synthetic pinned requirements'),
+               'inventory': material('builder-inventory.json', {'schema_version': 1,
+                   'root': str(root / 'builder'), 'files': inventory(root / 'builder'),
+                   'directories': [], 'symlinks': []}),
+               'verification': material('builder-verification.json', {'status': 'passed'}),
+               'distributions': distributions, 'toolchain': toolchain}
+    builder['receipt'] = material('builder.json', builder)
+    openssl_archives = [material('openssl/lib/' + name, 'synthetic approved ' + name)
+                        for name in ('libcrypto.a', 'libssl.a')]
+    openssl = {'version': '3.6.5', 'source_commit': 'c8bd5a57108599ac650bbae77fcabe3109dab2e8',
+               'receipt': material('openssl-receipt.json', {'synthetic': True}),
+               'source_archive': material('openssl.tar.gz', 'synthetic OpenSSL source'),
+               'header': material('openssl/include/openssl/opensslv.h', 'OpenSSL 3.6.5'),
+               'headers': inventory(root / 'openssl/include'), 'static_archives': openssl_archives}
+    dependencies = {}
+    forced, trees = {}, []
+    for name, version in {'simdjson': '4.6.11', 'uriparser': '1.0.2',
+                          'boost': '1.92.0', 'zlib': '1.3.2'}.items():
+        descriptor = material('inputs/' + name + '.tar.gz', 'synthetic ' + name + ' archive')
+        dependencies[name] = {'version': version, 'archive': descriptor,
+                              'sha256': descriptor['sha256']}
+        directory = root / 'cpp-build' / name
+        material('cpp-build/' + name + '/' + ('gzwrite.c' if name == 'zlib' else 'source.cc'),
+                 'synthetic final ' + name + ' source')
+        forced[name] = inventory(directory)
+        trees.append({'path': str(directory), 'files': inventory(directory)})
+    zlib_patch = material('zlib.patch', 'synthetic exact zlib patch')
+    zlib_application = material('zlib-patch-application.json', {
+        'schema_version': 1, 'patch_commit': 'df84af25dc1942490e1d1c899a07619152a46148',
+        'source': str(root / 'cpp-build/zlib'), 'archive': dependencies['zlib']['archive'],
+        'patch': zlib_patch, 'original_gzwrite_sha256': 'b' * 64,
+        'patched_gzwrite_sha256': forced['zlib'][0]['sha256'], 'files': forced['zlib'],
+    })
+    context = {'work': str(root), 'python': build_python['path'],
+               'cc': toolchain['cc']['path'], 'cxx': toolchain['cxx']['path'],
+               'openssl_prefix': str(root / 'openssl')}
+    features = ['ACERO', 'AZURE', 'COMPUTE', 'CSV', 'DATASET', 'FILESYSTEM', 'FLIGHT',
+                'GCS', 'HDFS', 'JSON', 'ORC', 'PARQUET', 'S3', 'SUBSTRAIT']
+    cpp_flags = {**{'ARROW_' + name: 'ON' for name in features},
+                 **{'ARROW_WITH_' + name: 'ON' for name in ('BROTLI', 'BZ2', 'LZ4', 'SNAPPY', 'ZLIB', 'ZSTD')},
+                 **{'ARROW_' + name: 'OFF' for name in ('TESTING', 'BUILD_TESTS', 'BUILD_BENCHMARKS', 'BUILD_INTEGRATION', 'GANDIVA')},
+                 **{name + '_SOURCE': 'BUNDLED' for name in ('simdjson', 'uriparser', 'Boost', 'ZLIB')},
+                 'ARROW_BUILD_SHARED': 'ON', 'ARROW_BUILD_STATIC': 'OFF',
+                 'ARROW_DEPENDENCY_SOURCE': 'AUTO', 'ARROW_DEPENDENCY_USE_SHARED': 'OFF',
+                 'ARROW_JEMALLOC': 'ON', 'ARROW_MIMALLOC': 'ON',
+                 'PARQUET_REQUIRE_ENCRYPTION': 'ON', 'OPENSSL_USE_STATIC_LIBS': 'TRUE',
+                 'OPENSSL_ROOT_DIR': str(root / 'openssl'),
+                 'OPENSSL_CRYPTO_LIBRARY': openssl_archives[0]['path'],
+                 'OPENSSL_SSL_LIBRARY': openssl_archives[1]['path'],
+                 'CMAKE_C_COMPILER': toolchain['cc']['path'],
+                 'CMAKE_CXX_COMPILER': toolchain['cxx']['path'],
+                 'CMAKE_MAKE_PROGRAM': toolchain['ninja']['path'],
+                 'Python3_EXECUTABLE': build_python['path'],
+                 'Python_EXECUTABLE': build_python['path'],
+                 'PYTHON_EXECUTABLE': build_python['path'],
+                 'URIPARSER_BUILD_TESTS': 'OFF', 'BIOMINER_WHEEL_VERSION': '{wheel_version}'}
+    python_cmake_flags = {**{'PYARROW_' + name: 'ON' for name in (
+        'ACERO', 'AZURE', 'DATASET', 'FLIGHT', 'GCS', 'HDFS', 'ORC', 'PARQUET', 'S3',
+        'SUBSTRAIT', 'PARQUET_ENCRYPTION')}, 'PYARROW_GANDIVA': 'OFF',
+        'PYARROW_BUNDLE_ARROW_CPP': 'ON', 'CMAKE_C_COMPILER': toolchain['cc']['path'],
+        'CMAKE_CXX_COMPILER': toolchain['cxx']['path'],
+        'Python3_EXECUTABLE': build_python['path'], 'Python_EXECUTABLE': build_python['path'],
+        'PYTHON_EXECUTABLE': build_python['path']}
+    for name in ('Arrow', 'ArrowCompute', 'ArrowAcero', 'ArrowDataset', 'ArrowFlight',
+                 'ArrowS3', 'ArrowSubstrait', 'Parquet'):
+        python_cmake_flags[name + '_DIR'] = str(root / 'arrow-prefix/lib/cmake' / name)
+    commands = {'cpp_configure': [toolchain['cmake']['path'], '-S', str(source / 'cpp'),
+                                  '-B', str(root / 'cpp-build'), '-G', 'Ninja',
+                                  *['-D' + k + '=' + v for k, v in cpp_flags.items()]],
+                'cpp_build': [toolchain['cmake']['path'], '--build', str(root / 'cpp-build'),
+                              '--target', 'install', '--parallel', '4'],
+                'python_build': [build_python['path'], '-I', '-B', '-m', 'build', '--wheel',
+                                 '--no-isolation', '--config-setting=build.tool-args=-j4',
+                                 *['--config-setting=cmake.define.' + k + '=' + v
+                                   for k, v in python_cmake_flags.items()], str(source / 'python')]}
+    python_features = {'PYARROW_WITH_' + name: 'ON' for name in features}
+    python_features.update(PYARROW_WITH_GANDIVA='OFF', PYARROW_WITH_PARQUET_ENCRYPTION='ON',
+                           PYARROW_BUNDLE_ARROW_CPP='ON')
+    build = {'schema_version': 1, 'source_policy': 'arrow26-integrated-v1', 'arrow_commit': revision,
+             'source_archive': archive, 'source_verification': source_verification,
+             'integrated_sources': [{'relative': k, 'sha256': v} for k, v in sorted(integrated.items())],
+             'recipe': recipe, 'builder': builder, 'openssl': openssl,
+             'dependencies': dependencies, 'zlib_patch': zlib_patch,
+             'patch_tool': material('tools/patch', 'synthetic patch tool'),
+             'cmake_file_api_query': material('cpp-build/.cmake/api/v1/query/codemodel-v2', ''),
+             'compiler_budget': {'maximum_jobs': 4, 'outer_ninja_jobs': 4,
+                                 'nested_cmake_jobs': 1, 'nested_make_jobs': 1},
+             'features': features, 'codecs': ['BROTLI', 'BZ2', 'LZ4', 'SNAPPY', 'ZLIB', 'ZSTD'],
+             'context': context, 'commands': commands, 'python_feature_environment': python_features,
+             'toolchain_versions': {name: 'synthetic reviewed ' + name for name in toolchain},
+             'version_environment': {'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYARROW': '{wheel_version}'}}
+    inputs = material('build-inputs.json', build)
+    version = '26.0.0+biominer.' + inputs['sha256'][:12]
+    static = [{**row, 'provider': {'kind': 'private_openssl', 'version': '3.6.5',
+                'receipt': openssl['receipt'], 'source_commit': openssl['source_commit']}}
+              for row in openssl_archives]
+    static.append(material('cpp-build/zlib-install/lib/libz.a', 'synthetic compiled patched zlib'))
+    map_record = material('libarrow.map', 'Linker script and memory map\n' +
+                          ''.join(row['path'] + '(member.o)\n' for row in static))
+    target_record = material('cpp-build/.cmake/api/v1/reply/target-arrow.json', {
+        'id': 'arrow::@synthetic-scope', 'name': 'arrow', 'type': 'SHARED_LIBRARY',
+        'paths': {'source': '.', 'build': '.'}})
+    model = material('cpp-build/.cmake/api/v1/reply/codemodel.json', {
+        'kind': 'codemodel', 'version': {'major': 2, 'minor': 9},
+        'paths': {'source': str(source / 'cpp'), 'build': str(root / 'cpp-build')},
+        'configurations': [{'targets': [{'id': 'arrow::@synthetic-scope', 'name': 'arrow',
+                                        'jsonFile': 'target-arrow.json'}]}]})
+    index = material('cpp-build/.cmake/api/v1/reply/index-synthetic.json', {
+        'reply': {'codemodel-v2': {'jsonFile': 'codemodel.json'}}})
+    compiled_dependencies = material('compiled-dependencies.json', {
+        'schema_version': 1, 'stage': 'compiled', 'targets': [{
+            'target': 'arrow', 'id': 'arrow::@synthetic-scope', 'kind': 'SHARED_LIBRARY',
+            'source': str(source / 'cpp'), 'binary': str(root / 'cpp-build'),
+            'record': target_record, 'artifacts': [], 'links': []}],
+        'file_api': [index, model, target_record], 'native_inputs': static,
+        'static_archives': static, 'source_trees': trees,
+        'forced_bundled_source_verification': forced, 'downloaded_archives': [],
+        'boost_selection': material('boost-selection.txt', 'algorithm;crc;numeric/conversion;scope_exit;throw_exception;tokenizer;locale;thread;uuid\n'),
+        'boost_components': ['algorithm', 'crc', 'numeric/conversion', 'scope_exit', 'throw_exception', 'tokenizer', 'locale', 'thread', 'uuid'],
+    })
+    consumers = [{'path': str(source / relative), 'sha256': integrated[relative]}
+                 for relative in ('cpp/src/arrow/compute/kernels/scalar_if_else.cc',
+                                  'cpp/src/arrow/compute/kernels/vector_replace.cc')]
+    compile_commands = material('compile_commands.json', [{'file': item['path'],
+                                'directory': str(root / 'cpp-build'), 'command': 'synthetic compile'}
+                               for item in consumers])
+    compiled_sources = material('compiled-sources.json', {'files': inventory(source),
+        'compile_commands': compile_commands, 'translation_units': consumers,
+        'integrated_header_consumers': consumers})
+    wheel_path = root / ('pyarrow-' + version + '-cp314-cp314-linux_x86_64.whl')
+    with zipfile.ZipFile(wheel_path, 'w') as wheel_zip:
+        wheel_zip.writestr('pyarrow.dist-info/METADATA', 'Name: pyarrow\nVersion: ' + version + '\n')
+        wheel_zip.writestr('pyarrow.dist-info/WHEEL', 'Wheel-Version: 1.0\nTag: cp314-cp314-linux_x86_64\n')
+        for library in ('arrow', 'arrow_compute', 'arrow_acero', 'arrow_dataset', 'arrow_flight',
+                        'arrow_s3', 'arrow_substrait', 'parquet'):
+            wheel_zip.writestr('pyarrow/lib' + library + '.so.2600', b'\x7fELFsynthetic ' + library.encode())
+    wheel_record = {'path': str(wheel_path), 'sha256': digest(wheel_path)}
+    raw = {'schema_version': 1, 'status': 'compiled_unverified', 'name': 'pyarrow',
+           'version': version, 'wheel': wheel_record, 'wheel_sha256': wheel_record['sha256'],
+           'source_revision': revision, 'recipe': recipe, 'build_inputs': inputs,
+           'source_verification': source_verification, 'patch_application': zlib_application,
+           'compiled_dependencies': compiled_dependencies, 'compiled_sources': compiled_sources,
+           'native_link_artifacts': [map_record], 'linked_static_archives': static,
+           'toolchain': toolchain, 'toolchain_versions': build['toolchain_versions'],
+           'python_build_distributions': distributions,
+           'effective_versions': {'pyarrow': version, 'openssl': '3.6.5',
+                                  **{k: v['version'] for k, v in dependencies.items()}},
+           'build': {**build, 'status': 'building', 'build_inputs': inputs, 'wheel_version': version,
+                     'stages': [{'command': commands[name], 'exit_code': 0,
+                                 'log': material(name + '.log', 'synthetic successful stage')}
+                                for name in ('cpp_build', 'python_build')]},
+           'native_files': [], 'linkage': {}}
+    raw_record = material('build-receipt.json', raw)
+    pins = {'ARROW26_ARCHIVE_SHA256': archive['sha256'], 'ARROW26_RECIPE_SHA256': recipe['sha256'],
+            'ARROW26_BUILD_RECEIPT_SHA256': raw_record['sha256'],
+            'ARROW26_BUILDER_RECEIPT_SHA256': builder['receipt']['sha256'],
+            'ARROW26_INTEGRATED_SOURCES': integrated, 'ARROW26_TRANSFORMATIONS': transformations,
+            'ARROW26_DEPENDENCIES': {k: {'version': v['version'], 'sha256': v['sha256']}
+                                     for k, v in dependencies.items()},
+            'ARROW26_ZLIB_PATCH_SHA256': zlib_patch['sha256'],
+            'ARROW26_ZLIB_ORIGINAL_SHA256': 'b' * 64,
+            'ARROW26_ZLIB_PATCHED_SHA256': forced['zlib'][0]['sha256'],
+            'ARROW26_OPENSSL_PINS': {k: v['sha256'] for k, v in openssl.items()
+                                     if k in ('receipt', 'source_archive', 'header')},
+            'ARROW26_OPENSSL_STATIC': {Path(v['path']).name: v['sha256'] for v in openssl_archives}}
+    for name, value in pins.items():
+        monkeypatch.setattr(runtime, name, value, raising=False)
+    fixture = {'root': root, 'raw': raw, 'record': raw_record, 'material': material,
+               'pins': pins, 'source': source}
+    private_python_arrow26_fixture(fixture, monkeypatch)
+    return fixture
+
+
+def test_complete_arrow26_raw_chain_is_normalized_and_admitted(profile, tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    wrapper = assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+    wrapper_path = assembler.preserve_receipt(wrapper, tmp_path / 'materials', 'pyarrow')
+    profile[1]['artifacts'][1] = {'name': 'pyarrow', 'version': fixture['raw']['version'],
+        **fixture['raw']['wheel'], 'source_receipt': assembler.file_record(wrapper_path)}
+
+    assert runtime.verify_artifacts(rewrite(profile))['ready'] is False
+    assert wrapper['arrow26_build_receipt'] == fixture['record']
+    assert 'source_receipt' not in wrapper
+    assert Path(fixture['record']['path']).read_bytes() == Path(
+        wrapper['arrow26_build_receipt']['path']).read_bytes()
+
+
+def refresh_arrow26_fixture(fixture, monkeypatch):
+    """Refresh envelopes/local version so tampering reaches the nested policy."""
+    raw, material = fixture['raw'], fixture['material']
+    build = {k: v for k, v in raw['build'].items()
+             if k not in ('status', 'build_inputs', 'wheel_version', 'stages')}
+    raw['build_inputs'] = material('build-inputs.json', build)
+    raw['build']['build_inputs'] = raw['build_inputs']
+    version = '26.0.0+biominer.' + raw['build_inputs']['sha256'][:12]
+    raw['version'] = raw['build']['wheel_version'] = raw['effective_versions']['pyarrow'] = version
+    wheel_path = Path(raw['wheel']['path'])
+    with zipfile.ZipFile(wheel_path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    with zipfile.ZipFile(wheel_path, 'w') as archive:
+        for name, value in members.items():
+            if name.endswith('.dist-info/METADATA'):
+                value = ('Name: pyarrow\nVersion: ' + version + '\n').encode()
+            archive.writestr(name, value)
+    raw['wheel']['sha256'] = raw['wheel_sha256'] = digest(wheel_path)
+    fixture['record'] = material('build-receipt.json', raw)
+    monkeypatch.setattr(runtime, 'ARROW26_BUILD_RECEIPT_SHA256', fixture['record']['sha256'])
+
+
+@pytest.mark.parametrize('damage', [
+    'failed', 'source_revision', 'source_policy', 'recipe', 'archive',
+    'integrated_source', 'zlib_patch', 'zlib_final_source', 'static_archive',
+    'link_maps', 'budget', 'features', 'file_api_identity', 'header_consumer',
+])
+def test_arrow26_nested_evidence_cannot_be_relabelled(tmp_path, monkeypatch, damage):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    raw, material = fixture['raw'], fixture['material']
+    if damage == 'failed':
+        raw['status'] = 'failed'
+    elif damage == 'source_revision':
+        raw['source_revision'] = 'f' * 40
+    elif damage == 'source_policy':
+        raw['build']['source_policy'] = 'arrow25-backport'
+    elif damage == 'recipe':
+        raw['recipe'] = raw['build']['recipe'] = material('other-recipe.py', 'unreviewed recipe')
+    elif damage == 'archive':
+        raw['build']['source_archive'] = material('other.tar.gz', 'unreviewed source')
+    elif damage == 'integrated_source':
+        doc = json.loads(Path(raw['source_verification']['path']).read_bytes())
+        doc['integrated_sources'].pop()
+        raw['source_verification'] = raw['build']['source_verification'] = material('source-verification.json', doc)
+    elif damage == 'zlib_patch':
+        raw['build']['zlib_patch'] = material('other-zlib.patch', 'unreviewed zlib patch')
+    elif damage == 'zlib_final_source':
+        doc = json.loads(Path(raw['patch_application']['path']).read_bytes())
+        doc['patched_gzwrite_sha256'] = 'f' * 64
+        raw['patch_application'] = material('zlib-patch-application.json', doc)
+    elif damage == 'static_archive':
+        Path(raw['linked_static_archives'][-1]['path']).write_bytes(b'changed selected libz archive')
+    elif damage == 'link_maps':
+        raw['native_link_artifacts'] = []
+    elif damage == 'budget':
+        raw['build']['compiler_budget']['maximum_jobs'] = 8
+    elif damage == 'features':
+        raw['build']['features'].remove('FLIGHT')
+    elif damage == 'file_api_identity':
+        doc = json.loads(Path(raw['compiled_dependencies']['path']).read_bytes())
+        doc['targets'][0]['id'] = 'arrow::@different-scope'
+        raw['compiled_dependencies'] = material('compiled-dependencies.json', doc)
+    elif damage == 'header_consumer':
+        doc = json.loads(Path(raw['compiled_sources']['path']).read_bytes())
+        doc['integrated_header_consumers'].pop()
+        raw['compiled_sources'] = material('compiled-sources.json', doc)
+    refresh_arrow26_fixture(fixture, monkeypatch)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26'):
+        assembler.normalize_arrow26_receipt(raw, Path(fixture['record']['path']))
+
+
+def test_arrow26_retains_nested_json_and_inventory_files_after_relocation(profile, tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    wrapper = assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+    old_inputs = copy.deepcopy(wrapper['inputs'])
+    original_raw = Path(fixture['record']['path']).read_bytes()
+    preserved = assembler.preserve_inputs(wrapper, tmp_path / 'retained')
+    for item in old_inputs:
+        Path(item['path']).unlink(missing_ok=True)
+    wrapper_path = assembler.preserve_receipt(preserved, tmp_path / 'retained', 'pyarrow')
+    profile[1]['artifacts'][1] = {'name': 'pyarrow', 'version': fixture['raw']['version'],
+        **fixture['raw']['wheel'], 'source_receipt': assembler.file_record(wrapper_path)}
+
+    assert runtime.verify_artifacts(rewrite(profile))['ready'] is False
+    retained_raw = next(row for row in preserved['inputs']
+                        if row['sha256'] == fixture['record']['sha256'])
+    assert Path(retained_raw['path']).read_bytes() == original_raw
+
+
+def test_arrow26_changed_retained_static_bytes_are_rejected(profile, tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    wrapper = assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+    preserved = assembler.preserve_inputs(wrapper, tmp_path / 'retained')
+    libz = fixture['raw']['linked_static_archives'][-1]
+    selected = next(row for row in preserved['inputs'] if row['sha256'] == libz['sha256'])
+    Path(selected['path']).write_bytes(b'tampered retained static archive')
+    wrapper_path = assembler.preserve_receipt(preserved, tmp_path / 'retained', 'pyarrow')
+    profile[1]['artifacts'][1] = {'name': 'pyarrow', 'version': fixture['raw']['version'],
+        **fixture['raw']['wheel'], 'source_receipt': assembler.file_record(wrapper_path)}
+
+    with pytest.raises(runtime.ProfileError, match='SHA256 mismatch'):
+        runtime.verify_artifacts(rewrite(profile))
+
+
+@pytest.mark.parametrize('command,old,new', [
+    ('cpp_build', '4', '16'),
+    ('python_build', '--config-setting=build.tool-args=-j4', '--config-setting=build.tool-args=-j16'),
+    ('cpp_configure', '-DARROW_S3=ON', '-DARROW_S3=OFF'),
+    ('python_build', '--config-setting=cmake.define.PYARROW_PARQUET_ENCRYPTION=ON',
+     '--config-setting=cmake.define.PYARROW_PARQUET_ENCRYPTION=OFF'),
+])
+def test_arrow26_commands_cannot_override_declared_features_or_budget(
+        tmp_path, monkeypatch, command, old, new):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    build = fixture['raw']['build']
+    argv = build['commands'][command]
+    argv[argv.index(old)] = new
+    if command != 'cpp_configure':
+        stage = 0 if command == 'cpp_build' else 1
+        build['stages'][stage]['command'] = argv
+    refresh_arrow26_fixture(fixture, monkeypatch)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26'):
+        assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+
+
+def private_python_arrow26_fixture(fixture, monkeypatch):
+    raw, material = fixture['raw'], fixture['material']
+    if 'python_runtime' in raw:
+        return
+    python = raw['build']['builder']['base_python']
+    library = material('python-runtime/libpython3.14.so.1.0', 'synthetic source-attested Python library')
+    archive = material('python-runtime.tar.gz', 'synthetic exact approved Python archive')
+    receipt = material('python-runtime-receipt.json', {'schema_version': 1,
+        'source_build': 'Astral20260929', 'python': python, 'archive': archive,
+        'verified_archive_files': [python, library]})
+    runtime_record = {'source_build': 'Astral20260929', 'receipt': receipt,
+                      'archive': archive, 'python': python, 'files': [library]}
+    raw['python_runtime'] = raw['build']['python_runtime'] = runtime_record
+    selected = json.loads(Path(raw['compiled_dependencies']['path']).read_bytes())
+    selected['native_inputs'].append({**library, 'provider': {'kind': 'python_runtime',
+        'source_build': 'Astral20260929', 'receipt': receipt}})
+    raw['compiled_dependencies'] = material('compiled-dependencies.json', selected)
+    monkeypatch.setattr(runtime, 'ARROW26_PYTHON_RUNTIME_PINS', {
+        'receipt': receipt['sha256'], 'archive': archive['sha256'], 'python': python['sha256']},
+        raising=False)
+    refresh_arrow26_fixture(fixture, monkeypatch)
+
+
+def test_arrow26_accepts_only_source_attested_private_python_provider(tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    private_python_arrow26_fixture(fixture, monkeypatch)
+
+    wrapper = assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+
+    expected = fixture['raw']['python_runtime']['files'][0]
+    assert any(item['sha256'] == expected['sha256'] for item in wrapper['inputs'])
+
+
+def test_arrow26_provider_kind_cannot_claim_a_system_package(tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    selected = json.loads(Path(fixture['raw']['compiled_dependencies']['path']).read_bytes())
+    selected['native_inputs'][0]['provider'] = {'kind': 'unreviewed_private',
+        'package': 'libunknown', 'version': '1', 'source_package': 'libunknown', 'source_version': '1'}
+    fixture['raw']['compiled_dependencies'] = fixture['material']('compiled-dependencies.json', selected)
+    refresh_arrow26_fixture(fixture, monkeypatch)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26'):
+        assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+
+
+@pytest.mark.parametrize('field', ['effective_versions', 'compiler_budget', 'toolchain_versions'])
+def test_arrow26_malformed_record_objects_have_a_policy_error(tmp_path, monkeypatch, field):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    if field == 'effective_versions':
+        fixture['raw'][field] = []
+        fixture['record'] = fixture['material']('build-receipt.json', fixture['raw'])
+        monkeypatch.setattr(runtime, 'ARROW26_BUILD_RECEIPT_SHA256', fixture['record']['sha256'])
+    else:
+        fixture['raw']['build'][field] = []
+        if field == 'toolchain_versions':
+            fixture['raw'][field] = []
+        refresh_arrow26_fixture(fixture, monkeypatch)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26'):
+        assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+
+
+@pytest.mark.parametrize('field', ['features', 'codecs', 'boost_components'])
+def test_arrow26_unhashable_array_members_have_a_policy_error(tmp_path, monkeypatch, field):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    if field == 'boost_components':
+        selected = json.loads(Path(fixture['raw']['compiled_dependencies']['path']).read_bytes())
+        selected[field][0] = {}
+        fixture['raw']['compiled_dependencies'] = fixture['material']('compiled-dependencies.json', selected)
+    else:
+        fixture['raw']['build'][field][0] = {}
+    refresh_arrow26_fixture(fixture, monkeypatch)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26'):
+        assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+
+
+@pytest.mark.parametrize('damage', ['missing_translation_path', 'non_string_private_archive_path'])
+def test_arrow26_malformed_file_records_have_a_policy_error(tmp_path, monkeypatch, damage):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    if damage == 'missing_translation_path':
+        compiled = json.loads(Path(fixture['raw']['compiled_sources']['path']).read_bytes())
+        del compiled['translation_units'][0]['path']
+        fixture['raw']['compiled_sources'] = fixture['material']('compiled-sources.json', compiled)
+    else:
+        fixture['raw']['build']['openssl']['static_archives'][0]['path'] = []
+    refresh_arrow26_fixture(fixture, monkeypatch)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26'):
+        assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+
+
+@pytest.mark.parametrize('damage', [
+    'missing_openssl_prefix', 'non_string_openssl_prefix', 'file_api_path',
+    'index_reply', 'codemodel_reference', 'model_version', 'target_entries',
+    'target_id', 'entry_id', 'entry_json_file', 'binary_link_map', 'binary_translation_unit',
+])
+def test_arrow26_malformed_nested_metadata_has_a_policy_error(tmp_path, monkeypatch, damage):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    raw = fixture['raw']
+    selected = json.loads(Path(raw['compiled_dependencies']['path']).read_bytes())
+
+    def change_api(name, change):
+        index = next(i for i, row in enumerate(selected['file_api']) if Path(row['path']).name == name)
+        row = selected['file_api'][index]
+        document = json.loads(Path(row['path']).read_bytes())
+        change(document)
+        selected['file_api'][index] = fixture['material'](
+            str(Path(row['path']).relative_to(fixture['root'])), document)
+
+    def binary_material(name):
+        row = fixture['material'](name, 'synthetic placeholder')
+        path = Path(row['path'])
+        path.write_bytes(b'\xffbinary')
+        return {**row, 'sha256': digest(path)}
+
+    if damage == 'missing_openssl_prefix':
+        del raw['build']['context']['openssl_prefix']
+    elif damage == 'non_string_openssl_prefix':
+        raw['build']['context']['openssl_prefix'] = []
+    elif damage == 'file_api_path':
+        selected['file_api'][0]['path'] = []
+    elif damage == 'index_reply':
+        change_api('index-synthetic.json', lambda doc: doc.update(reply=[]))
+    elif damage == 'codemodel_reference':
+        change_api('index-synthetic.json', lambda doc: doc['reply'].update({'codemodel-v2': []}))
+    elif damage == 'model_version':
+        change_api('codemodel.json', lambda doc: doc.update(version=[]))
+    elif damage == 'target_entries':
+        change_api('codemodel.json', lambda doc: doc['configurations'][0].update(targets={}))
+    elif damage == 'target_id':
+        selected['targets'][0]['id'] = []
+    elif damage == 'entry_id':
+        change_api('codemodel.json', lambda doc: doc['configurations'][0]['targets'][0].update(id={}))
+    elif damage == 'entry_json_file':
+        change_api('codemodel.json', lambda doc: doc['configurations'][0]['targets'][0].update(jsonFile=[]))
+    elif damage == 'binary_link_map':
+        raw['native_link_artifacts'][0] = binary_material('libarrow.map')
+    elif damage == 'binary_translation_unit':
+        compiled = json.loads(Path(raw['compiled_sources']['path']).read_bytes())
+        unit = binary_material('cpp-build/unity.cxx')
+        compiled['translation_units'].append(unit)
+        commands = json.loads(Path(compiled['compile_commands']['path']).read_bytes())
+        commands.append({'file': unit['path'], 'directory': str(fixture['root'] / 'cpp-build')})
+        compiled['compile_commands'] = fixture['material']('compile_commands.json', commands)
+        raw['compiled_sources'] = fixture['material']('compiled-sources.json', compiled)
+    raw['compiled_dependencies'] = fixture['material']('compiled-dependencies.json', selected)
+    refresh_arrow26_fixture(fixture, monkeypatch)
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26'):
+        assembler.normalize_arrow26_receipt(raw, Path(fixture['record']['path']))
+
+
+@pytest.mark.parametrize('preserve', [False, True])
+def test_assembly_normalizes_arrow26_in_both_input_modes(profile, tmp_path, monkeypatch, preserve):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    original_raw = Path(fixture['record']['path']).read_bytes()
+    monkeypatch.setattr(assembler.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(assembler.subprocess, 'run', lambda *args, **kwargs:
+                        runtime.subprocess.CompletedProcess(args, 0, stdout='synthetic host policy'))
+    output = tmp_path / 'assembled.lock'
+
+    assembler.assemble(tmp_path, output, tmp_path / 'absent-python', preserve=preserve,
+                       arrow_receipt=Path(fixture['record']['path']))
+
+    artifact = next(row for row in json.loads(output.read_bytes())['artifacts'] if row['name'] == 'pyarrow')
+    assert artifact['version'] == fixture['raw']['version']
+    assert artifact['source_receipt'] != fixture['record']
+    wrapper = json.loads(Path(artifact['source_receipt']['path']).read_bytes())
+    assert wrapper['arrow26_build_receipt'] == fixture['record']
+    raw_input = next(row for row in wrapper['inputs'] if row['sha256'] == fixture['record']['sha256'])
+    assert Path(raw_input['path']).read_bytes() == original_raw
+    assert Path(fixture['record']['path']).read_bytes() == original_raw
+    assert (raw_input['path'] != fixture['record']['path']) is preserve
+
+
+def freeze_arrow26_fixture(profile, tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    from scripts import freeze_native_profile as freezer
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    wrapper = assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+    preserved = assembler.preserve_inputs(wrapper, tmp_path / 'retained')
+    wrapper_path = assembler.preserve_receipt(preserved, tmp_path / 'retained', 'pyarrow')
+    profile[1]['artifacts'][1] = {'name': 'pyarrow', 'version': fixture['raw']['version'],
+        **fixture['raw']['wheel'], 'source_receipt': assembler.file_record(wrapper_path)}
+    launcher = tmp_path / 'scripts/native_runtime.py'
+    launcher.parent.mkdir()
+    # Execute the actual dual-policy implementation in the unchanged freezer.
+    # Only visibly synthetic fixture pins differ from the production source.
+    pin_names = [name for name in vars(runtime) if name.startswith('ARROW26_')]
+    pin_names.extend([*arrow_fixture_pins(), 'LXML_ZLIB_PATCH_SHA256'])
+    launcher.write_text(Path(runtime.__file__).read_text() +
+        '\n# Synthetic unit-test policy pins; never a production launcher.\n' +
+        ''.join(name + ' = ' + repr(getattr(runtime, name)) + '\n' for name in pin_names))
+    profile[1]['inputs'].append({**assembler.file_record(launcher), 'kind': 'recipe'})
+    snapshot = tmp_path / 'snapshot'
+    freezer.freeze(rewrite(profile), snapshot)
+    return fixture, preserved, snapshot
+
+
+def test_arrow26_candidate_survives_the_unchanged_freezer(profile, tmp_path, monkeypatch):
+    from scripts import freeze_native_profile as freezer
+    fixture, preserved, snapshot = freeze_arrow26_fixture(profile, tmp_path, monkeypatch)
+
+    assert freezer.verify_snapshot(snapshot)['ready'] is False
+    assert json.loads((snapshot / 'profile.json').read_bytes())['artifacts'][1]['version'] == fixture['raw']['version']
+
+
+def test_frozen_arrow26_candidate_rejects_changed_retained_source(profile, tmp_path, monkeypatch):
+    from scripts import freeze_native_profile as freezer
+    fixture, preserved, snapshot = freeze_arrow26_fixture(profile, tmp_path, monkeypatch)
+    source_hash = fixture['pins']['ARROW26_INTEGRATED_SOURCES'][
+        'cpp/src/arrow/compute/kernels/copy_data_internal.h']
+    selected = next(row for row in preserved['inputs'] if row['sha256'] == source_hash)
+    Path(selected['path']).write_bytes(b'changed retained integrated header')
+
+    with pytest.raises(freezer.SnapshotError, match='SHA256 mismatch'):
+        freezer.verify_snapshot(snapshot)
+
+
+def test_arrow26_candidate_does_not_register_a_legacy_rebuild(tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    (scripts / 'build_native_arrow.py').write_text('raise RuntimeError("legacy25 fixture")\n')
+    monkeypatch.setattr(assembler.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(assembler.subprocess, 'run', lambda *args, **kwargs:
+                        runtime.subprocess.CompletedProcess(args, 0, stdout='synthetic host policy'))
+    output = tmp_path / 'assembled.lock'
+
+    assembler.assemble(tmp_path, output, tmp_path / 'absent-python',
+                       arrow_receipt=Path(fixture['record']['path']))
+
+    doc = json.loads(output.read_bytes())
+    assert not any(Path(row['script']['path']).name == 'build_native_arrow.py' for row in doc['recipes'])
+    assert doc['rebuild_supported'] is False
+
+
+def test_arrow26_rebuild_rejects_before_environment_probes(profile, tmp_path, monkeypatch):
+    from scripts import assemble_native_profile as assembler
+    fixture = arrow26_build_fixture(tmp_path / 'arrow26', monkeypatch)
+    wrapper = assembler.normalize_arrow26_receipt(fixture['raw'], Path(fixture['record']['path']))
+    wrapper_path = assembler.preserve_receipt(wrapper, tmp_path / 'materials', 'pyarrow')
+    profile[1]['artifacts'][1] = {'name': 'pyarrow', 'version': fixture['raw']['version'],
+        **fixture['raw']['wheel'], 'source_receipt': assembler.file_record(wrapper_path)}
+    profile[1]['recipes'] = [{'script': blob(tmp_path, 'legacy-build.py', 'legacy25 fixture'), 'args': []}]
+    monkeypatch.setattr(runtime, '_python', lambda *args:
+                        pytest.fail('an unsupported26 rebuild must reject before environment probes'))
+    output = tmp_path / 'rebuild-output'
+
+    with pytest.raises(runtime.ProfileError, match='Arrow 26.*rebuild.*unsupported'):
+        runtime.build(rewrite(profile), output)
+
+    assert not output.exists()
 
 
 def test_arrow_chain_keeps_intermediate_source_hash_historical(profile):

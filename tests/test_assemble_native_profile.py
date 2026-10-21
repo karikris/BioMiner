@@ -38,6 +38,30 @@ def test_assembly_does_not_infer_success_from_project_wheel_presence(tmp_path):
     assert 'biominer' in json.loads((tmp_path / 'native-runtime.lock').read_text())['pending_artifacts']
 
 
+def test_raw_arrow26_missing_materials_cannot_publish_a_candidate(tmp_path, monkeypatch):
+    """A completed status and a wheel are insufficient Arrow 26 provenance."""
+    wheel = tmp_path / 'pyarrow-26.0.0+biominer.0123456789ab-cp314-cp314-linux_x86_64.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('pyarrow/__init__.py', 'synthetic incomplete fixture')
+    receipt = tmp_path / 'arrow26-raw.json'
+    receipt.write_text(json.dumps({
+        'schema_version': 1, 'status': 'compiled_unverified', 'name': 'pyarrow',
+        'version': '26.0.0+biominer.0123456789ab',
+        'wheel': assembler.file_record(wheel), 'wheel_sha256': assembler.sha256(wheel),
+        'source_revision': '446167169a0dc547e00e1bc29f417a40c0ca267a',
+    }))
+    monkeypatch.setattr(assembler.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(assembler.subprocess, 'run', lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, stdout='synthetic package policy'))
+    output = tmp_path / 'candidate.lock'
+
+    with pytest.raises(ValueError, match='Arrow 26'):
+        assembler.assemble(tmp_path, output, tmp_path / 'absent-python',
+                           arrow_receipt=receipt)
+
+    assert not output.exists()
+
+
 def test_preservation_keeps_exact_toolchain_bytes(tmp_path):
     script = Path(__file__).parents[1] / 'scripts/assemble_native_profile.py'
     spec = importlib.util.spec_from_file_location('assembler', script)

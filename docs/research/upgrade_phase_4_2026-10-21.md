@@ -347,3 +347,47 @@ QUALITY approvals are `phase4/task4.2-independent-review-1/spec-review.json`
 (`46045ebf7a605aed97188236630d9699ee8f83ad5709190f9182b2dfcc6e4de8`)
 and `quality-review.json`
 (`88551d4a7a556006d76071c66535fc7622fd5b31a858951c63ed0da5cc29ab3e`).
+
+## Task 4.3: candidate admission foundation
+
+The new Arrow 26 adapter normalizes its distinct raw receipt through an
+`arrow26_build_receipt` backlink. It preserves nested JSON bytes and retains the
+complete referenced source/build material, including relative inventories.
+Validation binds integrated source fixes, the reviewed recipe, builder, Python
+and OpenSSL attestations, dependency selection, actual commands, feature/codec
+flags, compiler budgets and static link evidence. Indexed retained hashes and
+source records avoid quadratic scans of large source closures. The Arrow 25
+policy body and its ten existing version/policy assignments remain unchanged.
+
+Synthetic cases exercise complete receipt acceptance, both assembly preservation
+modes, relocation, source/static tampering, malformed evidence, the unchanged
+freezer and frozen-source rejection. Arrow 26 candidates omit the legacy Arrow
+25 rebuild recipe and explicitly reject unsupported rebuilds before environment
+probes. This prevents a candidate from invoking the wrong family recipe.
+
+Root observed the relevant missing-policy, command/provider and rebuild REDs.
+Independent review additionally found array, path-validation-order, nested File
+API shape and text-decoding errors. These were reproduced and corrected with
+narrow guards. RED 8 included two fixture serialization failures; corrected
+RED 9 then reproduced both actual Unicode failures. No broad exception masking
+or Arrow 25 policy relaxation was introduced.
+
+The final exact four-file check on the separate pytest executor was
+`pytest -q tests/test_native_runtime.py tests/test_assemble_native_profile.py`:
+217 passed in 11.56 seconds. The supervised receipt is
+`phase4/task4.3-neighbor-3/execution.json`, SHA-256
+`1a587903e78752b92c64020c4cef0bd5af4a0deb1c072ebc0c96844d8e53a7d5`,
+with supervisor/runner exit 0 and no interruption. Successor independent SPEC
+review has SHA-256
+`246bde406a296bee5db69833cb328987e1290a6220807e549186d1b8bc6135d3`;
+QUALITY review has SHA-256
+`0b95c4e258e0a814727a5d13354347da00fadc4f2cddcde49c05c3d6cb5e9b5e`.
+Both bind these final tested files; the earlier SPEC receipt applies only to
+its older source hashes.
+
+This foundation validates the earlier recipe schema. Its actual Arrow 26 raw
+receipt pin remains unset, so no real Arrow 26 runtime can be admitted. The
+private-network correction requires a new explicit schema/pins and actual
+compiled-source/provider/ELF review. A custom wheel, installed native checks,
+gzip/API qualification, safe fallback, lock update and complete phase gates
+remain pending. The synthetic test results do not supply those observations.
