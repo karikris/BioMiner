@@ -913,3 +913,19 @@ Independent Arrow 25 source/test review passed; review SHA-256 is
 `a1fbf36afbfa4c056528d2f262f2cd8f9a518a166192aadc7b51d4708b4e7de4`.
 Fresh full builds and native imports remain required; this correction neither
 activates a runtime nor completes phase 4.
+
+## Azure static XML link-interface correction: Arrow 26
+
+Arrow 26 now applies the equivalent finite, guarded Azure target correction.
+Only one source-transformation pair changes; the selected cohort, build flags
+and eight-library ABI-2600 capability contract remain unchanged. Root RED
+recorded eight failures and one pass in 1.12 seconds. The same complete
+450-test GREEN above binds both final recipe and test hashes. Independent
+Arrow 26 source/test review passed; review SHA-256 is
+`8d25a898d6f2ff936de0776533fb0306884481d04e2fc9011e19c495c9bb09a4`.
+
+Both corrected recipes require fresh generations. Reuse of the existing
+private provider prefix is appropriate because its iconv archive already
+defines the missing symbols; the defect was the omitted link interface.
+The earlier completed wheels remain runtime failures, and the phase remains
+unpushed until its required native and application checks are complete.
