@@ -584,3 +584,34 @@ attempt completed CMake, then rejected ORC's `ZLIB_LIBRARY=ZLIB::ZLIB` cache
 normalization. Its output remains preserved; a narrowly bound alias correction
 and fresh configuration are required before compilation. This foundation
 does not qualify a wheel, installed runtime or fallback.
+
+
+## Task 4.1 correction: ORC zlib target normalization
+
+The exact Arrow 25 and Arrow 26 sources deliberately replace `ZLIB_LIBRARY`
+with `ZLIB::ZLIB` during ORC setup. Both recipes still request exact private
+archive/header paths. Only that observed C++ cache value may pass a new guard:
+the immutable manifest family, commit and context must match; the entire
+private source/provider closure and generated CMake metadata must verify; and
+File API 2.9 must expose exactly one global imported abstract static target
+whose sole artifact is the source-owned patched private `libz.a`. Other aliases,
+foreign or changed archives, incomplete evidence and Python aliases fail closed.
+The source transforms, provider schema and final archive-member guards remain
+unchanged.
+
+Root first reproduced two intended alias-positive failures in each family.
+The corrected focused suites passed 82 tests in 1.10 seconds (Arrow 25) and
+150 tests in 1.87 seconds (Arrow 26), with supervisor/runner exit 0 and no
+interruption. A read-only probe also passed the strict full cache guard against
+the real preserved generation-3 CMake output; its execution receipt is
+`phase4/arrow-zlib-actual-cache-probe-execution-1/execution.json`, SHA-256
+`328b6f189b5fd1d06d0d6308b5babed232d76f219f0c1100d899464dcdd99741`.
+This does not resume the failed generation, compile Arrow or admit a runtime.
+Fresh committed-source configuration remains required.
+
+Independent sequential SPEC/QUALITY review approved the exact four-file source
+change with no blockers. Its retained review SHA-256 is
+`f03d5ed6aaf07a78da6dce647cf92d1c65e5071cea34a641cb1fc69a0fcd7efb`.
+The signed-by-agent field identifies the reviewer; it is not a cryptographic
+signature. A separate full dependency-capture probe remains distinct from this
+source/cache review.

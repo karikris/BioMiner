@@ -572,6 +572,50 @@ def expected_cache(context: dict, *, stage: str) -> dict:
         raise ValueError("unknown CMake cache stage")
     return expected
 
+def verify_zlib_cache_alias(path: Path, context: dict) -> None:
+    """Bind the ORC cache normalization to the exact private imported archive."""
+    try:
+        work = Path(context["work"])
+        build = work / "cpp-build"
+        if path != build / "CMakeCache.txt":
+            raise ValueError("cache is outside the selected C++ build")
+        manifest = work / "build-inputs.json"
+        if manifest.is_symlink():
+            raise ValueError("build input manifest is a symlink")
+        inputs = json.loads(manifest.read_bytes())
+        if (inputs.get("schema_version") != 1 or inputs.get("source_policy") != SOURCE_POLICY
+                or inputs.get("arrow_commit") != ARROW_COMMIT or inputs.get("context") != context):
+            raise ValueError("build input identity differs from the requested configuration")
+        network = inputs["network"]
+        if (network["prefix"] != context["network_prefix"]
+                or network["build"]["openssl"]["prefix"] != context["openssl_prefix"]):
+            raise ValueError("private network/OpenSSL prefix differs from the requested configuration")
+        verify_network(network)
+        metadata = work / "private-network.cmake"
+        if (metadata.is_symlink() or inputs["private_network_cmake"] != file_record(metadata)
+                or metadata.read_bytes() != private_network_cmake(Path(network["prefix"]), Path(context["openssl_prefix"]))):
+            raise ValueError("private imported-target metadata differs from its pinned definition")
+        archive = Path(network["prefix"]) / "lib/libz.a"
+        provider = native_input_provider(archive, None, network=network)
+        if ({key: provider.get(key) for key in ("kind", "component", "source_package", "source_version")}
+                != {"kind": "private_network", "component": "zlib", "source_package": "zlib", "source_version": "1.3.2"}):
+            raise ValueError("zlib archive lacks exact private source ownership")
+        source = work / f"arrow-{ARROW_COMMIT}/cpp"
+        targets, _ = capture_cmake_targets(build, source)
+        selected = [row for row in targets if row["target"] == "ZLIB::ZLIB"]
+        if len(selected) != 1:
+            raise ValueError("one scoped ZLIB::ZLIB target is required")
+        target = selected[0]
+        original = json.loads(check_record(target["record"], "ZLIB_LIBRARY target").read_bytes())
+        if (target["kind"] != "STATIC_LIBRARY" or target["imported"] is not True
+                or target["local"] is not False or original.get("abstract") is not True
+                or target["source"] != str(source) or target["binary"] != str(build)
+                or target["artifacts"] != [str(archive)]):
+            raise ValueError("ZLIB::ZLIB is not the global imported abstract private static archive")
+    except (KeyError, TypeError, OSError, ValueError) as error:
+        raise ValueError(f"cpp CMake cache rejected ZLIB_LIBRARY alias binding: {error}") from error
+
+
 def verify_cache(path: Path, context: dict, *, stage: str) -> dict:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"missing or symlink {stage} CMake cache")
@@ -584,6 +628,9 @@ def verify_cache(path: Path, context: dict, *, stage: str) -> dict:
             cache[match[1]] = match[2]
     for name, expected in expected_cache(context, stage=stage).items():
         actual = cache.get(name)
+        if stage == "cpp" and name == "ZLIB_LIBRARY" and actual == "ZLIB::ZLIB":
+            verify_zlib_cache_alias(path, context)
+            continue
         if actual != expected:
             raise ValueError(f"{stage} CMake cache rejected {name}: {actual!r}, expected {expected!r}")
     if cache.get("CMAKE_GENERATOR") not in (None, "Ninja"):

@@ -449,8 +449,9 @@ def test_openssl_rejects_changed_header_even_with_approved_version_text(recipe, 
         recipe.validate_openssl(prefix, tmp_path / "archive.tar.gz")
 
 
+@pytest.mark.parametrize("zlib_cache", ["archive", "alias", "foreign_alias"])
 def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
-        recipe, source_inputs, builder_inputs, network_inputs, tmp_path, monkeypatch, capsys):
+        recipe, source_inputs, builder_inputs, network_inputs, tmp_path, monkeypatch, capsys, zlib_cache):
     """Exercise actual orchestration; only external builder/configure work is fake."""
     archive, work, _ = source_inputs
     builder_receipt, builder_hash, builder, _ = builder_inputs
@@ -478,8 +479,16 @@ def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
                    "cc": builder["toolchain"]["cc"]["path"], "cxx": builder["toolchain"]["cxx"]["path"]}
         cache = work / "cpp-build/CMakeCache.txt"
         cache.parent.mkdir(exist_ok=True)
+        entries = recipe.expected_cache(context, stage="cpp")
+        if zlib_cache != "archive":
+            entries["ZLIB_LIBRARY"] = "ZLIB::ZLIB"
+            artifact = Path(context["network_prefix"]) / "lib/libz.a"
+            if zlib_cache == "foreign_alias":
+                artifact = tmp_path / "foreign-libz.a"
+                artifact.write_bytes(b"unapproved zlib")
+            write_zlib_alias_target(recipe, work, artifact)
         cache.write_text("\n".join(f"{key}:STRING={value}" for key, value in
-                                   recipe.expected_cache(context, stage="cpp").items()) + "\n")
+                                   entries.items()) + "\n")
         return {"command": command, "exit_code": 0}
 
     monkeypatch.setattr(recipe, "run_stage", configure_fixture)
@@ -494,7 +503,14 @@ def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
         dependency_archive.write_bytes(f"approved {name} fixture".encode())
         monkeypatch.setitem(recipe.DEPENDENCIES[name], "sha256", digest(dependency_archive.read_bytes()))
         argv.extend([f"--{name}-archive", str(dependency_archive)])
-    assert recipe.main(argv + ["--configure-only"]) == 0
+    configured_result = recipe.main(argv + ["--configure-only"])
+    if zlib_cache == "foreign_alias":
+        assert configured_result != 0
+        assert "ZLIB_LIBRARY" in capsys.readouterr().err
+        assert not (work / "configured-inputs.json").exists()
+        assert json.loads((work / "build-receipt.json").read_bytes())["status"] == "failed"
+        return
+    assert configured_result == 0
     manifest = json.loads((work / "build-inputs.json").read_bytes())
     assert manifest["source_policy"] == "arrow26-integrated-private-network-v2"
     assert manifest["network"]["helper"] == record(work / "private-network-helper.py")
@@ -855,6 +871,120 @@ def test_both_cache_guards_reject_host_or_replaced_network_inputs(recipe, tmp_pa
     cache.write_text("\n".join(f"{name}:STRING={value}" for name, value in entries.items()) + "\n")
     with pytest.raises(ValueError, match=key):
         recipe.verify_cache(cache, context, stage=stage)
+
+
+def write_zlib_alias_target(recipe, work, archive):
+    build = work / "cpp-build"
+    reply = build / ".cmake/api/v1/reply"
+    reply.mkdir(parents=True)
+    target = {"name": "ZLIB::ZLIB", "id": "private-zlib", "type": "STATIC_LIBRARY", "imported": True,
+              "abstract": True, "paths": {"source": ".", "build": "."},
+              "artifacts": [{"path": str(archive)}]}
+    write_json(reply / "zlib.json", target)
+    write_json(reply / "model.json", {"kind": "codemodel", "version": {"major": 2, "minor": 9},
+        "paths": {"source": str(work / f"arrow-{recipe.ARROW_COMMIT}/cpp"), "build": str(build)},
+        "configurations": [{"name": "Release", "targets": [], "abstractTargets": [
+            {"name": target["name"], "id": target["id"], "jsonFile": "zlib.json"}]}]})
+    write_json(reply / "index-test.json", {"reply": {"codemodel-v2": {
+        "kind": "codemodel", "version": {"major": 2, "minor": 9}, "jsonFile": "model.json"}}})
+    return reply
+
+
+def zlib_alias_cache_fixture(recipe, network_inputs, tmp_path):
+    network = verified_network(recipe, network_inputs)
+    work = tmp_path / "alias-work"
+    reply = write_zlib_alias_target(recipe, work, Path(network["prefix"]) / "lib/libz.a")
+    context = {"work": str(work), "python": "/approved/python", "cc": "/approved/cc", "cxx": "/approved/cxx",
+               "openssl_prefix": str(network_inputs[2]), "network_prefix": network["prefix"]}
+    metadata = work / "private-network.cmake"
+    metadata.write_bytes(recipe.private_network_cmake(Path(network["prefix"]), network_inputs[2]))
+    write_json(work / "build-inputs.json", {"schema_version": 1, "source_policy": recipe.SOURCE_POLICY,
+        "arrow_commit": recipe.ARROW_COMMIT, "context": context, "network": network,
+        "provider_cmake": record(metadata)})
+    cache = work / "cpp-build/CMakeCache.txt"
+    entries = recipe.expected_cache(context, stage="cpp") | {"ZLIB_LIBRARY": "ZLIB::ZLIB"}
+    cache.write_text("\n".join(f"{name}:STRING={value}" for name, value in entries.items()) + "\n")
+    return cache, context, network, reply
+
+
+def test_cpp_cache_accepts_upstream_zlib_alias_only_with_private_target_binding(recipe, network_inputs, tmp_path):
+    cache, context, network, _ = zlib_alias_cache_fixture(recipe, network_inputs, tmp_path)
+
+    observed = recipe.verify_cache(cache, context, stage="cpp")
+
+    assert observed["ZLIB_LIBRARY"] == "ZLIB::ZLIB"
+    requested = str(Path(network["prefix"]) / "lib/libz.a")
+    assert recipe.expected_cache(context, stage="cpp")["ZLIB_LIBRARY"] == requested
+    commands = recipe.build_commands(tmp_path / "source", Path(context["work"]), network_inputs[2],
+        network_prefix=Path(network["prefix"]), python=context["python"], cc=context["cc"], cxx=context["cxx"], jobs=4)
+    assert "-DZLIB_LIBRARY=" + requested in commands["cpp_configure"]
+    assert "--config-setting=cmake.define.ZLIB_LIBRARY=" + requested in commands["python_build"]
+
+
+@pytest.mark.parametrize("change", ["foreign", "extra_artifact", "missing", "duplicate", "not_imported", "local", "shared",
+                                 "not_abstract", "metadata", "repinned_metadata", "unowned", "wrong_source",
+                                 "replaced_archive", "missing_network", "missing_file_api"])
+def test_cpp_cache_rejects_zlib_alias_without_exact_private_binding(recipe, network_inputs, tmp_path, change):
+    cache, context, network, reply = zlib_alias_cache_fixture(recipe, network_inputs, tmp_path)
+    work = Path(context["work"])
+    target = json.loads((reply / "zlib.json").read_bytes())
+    model = json.loads((reply / "model.json").read_bytes())
+    inputs = json.loads((work / "build-inputs.json").read_bytes())
+    archive = Path(network["prefix"]) / "lib/libz.a"
+    if change == "foreign":
+        foreign = tmp_path / "host/libz.a"
+        foreign.parent.mkdir()
+        foreign.write_bytes(b"host zlib")
+        target["artifacts"] = [{"path": str(foreign)}]
+    elif change == "extra_artifact":
+        target["artifacts"].append({"path": str(tmp_path / "second-libz.a")})
+    elif change == "missing":
+        model["configurations"][0]["abstractTargets"] = []
+    elif change == "duplicate":
+        write_json(reply / "second-zlib.json", target | {"id": "second-private-zlib"})
+        model["configurations"][0]["abstractTargets"].append(
+            {"name": target["name"], "id": "second-private-zlib", "jsonFile": "second-zlib.json"})
+    elif change in {"not_imported", "local", "shared", "not_abstract"}:
+        key, value = {"not_imported": ("imported", False), "local": ("local", True),
+                      "shared": ("type", "SHARED_LIBRARY"), "not_abstract": ("abstract", False)}[change]
+        target[key] = value
+    elif change in {"metadata", "repinned_metadata"}:
+        metadata = work / "private-network.cmake"
+        metadata.write_bytes(metadata.read_bytes() + b"set_property(TARGET ZLIB::ZLIB PROPERTY IMPORTED_LOCATION /host/libz.a)\n")
+        if change == "repinned_metadata":
+            inputs["provider_cmake"] = record(metadata)
+    elif change == "unowned":
+        del inputs["network"]["private_files"][str(archive)]
+    elif change == "wrong_source":
+        inputs["network"]["private_files"][str(archive)]["source_version"] = "1.3.1"
+    elif change == "replaced_archive":
+        archive.write_bytes(b"replaced after provider verification")
+    elif change == "missing_network":
+        del inputs["network"]
+    else:
+        (reply / "index-test.json").unlink()
+    write_json(reply / "zlib.json", target)
+    write_json(reply / "model.json", model)
+    write_json(work / "build-inputs.json", inputs)
+
+    with pytest.raises(ValueError, match="ZLIB_LIBRARY"):
+        recipe.verify_cache(cache, context, stage="cpp")
+
+
+@pytest.mark.parametrize("alias", ["ZLIB::OTHER", "zlib::zlib", "$<TARGET_FILE:ZLIB::ZLIB>", "ZLIB::ZLIB;foreign"])
+def test_cpp_cache_rejects_other_zlib_alias_spellings(recipe, network_inputs, tmp_path, alias):
+    cache, context, _, _ = zlib_alias_cache_fixture(recipe, network_inputs, tmp_path)
+    cache.write_text(cache.read_text().replace("ZLIB_LIBRARY:STRING=ZLIB::ZLIB\n", "ZLIB_LIBRARY:STRING=" + alias + "\n"))
+    with pytest.raises(ValueError, match="ZLIB_LIBRARY"):
+        recipe.verify_cache(cache, context, stage="cpp")
+
+
+def test_python_cache_does_not_accept_unproven_zlib_alias_normalization(recipe, network_inputs, tmp_path):
+    cache, context, _, _ = zlib_alias_cache_fixture(recipe, network_inputs, tmp_path)
+    entries = recipe.expected_cache(context, stage="python") | {"ZLIB_LIBRARY": "ZLIB::ZLIB"}
+    cache.write_text("\n".join(f"{name}:STRING={value}" for name, value in entries.items()) + "\n")
+    with pytest.raises(ValueError, match="ZLIB_LIBRARY"):
+        recipe.verify_cache(cache, context, stage="python")
 
 
 def test_dependency_capture_preserves_private_network_provider_identities(recipe, network_inputs, tmp_path):
