@@ -65,6 +65,58 @@ def checks():
     return check_native_runtime
 
 
+@pytest.mark.parametrize('missing', ['snappy', 'gzip', 'brotli', 'lz4', 'zstd', 'bz2'])
+def test_arrow_codec_qualification_requires_each_enabled_provider(checks, tmp_path, missing):
+    from types import SimpleNamespace
+
+    arrow = SimpleNamespace(Codec=SimpleNamespace(is_available=lambda codec: codec != missing))
+    with pytest.raises(ValueError, match=f'Arrow codec unavailable: {missing}'):
+        checks.check_arrow_codecs(arrow, None, tmp_path)
+
+
+@pytest.mark.parametrize('corrupted', ['snappy', 'gzip', 'brotli', 'lz4', 'zstd'])
+def test_arrow_codec_qualification_rejects_changed_parquet_values(checks, tmp_path, corrupted):
+    from types import SimpleNamespace
+
+    arrow = SimpleNamespace(
+        Codec=SimpleNamespace(is_available=lambda codec: True),
+        table=lambda values: object(),
+    )
+    parquet = SimpleNamespace(
+        write_table=lambda *args, **kwargs: None,
+        read_table=lambda path: SimpleNamespace(
+            equals=lambda table: path.name != f'codec-{corrupted}.parquet'),
+    )
+    with pytest.raises(ValueError, match=f'Arrow {corrupted} Parquet round trip failed'):
+        checks.check_arrow_codecs(arrow, parquet, tmp_path)
+
+
+def test_arrow_codec_qualification_rejects_changed_bzip2_stream(checks, tmp_path):
+    import io
+    from types import SimpleNamespace
+
+    class CompressedOutput(io.BytesIO):
+        def __init__(self, raw, codec):
+            super().__init__()
+        def close(self):
+            pass
+
+    arrow = SimpleNamespace(
+        Codec=SimpleNamespace(is_available=lambda codec: True),
+        table=lambda values: object(),
+        BufferOutputStream=io.BytesIO,
+        CompressedOutputStream=CompressedOutput,
+        BufferReader=io.BytesIO,
+        CompressedInputStream=lambda raw, codec: io.BytesIO(b'corrupted content'),
+    )
+    parquet = SimpleNamespace(
+        write_table=lambda *args, **kwargs: None,
+        read_table=lambda path: SimpleNamespace(equals=lambda table: True),
+    )
+    with pytest.raises(ValueError, match='Arrow bz2 stream round trip failed'):
+        checks.check_arrow_codecs(arrow, parquet, tmp_path)
+
+
 def test_geometry_requires_spatial_provider(checks, tmp_path):
     import duckdb
     class MissingSpatial:

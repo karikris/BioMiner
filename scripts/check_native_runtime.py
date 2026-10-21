@@ -142,6 +142,30 @@ def check_geometry(connection, directory: Path) -> dict:
     return {'polygon_hole_border': True, 'multipolygon': True, 'shapefile': True, 'planar_dateline': True}
 
 
+def check_arrow_codecs(pa, parquet, directory: Path) -> dict:
+    """Exercise the enabled codecs; availability alone is insufficient evidence."""
+    parquet_codecs = ('snappy', 'gzip', 'brotli', 'lz4', 'zstd')
+    for codec in (*parquet_codecs, 'bz2'):
+        if not pa.Codec.is_available(codec):
+            raise ValueError(f'Arrow codec unavailable: {codec}')
+    table = pa.table({'value': [1, None, 2], 'label': ['alpha', '', None]})
+    for codec in parquet_codecs:
+        path = directory / f'codec-{codec}.parquet'
+        parquet.write_table(table, path, compression=codec)
+        if not parquet.read_table(path).equals(table):
+            raise ValueError(f'Arrow {codec} Parquet round trip failed')
+    # Parquet has no bzip2 codec. Arrow's streaming interface exercises it.
+    data = b'BioMiner native codec fixture\n' * 64 + b'end\n'
+    raw = pa.BufferOutputStream()
+    with pa.CompressedOutputStream(raw, 'bz2') as compressed:
+        compressed.write(data)
+    with pa.CompressedInputStream(pa.BufferReader(raw.getvalue()), 'bz2') as compressed:
+        if compressed.read() != data:
+            raise ValueError('Arrow bz2 stream round trip failed')
+    return {'parquet_roundtrips': {codec: True for codec in parquet_codecs},
+            'stream_roundtrips': {'bz2': True}}
+
+
 def check_capabilities(policy_id: str) -> dict:
     import duckdb
     import psycopg.pq
@@ -160,19 +184,16 @@ def check_capabilities(policy_id: str) -> dict:
     for name in ('S3FileSystem', 'AzureFileSystem', 'GcsFileSystem', 'HadoopFileSystem'):
         if not hasattr(fs, name):
             raise ValueError(f'Arrow filesystem capability missing: {name}')
-    table = pa.table({'value': [1, 2]})
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory)
-        parquet.write_table(table, path / 'sample.parquet')
-        if not parquet.read_table(path / 'sample.parquet').equals(table):
-            raise ValueError('Arrow Parquet round trip failed')
+        codecs = check_arrow_codecs(pa, parquet, path)
         with duckdb.connect() as connection:
             connection.execute('LOAD spatial')
             check_compiled_policy(policy_id)
             geometry = check_geometry(connection, path)
     return {'status': 'capabilities_passed', 'versions': versions,
             'python_openssl': ssl.OPENSSL_VERSION, 'libpq_version': psycopg.pq.version(),
-            'extension_policy_id': policy_id, 'geometry': geometry,
+            'extension_policy_id': policy_id, 'geometry': geometry, 'arrow_codecs': codecs,
             'live_postgres': 'unrun', 'live_s3': 'unrun'}
 
 

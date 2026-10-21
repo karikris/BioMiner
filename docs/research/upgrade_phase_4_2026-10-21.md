@@ -391,3 +391,24 @@ private-network correction requires a new explicit schema/pins and actual
 compiled-source/provider/ELF review. A custom wheel, installed native checks,
 gzip/API qualification, safe fallback, lock update and complete phase gates
 remain pending. The synthetic test results do not supply those observations.
+
+### Task 4.3: codec qualification
+
+Native capabilities now require all six configured codecs. They exercise
+explicit Snappy, gzip, Brotli, LZ4 and Zstd Parquet round trips with nullable
+integer and string values, plus a bzip2 byte-stream round trip. Parquet has no
+bzip2 codec. Pinned Arrow 26 streaming tests confirm the selected stream API;
+Snappy streaming is unsupported and is deliberately exercised through Parquet.
+The existing source/profile binding retains the returned codec evidence.
+
+Root observed eight initial missing-function failures. The final neighboring
+policy tests on the pure executor passed: 39 passed, two deselected in 0.05
+seconds. Receipt `phase4/codec-check-neighbor-2/execution.json` has SHA-256
+`d0cf8293833da3baeb062ac4418e02bfbf6e8f7d6232160ff804cb67888da9e6`,
+supervisor/runner exit 0 and no interruption. Independent SPEC and QUALITY
+review passed for both exact tested source hashes. These cases reject missing
+providers, changed values in each Parquet codec and corrupted bzip2 output.
+
+This is qualification implementation, not observed native codec success.
+Actual codec, TLS and spatial checks await a newly qualified runtime; the two
+live native tests were explicitly excluded from this pure-executor run.
