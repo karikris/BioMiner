@@ -1252,3 +1252,37 @@ Independent review passed, SHA-256
 `986b3e3ab6a244fb10f36eb8906ad15ae7bd0d1f7c00cdb70c6fda8ec7c6ce7f`.
 All 324 earlier test bytes remain preserved. Fresh complete captures and
 public verification/retained-copy replay remain pending.
+
+## Complete source provenance and Arrow 26 project floor
+
+Committed producer `c0c7237` captured complete source attestations for both
+actual candidates. Public verification and retained-copy replay then passed,
+using copied producer/source/generated/object/map/wheel bytes while blocking
+historical filesystem access. No historical access was attempted. Original
+builds remain preserved. Arrow 25 verified 275,163 references and 268,764 retained
+files (3,137,424,280 bytes); Arrow 26 verified 275,621 references and 269,317
+retained files (3,146,356,115 bytes). The helper's file-count limit was increased
+from 250,000 to 300,000 after observing these actual closures; independent review
+confirmed that this single literal changed and the 16 GiB byte limit and all
+verification controls remain unchanged.
+
+Arrow 25 replay verification SHA-256 is
+`4d7b42c1e70a65453e1dc75f1d001610a50a72ac45f1256d8aaa151c39d3c5b1`;
+Arrow 26 is
+`64f9ac7f7252cd5f2bc8ab3245418ea95f0935e85e80d64238c10bc1bef3f858`.
+Their supervised runs exited 0 without interruption in 103.499 and 97.277
+seconds respectively. Each verified the same complete attestation and exact
+retained closure. These are provenance observations, not runtime admission.
+
+The project now requires `pyarrow>=26.0.0,<27`. Resolution and the offline lock
+consistency check passed. The lock retains the same 48-package dependency graph;
+46 other package blocks are byte-identical. Only the project Arrow requirement
+and Arrow 25.0.1-to-26.0.0 artifact block changed. Independent lock review passed,
+SHA-256 `24137183d13fe143d16a3d2fd49d30604ac8d2cf23b9e426e80e8e1395e15c2e`.
+The registry lock describes stock PyPI artifacts; the separately tested native
+candidate is `26.0.0+biominer.58dcc66d447e`. Stock wheel qualification and Python
+3.15 runtime behavior are not inferred from lock metadata.
+
+The final application wheel, full source/installed suites and CLI, actual
+single-cell API qualification, and phase completion/push remain pending.
+Existing admission policies and contained environments remain unchanged.
