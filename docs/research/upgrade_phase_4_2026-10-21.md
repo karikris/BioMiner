@@ -169,3 +169,48 @@ supervisor/runner exit 0, interruption null. Current corrected recipe SHA-256 is
 The exact upstream CMake source/docs and GitHits search/read/grep/status results
 are retained in `phase4/cmake-inventory-research-1/githits.json`. The next actual
 configure uses a fresh generation; the failed receipt and source stay intact.
+
+## Task 4.2: storage API compatibility
+
+Starting commit is `3fcd4e5fad78a950ef20acbba398417389f6110e`. The refreshed
+committed-source audit confirms that all 330 application-source hashes match the
+retained 1,420-call audit. Its direct-call and dynamic-dispatch limitations remain
+explicit. No direct affected use of the removed/restricted APIs was found, so
+no speculative production migration or reader-depth override is introduced.
+The read-only handoff is
+`phase4/research-api-preparation/task4.2-handoff-0073962/handoff.json`, SHA-256
+`4ca8669f3cee0307ba8a2acdcace18443671dcc10c837fffa1deafb793bcb654`.
+
+Nine parameter-expanded storage cases exercise actual public local and fake-S3
+batch I/O: ordered nested/null/timestamp schemas, non-Parquet bytes and truncated
+footers, preservation of an existing artifact after an interrupted batch source,
+and rejection of a corrupted staged S3 footer before promotion. The combined
+`pytest -q tests/test_storage_backends.py tests/test_polars_compatibility.py`
+baseline run passed 59 tests in 3.82 seconds on protected Arrow 25 with Polars 2.
+Its supervised receipt is `phase4/task4.2-baseline-1/execution.json`, SHA-256
+`cac3916013c43e6eb9f1488bb10aa738c44cefe76f3349580359b0e0f6c8916b`,
+with supervisor/runner exit 0 and no interruption.
+
+Arrow 26-specific depth qualification and the same storage cases on the actual
+Arrow 26 generation remain pending. The new depth parameter does not govern
+the separate eager Polars reader; no such compatibility claim is made.
+
+The separate opt-in `test_arrow26_schema_depth_limits` case requires an explicit
+committed-source/runtime context and a custom Arrow 26 profile. It runs the
+preserved launcher verify → bounded worker → verify sequence. The worker binds
+installed application bytes and runtime identity, preserves depth-22/depth-102
+fixtures, tests explicit 21 rejection and 22/default acceptance, then observes
+the untouched default-100 rejection through public local/fake-S3 batch readers.
+This is a test implementation; actual target behavior remains unrun until the
+new runtime qualifies.
+
+An invocation without context correctly failed at its explicit guard before
+creating qualification output (one expected failure in 0.05 seconds). Receipt
+`phase4/task4.2-missing-context-1/execution.json`, SHA-256
+`32c71e939531a4b5804bcbfaee66d67a1c0430f6a89d7226a454b4a23add9f5a`,
+records supervisor/runner exit 1 and no interruption. That negative guard check
+is not a passing Arrow 26 compatibility result. Independent source SPEC and
+QUALITY approvals are `phase4/task4.2-independent-review-1/spec-review.json`
+(`46045ebf7a605aed97188236630d9699ee8f83ad5709190f9182b2dfcc6e4de8`)
+and `quality-review.json`
+(`88551d4a7a556006d76071c66535fc7622fd5b31a858951c63ed0da5cc29ab3e`).

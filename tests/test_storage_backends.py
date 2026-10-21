@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from hashlib import sha256
 import io
 from pathlib import Path
@@ -206,6 +207,127 @@ def test_local_storage_rejects_invalid_parquet_batch_size(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="batch_size must be positive"):
         list(storage.iter_parquet_batches(target, batch_size=0))
+
+
+@pytest.fixture(params=("local", "s3"))
+def public_batch_storage(request, tmp_path, monkeypatch):
+    """Use real public I/O with only S3 transport replaced in memory."""
+    if request.param == "local":
+        target = tmp_path / "part.parquet"
+        return LocalStorageBackend(), target, target, None
+    backend = S3StorageBackend(bucket="biominer", prefix="qualification")
+    filesystem = _FakeS3Filesystem(_FakeOutputStream())
+    path = "biominer/qualification/part.parquet"
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, path))
+    return backend, f"s3://{path}", path, filesystem
+
+
+def _batch_artifact_bytes(path, filesystem) -> bytes:
+    return path.read_bytes() if filesystem is None else bytes(filesystem.objects[path])
+
+
+def test_public_parquet_batches_preserve_nested_schema_nulls_and_order(
+    public_batch_storage,
+) -> None:
+    backend, target, _, _ = public_batch_storage
+    schema = {
+        "source_id": pl.String,
+        "ordinal": pl.Int64,
+        "observed_at": pl.Datetime("us", "UTC"),
+        "annotations": pl.List(
+            pl.Struct({"label": pl.String, "scores": pl.List(pl.Float64)})
+        ),
+    }
+    timestamp = datetime(2026, 10, 21, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    frame = pl.DataFrame(
+        {
+            "source_id": ["duplicate", "other", "duplicate", "last", "other"],
+            "ordinal": [4, 1, 3, 0, 2],
+            "observed_at": [timestamp, None, timestamp, timestamp, None],
+            "annotations": [
+                [{"label": "x", "scores": [1.5, None]}, None,
+                 {"label": None, "scores": []}],
+                [],
+                None,
+                [{"label": "y", "scores": None}],
+                [{"label": "x", "scores": [-2.0]}],
+            ],
+        },
+        schema=schema,
+    )
+    backend.write_parquet_batches(
+        target, [frame.slice(0, 2), frame.slice(0, 0), frame.slice(2, 3)]
+    )
+
+    batches = list(backend.iter_parquet_batches(target, batch_size=2))
+
+    assert batches and all(0 < batch.height <= 2 for batch in batches)
+    assert all(list(batch.schema.items()) == list(schema.items()) for batch in batches)
+    actual = pl.concat(batches)
+    assert list(actual.schema.items()) == list(schema.items())
+    assert actual.to_dicts() == frame.to_dicts()
+
+
+@pytest.mark.parametrize("malformed", ("non-parquet", "missing-footer-trailer"))
+def test_public_parquet_batch_readers_reject_malformed_input_without_mutation(
+    public_batch_storage, malformed,
+) -> None:
+    import pyarrow as pa
+
+    backend, target, path, filesystem = public_batch_storage
+    if malformed == "non-parquet":
+        payload = b"not a Parquet artifact"
+    else:
+        backend.write_parquet_batches(target, [pl.DataFrame({"row_id": [1]})])
+        original = _batch_artifact_bytes(path, filesystem)
+        assert original[:4] == original[-4:] == b"PAR1"
+        payload = original[:-8]
+    if filesystem is None:
+        path.write_bytes(payload)
+    else:
+        filesystem.objects[path] = bytearray(payload)
+        filesystem.existing_paths.add(path)
+    yielded = []
+
+    with pytest.raises((pa.ArrowInvalid, OSError)):
+        for batch in backend.iter_parquet_batches(target, batch_size=2):
+            yielded.append(batch)
+
+    assert yielded == []
+    assert _batch_artifact_bytes(path, filesystem) == payload
+
+
+def test_public_parquet_batch_generator_failure_preserves_committed_artifact(
+    public_batch_storage,
+) -> None:
+    backend, target, path, filesystem = public_batch_storage
+    committed = pl.DataFrame({"row_id": [7, 3], "source_id": ["old", "old"]})
+    backend.write_parquet_batches(target, [committed])
+    original = _batch_artifact_bytes(path, filesystem)
+    previous_moves = None if filesystem is None else list(filesystem.moves)
+
+    class InterruptedBatchSource(RuntimeError):
+        pass
+
+    failure = InterruptedBatchSource("fixture interrupted after one replacement batch")
+
+    def replacement_batches():
+        yield pl.DataFrame({"row_id": [9], "source_id": ["replacement"]})
+        raise failure
+
+    with pytest.raises(InterruptedBatchSource) as caught:
+        backend.write_parquet_batches(target, replacement_batches())
+
+    assert caught.value is failure
+    assert _batch_artifact_bytes(path, filesystem) == original
+    assert pl.concat(list(backend.iter_parquet_batches(target, batch_size=1))).equals(
+        committed
+    )
+    if filesystem is None:
+        assert set(path.parent.iterdir()) == {path}
+    else:
+        assert set(filesystem.objects) == filesystem.existing_paths == {path}
+        assert filesystem.moves == previous_moves
 
 
 def test_parquet_row_source_is_bounded_and_reiterable(tmp_path) -> None:
@@ -511,6 +633,48 @@ def test_s3_storage_failed_parquet_overwrite_preserves_committed_inventory(
     assert bytes(filesystem.objects[path]) == committed_bytes
     assert backend.read_parquet(uri).equals(committed)
     assert len(filesystem.moves) == 1
+
+
+def test_s3_storage_rejects_staged_parquet_footer_before_promotion(monkeypatch) -> None:
+    import pyarrow as pa
+
+    class FooterTruncatingStream(_FakeOutputStream):
+        corrupt_footer = False
+        corruptions = 0
+
+        def close(self) -> None:
+            if self.corrupt_footer and not self.closed:
+                assert self.payload[:4] == self.payload[-4:] == b"PAR1"
+                del self.payload[-8:]
+                self.corruptions += 1
+            super().close()
+
+    backend = S3StorageBackend(bucket="biominer", prefix="qualification")
+    stream = FooterTruncatingStream()
+    filesystem = _FakeS3Filesystem(stream)
+    path = "biominer/qualification/part.parquet"
+    target = f"s3://{path}"
+    monkeypatch.setattr(backend, "_filesystem_and_path", lambda uri: (filesystem, path))
+    committed = pl.DataFrame({"source_id": ["committed"], "ordinal": [3]})
+    backend.write_parquet_shard(target, committed)
+    original = bytes(filesystem.objects[path])
+    previous_moves = list(filesystem.moves)
+    stream.corrupt_footer = True
+
+    with pytest.raises((pa.ArrowInvalid, OSError)):
+        backend.write_parquet_shard(
+            target, pl.DataFrame({"source_id": ["replacement"], "ordinal": [9]})
+        )
+
+    stream.close()  # Repeated close must not corrupt a second time.
+    assert stream.corruptions == 1
+    assert bytes(filesystem.objects[path]) == original
+    assert pl.concat(list(backend.iter_parquet_batches(target, batch_size=1))).equals(
+        committed
+    )
+    assert filesystem.moves == previous_moves
+    assert set(filesystem.objects) == filesystem.existing_paths == {path}
+    assert filesystem.paths[-1] in filesystem.deleted_paths
 
 
 def test_s3_storage_writes_and_reads_text(monkeypatch) -> None:
