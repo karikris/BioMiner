@@ -451,3 +451,33 @@ These results qualify the build tool's guards and inputs. Actual private
 compilation, PIC/capability probes, Arrow consumer linkage and replacement
 runtime qualification remain pending. The current registered runtimes remain
 disabled and the phase security gates remain blocked.
+
+## Task 4.1: separate corrective Arrow 25 recipe
+
+The new `build_native_arrow25_network.py` preserves the old recipe and both
+ordered compute patches. It uses the exact Arrow 25 archive, full source
+inventories, private providers and the reviewed frozen builder. Inspection of
+the real archive corrected a backend assumption: this version already uses
+`_build_backend` and scikit-build-core. S3 is within `libarrow`; the build has
+seven ABI 2500 libraries and no separate `ArrowS3` package. Boost selection is
+explicitly transformed from 1.88 to the reviewed 1.92 archive.
+
+All stages verify private-network and immutable inputs before execution and
+again in `finally`, including failures. Final consumer linker maps must show
+object contributions from each of seven core private archives. Merely loading
+an archive is insufficient. The unused charset archive retains its separate
+prefix PIC proof requirement. Host-provider rejection remains active.
+
+Root reproduced the missing recipe and eight independent review regressions.
+After correction and binding the committed helper, 59 tests passed in 0.66
+seconds. Receipt `phase4/arrow25-network-final-pin-2/execution.json` has SHA-256
+`fd8dfd8196563c873d0e92c5e96ce7206f40abd5e4901a5604d0377b0df6db80`,
+supervisor/runner exit 0 and no interruption. Independent SPEC/QUALITY review
+and a source comparison limited to the helper pin and one removed trailing
+newline bind this final candidate.
+The reviewer disclosed authorship of shared Arrow 26 guards; its Arrow 25
+source, backend, patch and orchestration integration was separately assessed.
+
+The actual Arrow 25 build and fresh fallback qualification remain pending.
+This source commit does not reactivate either disabled runtime or close the
+installed-provider findings.
