@@ -98,3 +98,33 @@ unchanged final inputs. Unexplained logical, provenance or physical differences
 stop extraction. Any observed writer-version difference needs a concrete,
 independently reviewed disposition preserving both original artifact hashes.
 No canary, recovery, fallback or production result is claimed by preparation.
+
+
+## Task 5.2a: live diagnostic retry
+
+Starting main SHA: `12a7e53c0944cf2bb0e25e9b28a958e4fb7c4ada`.
+The first combined live attempt passed PostgreSQL, failed S3 with an unclassified
+OSError, and cleaned both namespaces. Its preinitialized Parquet counts described
+planned work, not completed publications. That failed report remains unchanged.
+The diagnostic successor records only finite operation/error tokens and advances
+publication counts after successful public writes. Client options, TLS checks,
+cleanup, journals, call limits and time bounds are unchanged. All 73 original
+controls remain byte-identical; 22 new controls first failed and then all 95
+passed. Independent review and actual metadata validation passed.
+
+Root executed the reviewed retry in a fresh namespace, with a 900-second outer
+and 600-second worker limit. PostgreSQL passed and its schema was cleaned. S3
+returned `NO_SUCH_BUCKET` during `PutObject` at `marker_write`, before any Parquet
+publication (observed count zero). S3 cleanup found no remaining owned objects
+and no errors. Both frozen whole-installation/source checks passed. The outer
+exited 1 in 31.618 seconds without interruption, accurately preserving failure.
+This establishes the endpoint response, not whether the underlying cause is a
+bucket setting or request routing. No client option was changed on speculation.
+The user was asked to verify bucket and endpoint in the approved local secrets
+file; no credentials were printed or committed. Offline work continues.
+
+Report `live-backend-qualification-2/report.json` has SHA-256
+`20c8e060bddd19bb96864de8caa3298afab9804612cc1eaa8ead04165a37683b`;
+outer receipt is `6f3e00ee…`, final integrity `23ec5a00…` and independent
+review `144e9f30…`. Phase-5 live qualification remains incomplete. No claim of
+successful object publication, security clearance or runtime admission follows.
