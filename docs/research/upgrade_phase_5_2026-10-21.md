@@ -1,0 +1,50 @@
+# Phase 5: combined candidate compatibility
+
+Phase 4 was pushed to `main` as
+`48e3c469a803a8c8e4b60d4d68f7794ce8cb92d8`. Its create-only compatibility
+push receipt has SHA-256
+`3a4bcb355d1527c62de2a1118c666417699969012b9c45ef83d13621baaebf77`.
+Fresh continuation into phase 5 passed before execution; result and execution
+hashes are `3b49a147e5b63b678ae53f0040fe62a7cd568dc4a6ee1b858ed38686b22b17e6`
+and `00b05b6c82737d82ff11127e844c6925e1d3c18b709c031c0e93d07ab92b049a`.
+External paths below are relative to
+`/home/toffe/.local/state/biominer/upgrades/20261021/phase4/`.
+
+## Task 5.1: four-cell matrix
+
+All four fresh offline environments passed their complete 59-case ordinary
+API selections, with no skipped or failed cases. Both native import orders,
+all ordinary fixtures and final whole-environment/source inventory checks
+passed in every cell. Logical differences are empty.
+
+| Polars | Arrow candidate | Passed cases |
+|---|---|---|
+| 1.44.2 | 25.0.1+biominer.53ac869eb6c0 | 59 |
+| 2.0.0 | 25.0.1+biominer.53ac869eb6c0 | 59 |
+| 1.44.2 | 26.0.0+biominer.58dcc66d447e | 59 |
+| 2.0.0 | 26.0.0+biominer.58dcc66d447e | 59 |
+
+Each environment contains exactly nine pinned distributions, rather than the
+full application or its 45 native dependencies. Six recorded commands per
+cell cover offline installation/metadata, import orders, tests and ordinary
+observations. The complete 46-package application/source/CLI qualification
+remains the separate phase-4 result for unchanged frozen inputs.
+
+Matrix result `candidate-compatibility-matrix-2/result.json` has SHA-256
+`cc8db7ea72cf0288ce78cc914566c03a6fd5f7142e99b2882bb8c6c8649a7f36`.
+The outer execution exited 0 without interruption, SHA-256
+`26ed0a47071c126b83719187e59add615ab8e6459032c539b6c31a387662f8e3`.
+The owned coordinator completed in 208.565 seconds. Its inner execution lacks
+an argv field, so the generic phase evidence uses the actual outer command
+receipt and retains the inner observation separately.
+
+The unchanged matrix helper/context hashes are `1296748d…` and `57b33aed…`.
+Independent final matrix/live launch review is
+`4e9d8cfa33467bc494ba21b1b2fe24761eda0dc41aa6042415939d32c62ea899`;
+all 532 pinned files matched. Exact launch specs are
+`matrix-concrete-inputs-1/run-6.spec.json` and `run-outer-6.spec.json`.
+No candidate was registered or promoted. Live backend qualification, paired
+resource comparison, phase-5 publication/push and phase-6 recovery remain
+required. The first live attempt passed PostgreSQL and cleaned both namespaces,
+but S3 failed; resource preflight rejected an alias. These later-task failures
+remain unresolved at this checkpoint and do not invalidate the passed matrix.
