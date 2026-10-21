@@ -1177,3 +1177,27 @@ Independent source/test review passed, SHA-256
 Metadata comparison found no further known family differences in the shared
 seven projects. Actual completed-build capture/replay remains required;
 phase 4 is incomplete and no runtime was admitted.
+
+## Corrected Arrow 26 native candidate qualification
+
+Generation 8 completed in 1259.335 seconds, exit 0 without interruption or
+cleanup error. The observer recorded at most four owned compiler frontends.
+Independent artifact review passed, SHA-256
+`b86c7e609d1f8c8fb7aa6bd801f8f9f78823e1867ff2b902c75e3cf12f385973`.
+The fresh 45-distribution candidate retains 8334 frozen inventory entries.
+Direct S3, Azure, GCS and HDFS imports, Flight/encryption, Polars, DuckDB,
+lxml and Psycopg passed in both orders with inventory checks before and after.
+This closes the observed S3 import failure in this isolated candidate.
+
+All five existing native checks passed: versions, native ownership/import
+orders, extension policy, loopback certificate connections, and geometry/codecs.
+Each check guarded all 8334 entries, 354 expected ELF files and descriptor inputs
+before and after execution. Expected ownership does not assert all files were
+mapped. Aggregate receipt SHA-256
+`76a2306d99e1ff52bc8f457bda9e9c7fb14da344a93f1d43978d313f89b159fb`
+binds the exact reports, integrity checks and command receipts.
+
+The candidate remains unregistered. Supplemental source capture/replay, matrix,
+full application source/installed suites and CLI, live services, resources,
+canary/recovery and phase handshakes remain required. No runtime admission,
+production activation, security clearance or phase completion is claimed.
