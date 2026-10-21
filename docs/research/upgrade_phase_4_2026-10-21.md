@@ -650,3 +650,16 @@ with no blockers; review SHA-256
 The verifier still scans all metadata, permits one initial decompressor rewind
 and retains its existing per-file memory/hash behavior. This is not a constant
 memory or universal elapsed-time claim.
+
+
+## Task 4.3 followup: final recipe bindings
+
+Only the two new-family recipe constants now bind the reviewed ORC alias and
+physical-traversal corrections. Whole-source reversal to the previous committed
+normalizer proves that all policy bodies and original Arrow 25 constants are
+unchanged. Both actual Arrow raw receipt pins remain `None`.
+The final normalizer/assembler suites passed 259 tests in 9.17 seconds, with
+supervisor/runner exit 0 and no interruption. Execution receipt
+`phase4/private-family-admission-final-recipe-pins-1/execution.json` has SHA-256
+`b5078f90b8fa975ce8b3a78157f061d438794babe0979683a13f2904141f3ea9`.
+This updates recipe identity only; it admits no compiled artifact.
