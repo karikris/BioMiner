@@ -929,3 +929,17 @@ private provider prefix is appropriate because its iconv archive already
 defines the missing symbols; the defect was the omitted link interface.
 The earlier completed wheels remain runtime failures, and the phase remains
 unpushed until its required native and application checks are complete.
+
+## Align finite recipe bindings
+
+The two finite-cohort runtime recipe bindings now match the reviewed Azure
+corrections. All historical code and all nine closed `None` assignments remain
+byte-exact. The first regression found two stale expected recipe hashes
+(292 passes, two failures); updating exactly those two expected literals
+preserved every assertion. The complete adapter suites then passed 294 tests
+in 10.20 seconds, exit 0 without interruption. Execution receipt SHA-256 is
+`37e9cf36b5fe80f777d3735f4f33deca1b19f59d80aeb03726faf1ed094d0153`.
+Independent root review verified that reversing only these four literal
+updates reproduces both complete baseline files; review SHA-256 is
+`7915caf9877619ede41fbe3ab0510fdb453acbfdb9560b9c3252b07c2bf6cc19`.
+This binds recipe identity only; no candidate artifact is admitted.
