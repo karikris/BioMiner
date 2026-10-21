@@ -171,6 +171,42 @@ unowned workloads, scientific artifacts and historical evidence; do not kill
 jobs or modify OS packages. Continue isolated remediation, keeping the phase
 and installed security gates blocked until replacement qualification succeeds.
 
+### Execution correction: bundled SDK source closure
+
+The explicit private/system-provider inventory did not cover all bundled SDK
+code. Current maintainer advisories and retained final linker maps now confirm
+affected c-ares 1.34.6, s2n-tls 1.7.0, AWS SDK C++ 1.11.778 and gRPC C++ 1.76.0
+implementations in the historical registered Arrow 25 wheel. The two new
+configurations also select these versions. Keep both registered roots disabled;
+there is still no safe qualified fallback. Preserve the eight new stable
+finding IDs and their scope in the phase-4 applicability report. Add the eleven
+newer c-ares GHSAs and Thrift C++ `CVE-2026-41607` to a fresh capsule with
+recomputed counts; retain the intermediate capsule unchanged. QUIC-server
+deployment applicability remains pending even though QUIC code is linked;
+ordinary TLS record handling is a separate s2n finding. Exploitability has not
+been demonstrated.
+
+Complete the current source/advisory inventory for every enabled native SDK
+before another full candidate build. Choose a compatible source cohort for
+both Arrow families, including AWS SDK/CRT/C components/s2n and
+gRPC/Protobuf/Abseil/c-ares. Bind exact archives, commits and source changes;
+review library/language applicability rather than transferring advisories by
+product name or accepting missing registry coverage as clearance. The newer
+c-ares security release must also be reviewed; the first July fix version
+alone does not settle the current advisory set. Preserve prior observations,
+update recipe and finite admission identities explicitly, and require fresh
+generations, tests and independent review. Do not resume the old configurations
+after changing their source inputs.
+
+Arrow 26 generation 4 configured successfully, then failed during compilation
+at uriparser 1.0.2: unity inclusion placed its feature-test macros after earlier
+libc headers, leaving `reallocarray` undeclared under C99. The build exited
+before an attempted stop inspection; no signal was sent. A bounded isolated
+reproduction fails with unity enabled and compiles the unchanged source with
+only that target's `UNITY_BUILD` disabled. Preserve C99, allocation checks and
+compiler diagnostics. Include that verified compatibility correction with the
+SDK recipe work; it does not qualify an Arrow wheel or close SDK findings.
+
 ### Required target behavior
 
 - Targets: Polars 2.0.0 (`>=2.0.0,<3`) and custom Arrow

@@ -6,8 +6,9 @@ host-specific artifact profile. Its supported target is Ubuntu 26.04, Linux
 x86_64, CPython 3.14.7 with the audited Astral 20260929 build/OpenSSL 3.5.9.
 It does not certify other hosts, containers, extension caches, or deployments.
 
-The current phase-4 provider review reopened the registered Arrow 25 runtimes'
-transitive curl finding and zlib applicability conflict. The shared `.venv`
+The current phase-4 review reopened the registered Arrow 25 runtimes'
+transitive curl finding and zlib applicability conflict, and identified linked
+affected SDK implementations. The shared `.venv`
 points to `.native-runtime/development/arrow25-pair-5-shared/env`; that environment
 and the registered fallback are disabled at their environment roots. No
 currently safe qualified fallback is established. Preserve their files and

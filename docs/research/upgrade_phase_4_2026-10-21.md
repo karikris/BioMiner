@@ -663,3 +663,97 @@ supervisor/runner exit 0 and no interruption. Execution receipt
 `phase4/private-family-admission-final-recipe-pins-1/execution.json` has SHA-256
 `b5078f90b8fa975ce8b3a78157f061d438794babe0979683a13f2904141f3ea9`.
 This updates recipe identity only; it admits no compiled artifact.
+
+
+## Actual configuration handshakes and failed generation 4
+
+Fresh Arrow 26 generation 4 configured and captured providers in 203.747 seconds;
+corrective Arrow 25 generation 1 completed in 252.156 seconds. Both supervisor
+and runner exited 0, without interruption or budget abort, observing at most
+one frontend. Their immutable configured inputs, first checkpoints and
+byte-exact configured-raw snapshots are retained. Independent sequential
+SPEC/QUALITY review approved each only for isolated bounded compilation.
+The review hashes are `659937bb9f943225bea0f142c34a15bc2003a4b0f3d44f21971e0ce6f4df8d05`
+(26) and `a5a29e91e756b4a5f5a2c913e7fb1a7010b1f4ffaefa73df19174f5d8ab71392`
+(25). The snapshots preserve the configuration observations when a recipe later
+replaces its mutable build receipt.
+
+Arrow 26 compilation then failed in 294.16 seconds at 1,011 of 3,139 displayed
+build steps. The C99 uriparser unity unit reported an implicit `reallocarray`
+declaration and an integer-to-pointer return error. Supervisor/runner exited 1,
+without interruption, cleanup error or budget abort; the observer saw at most
+four frontends. This failure occurred before an attempted owned-process stop
+inspection, so no signal was sent. No wheel was produced. Failed raw receipt
+SHA-256 is `898fc46c9255cc171d346398221b8d63ad18b5e39510a17f79538c8dc0da9da4`;
+the next checkpoint is preserved, but is not approval to resume changed inputs.
+Observation `phase4/arrow26-generation4-failed-observation-1.json` has SHA-256
+`24b9d12e0d2200b32e0025f74d7d17d285d8c0adcf679c38423de0af26840a94`.
+Arrow 25 remains configured and has not been compiled.
+
+Primary source and CMake documentation explain the uriparser failure: its
+feature-test macros must precede libc headers; global unity inclusion changes
+that ordering. An isolated real CMake reproduction fails with unity, then builds
+the unchanged 114-file source with per-target unity disabled. C99 and
+`HAVE_REALLOCARRAY` remain enabled, without suppressing diagnostics. The four
+commands have the expected exits 0/1/0/0. The supervised diagnostic completed
+in 3.347 seconds with exit 0, no interruption and at most one frontend.
+Its execution SHA-256 is
+`6382b82965bbedaa9c08444201cb5581d0dc5764b2e522862e5ea69bc164d0a9`.
+This proves the bounded compatibility correction; recipe integration remains
+pending alongside the SDK cohort changes.
+
+## Newly established bundled SDK findings
+
+The explicit provider map covered 18 native inputs, not the complete bundled
+SDK closure. Current primary advisories prompted a separate review of retained
+registered Arrow 25 sources and final maps. The exact historical wheel/profile
+chain, two relevant ELF members, seven map hashes and source/archive records
+bind actual linked implementations:
+
+| Component | Selected version | Current finding scope |
+|---|---|---|
+| c-ares | 1.34.6 | Three identified July advisories; query completion and parser/process code is linked |
+| s2n-tls | 1.7.0 | TLS record handling is linked; QUIC code is present but QUIC-server deployment applicability remains pending |
+| AWS SDK C++ | 1.11.778 | Base64 decode implementation is linked; fixes also require an updated CRT cohort |
+| gRPC C++ | 1.76.0 | Affected transport/decompression implementations are linked; maintainer GHSA has no CVE asserted |
+
+`gRPC_CARES_PROVIDER=none` in the cache did not establish absence: the retained
+wrapper calls `ares_gethostbyname`, which calls `ares_getaddrinfo`; the final
+Flight map contains those implementations. No live exploit or deployment
+trigger was exercised. Both registered roots remain disabled at mode `000`.
+The independent applicability report has SHA-256
+`f8a298fb86b8c17787994aa4e0d5cb3255389a4b4fb5d7ff686c0f5d968fbb81`.
+
+The new intermediate security report preserves the previous eleven findings
+unchanged, adds eight stable SDK IDs conservatively as open, and adds an open
+bundled-closure review gap. It contains 19 findings, ten open, and two coverage
+gap records. SHA-256 is `f1f7cb36f41e7aa62a34547b624508b95dab3cb7c53989e154a29fb3b4c50fd5`.
+This is not a passing phase report. Further current SDK advisory review and a
+coherent compatible replacement cohort are required before fresh full builds;
+The intermediate capsule's inherited top-level counts were not recomputed;
+the totals above count its actual finding/gap arrays. Preserve that capsule
+unchanged and correct the counts in its successor. Eleven additional c-ares
+GHSAs published on 20 October and Thrift C++ `CVE-2026-41607` are already
+established pending additions; the nineteen-row snapshot is not exhaustive.
+Phase 4 has not been pushed or completed.
+
+The source-reviewed replacement cohort for both Arrow families is gRPC
+1.83.1, Protobuf 35.1 (C++ 7.35.1), Abseil 20250512.1 and c-ares 1.34.9.
+The exact gRPC submodule and Protobuf source pins support that cohort;
+c-ares 1.34.7 and 1.34.8 remain affected by the eleven newer advisories.
+All four archives are retained and hash-verified. Recommendation SHA-256 is
+`c7c8b0f6debb723015d6c82cd10d25a7f25046e6f671b2d5c93088fb16e3deaf`.
+Fresh configuration, generated-protocol compilation and runtime checks remain
+required. Abseil's January hash-overflow fix is already present in the old
+selected 20250127.0 source; it is not a new selected-source security finding.
+Removed Abseil static target names are a latent static/cross-compilation issue,
+not an established blocker for these native shared-library configurations.
+
+A separate libiconv review recovered direct current NVD API access after
+transport-specific web failures. Complete returned keyword snapshots contained
+one Mutt-specific libiconv mention and zero libcharset matches; the CPE keyword
+queries returned zero rows. These are bounded corpus observations, not proof
+of universal advisory absence. Exact GNU 1.19 source confirms the known GB18030
+allocation guard, and the existing source-object finding remains unchanged.
+The scoped review SHA-256 is
+`4a615b29e5739cf4c6f2579b09d3c0a4b4f39569e7f8178691b4694e98bd12fb`.
