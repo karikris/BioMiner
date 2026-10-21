@@ -6,19 +6,24 @@ host-specific artifact profile. Its supported target is Ubuntu 26.04, Linux
 x86_64, CPython 3.14.7 with the audited Astral 20260929 build/OpenSSL 3.5.9.
 It does not certify other hosts, containers, extension caches, or deployments.
 
-The 21 October security fallback is now qualified locally at
-`.native-runtime/generations/security-baseline-20261021-1`, using the frozen
-controls in `.native-runtime/snapshots/security-baseline-20261021-1`.
-It replaces the lxml wheel's affected embedded libraries and retains the
-previous Arrow/Polars baseline. Use the frozen invocation and exact hashes in
-the [phase 2 report](research/upgrade_phase_2_2026-10-21.md).
-The shared `.venv` now points to the separately qualified development environment
-at `.native-runtime/development/security-baseline-20261021-1/env`.
-Its dependencies are read-only; only the checkout's application source is editable.
-Use `.venv/bin/python -m pytest` for development tests. Ordinary `uv sync` or
-automatic `uv run` synchronization must not replace its qualified native wheels.
-Dependency changes require a new reviewed environment through
-`scripts/development_runtime.py`, followed by a stopped-consumer cutover.
+The current phase-4 provider review reopened the registered Arrow 25 runtimes'
+transitive curl finding and zlib applicability conflict. The shared `.venv`
+points to `.native-runtime/development/arrow25-pair-5-shared/env`; that environment
+and the registered fallback are disabled at their environment roots. No
+currently safe qualified fallback is established. Preserve their files and
+historical receipts while isolated replacement builds and qualification proceed.
+See the [phase 4 report](research/upgrade_phase_4_2026-10-21.md) for containment,
+source evidence and remaining gates. The private network prefix has compiled,
+but that alone does not qualify an Arrow wheel or application runtime.
+
+The [phase 2 report](research/upgrade_phase_2_2026-10-21.md) records an earlier
+qualification boundary; its commands and resolved statuses do not override the
+later findings. Do not use `.venv` for current development tests or replace it
+through ordinary `uv sync` or automatic `uv run` synchronization. Pure policy
+tests use the separately recorded pytest-only executor, which contains no
+application/native dependency graph. Application tests require a new reviewed
+environment through `scripts/development_runtime.py`, followed by qualification
+and a stopped-consumer cutover.
 
 Long-running jobs must use a permanent generation path. Python invoked through
 the `.venv` alias retains that alias in `sys.executable`, including child launches.
@@ -27,16 +32,19 @@ The development receipt is not production-generation admission.
 
 The old shared environment is preserved beneath an inaccessible quarantine.
 The old approved generation's `env` directory is also inaccessible to ordinary
-user launches; neither is an allowed rollback. The frozen patched fallback
-remains available. Phase 2's full regression and native qualification passed;
-its phase evidence and push handshake are recorded in the phase report.
+user launches; neither is an allowed rollback. The subsequently registered
+patched fallback is also disabled by the current containment. Phase 2's full
+regression and native qualification are historical observations; its phase
+evidence and push handshake remain recorded in the phase report.
 PostgreSQL authentication now passes with certificate verification through the
 configured project pooler; the complete hosted PostgreSQL/S3 qualification is
 still unrun.
 
 Newly built runtimes use `biominer.polars_runtime` before importing the requested
-Python workload. Polars 2 qualification is still in progress; this does not
-retrofit spill behavior into the frozen Polars 1 fallback. The supervisor
+Python workload. The [phase 3 report](research/upgrade_phase_3_2026-10-21.md)
+records the completed Polars 2 semantic/resource checks; current combined
+qualification awaits replacement native providers. This does not retrofit
+spill behavior into historical Polars 1 generations. The supervisor
 preserves explicit job budgets. Otherwise it selects four threads, a 1 GiB
 engine memory budget and a 4 GiB spill budget, rounded down to Polars' decimal
 MB units (1073 and 4294 MB). These are per-process engine accounting limits,
