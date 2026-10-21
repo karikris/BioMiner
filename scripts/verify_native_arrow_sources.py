@@ -916,8 +916,13 @@ def _ep_configuration(name, layout, archive_ref, evidence, *, cmake_entrypoint=N
 def _ninja_objects(layout, source_root, evidence, toolchain):
     graph_ref = evidence.reference(layout["binary"] + "/build.ninja")
     rules_ref = evidence.reference(layout["binary"] + "/CMakeFiles/rules.ninja")
-    blocks = _ninja_blocks(evidence.resolver.read(graph_ref))
-    rules = _ninja_rules(evidence.resolver.read(rules_ref))
+    graph_data = evidence.resolver.read(graph_ref)
+    rules_data = evidence.resolver.read(rules_ref)
+    blocks = _ninja_blocks(graph_data)
+    rules = _ninja_rules(rules_data)
+    optional_fields = ("DEFINES", "INCLUDES", "FLAGS")
+    inherited_fields = re.findall(r"^(DEFINES|INCLUDES|FLAGS)[ \t]*=[ \t]*(.*)$",
+                                  _text(graph_data) + "\n" + _text(rules_data), re.M)
     objects = {}
     for block in blocks:
         if "_COMPILER__" not in block["rule"]:
@@ -927,9 +932,18 @@ def _ninja_objects(layout, source_root, evidence, toolchain):
         output = _join(layout["binary"], block["outputs"][0])
         if evidence.reference(output, optional=True) is None:
             continue
-        command = rules.get(block["rule"], {}).get("command")
+        rule = rules.get(block["rule"], {})
+        command = rule.get("command")
         _require(isinstance(command, str), "ExternalProject compiler rule is missing")
-        values = {**block["fields"], "out": block["outputs"][0], "in": block["inputs"][0],
+        for key in optional_fields:
+            if key not in block["fields"]:
+                _require(not rule.get(key) and not any(name == key and value for name, value in inherited_fields),
+                         "ExternalProject optional compiler field has an unqualified inherited binding: " + key)
+        # Ninja expands absent variables to empty. CMake omits these finite
+        # optional fields for some built CLI objects; required and unknown
+        # command fields still pass through the explicit binding guard below.
+        values = {**dict.fromkeys(optional_fields, ""), **block["fields"],
+                  "out": block["outputs"][0], "in": block["inputs"][0],
                   "LAUNCHER": "", "CODE_CHECK": ""}
 
         def expand(match):

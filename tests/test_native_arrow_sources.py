@@ -1282,3 +1282,75 @@ def test_completed_arrow_source_rejects_unqualified_empty_directory_layout(
         path.write_bytes(path.read_bytes() + b"changed referenced archive bytes")
     with pytest.raises(ValueError, match="source|archive|layout|checksum|director|object"):
         case.capture(verifier)
+
+
+def use_cmake_optional_ninja_compiler_fields(case, *, explicit=False, change=None):
+    """LZ4's built CLI objects omit empty flags but do not enter its PIC archive."""
+    project = case.ep["lz4"]
+    binary = project["binary"]
+    static_object = project["object"].relative_to(binary).as_posix()
+    cli_object = "CMakeFiles/provider_cli.dir/source.c.o"
+    case.put(binary / cli_object, b"\x7fELF\x02\x01\x01\x00synthetic non-PIC CLI object\n")
+    graph = ""
+    if change == "inherited_global":
+        graph += "DEFINES = -DUNQUALIFIED_GLOBAL=1\n"
+    for obj, static in ((static_object, True), (cli_object, False)):
+        graph += "build " + obj + ": C_COMPILER__provider " + str(project["input"]) + "\n"
+        graph += "  DEP_FILE = " + obj + ".d\n"
+        if static and change != "static_missing_pic":
+            graph += "  FLAGS = -fPIC\n"
+        elif explicit:
+            graph += "  FLAGS = -O2\n"
+        if explicit:
+            graph += "  DEFINES = -DRETAINED_OPTION=7\n  INCLUDES = -I" + str(project["source"]) + "\n"
+    graph += "build liblz4.a: C_STATIC_LIBRARY_LINKER__provider " + static_object + "\n"
+    command = ("${LAUNCHER}${CODE_CHECK}" + case.toolchain["cc"]["path"]
+               + " $DEFINES $INCLUDES $FLAGS -MD -MT $out -MF $DEP_FILE -o $out -c $in")
+    if change in {"DEP_FILE", "SOURCE", "OBJECT", "UNOWNED"}:
+        if change == "DEP_FILE":
+            graph = "\n".join(line for line in graph.split("\n") if not line.startswith("  DEP_FILE = "))
+        else:
+            command += " $" + change
+    rules = "rule C_COMPILER__provider\n  command = " + command + "\n"
+    if change == "inherited_rule":
+        rules += "  DEFINES = -DUNQUALIFIED_RULE=1\n"
+    rules += ("rule C_STATIC_LIBRARY_LINKER__provider\n  command = "
+              + case.toolchain["ar"]["path"] + " qc $out $in\n")
+    graph_ref = case.put(binary / "build.ninja", graph.encode())
+    rules_ref = case.put(binary / "CMakeFiles/rules.ninja", rules.encode())
+    return project, binary / cli_object, graph_ref, rules_ref
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["omitted-empty-values", "preserve-explicit-values"])
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_cmake_optional_ninja_compiler_fields_preserve_static_and_cli_evidence(
+        verifier, completed_source_case, tmp_path, monkeypatch, retained, explicit):
+    case = completed_source_case
+    project, cli_object, graph, rules = use_cmake_optional_ninja_compiler_fields(case, explicit=explicit)
+    attestation = case.publish(verifier, tmp_path / "ninja-optional-fields-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    proof = initial["attestation"]["external_projects"]["lz4"]
+    objects = {row["object"]["path"]: row for row in proof["objects"]}
+    assert set(objects) == {str(project["object"]), str(cli_object)}
+    assert objects[str(project["object"])]["pic"] is True
+    assert objects[str(cli_object)]["pic"] is False
+    for row in objects.values():
+        assert row["command_record"] == graph and row["rule_record"] == rules
+        assert row["compiler"] == case.toolchain["cc"]
+        assert not any("$" in value for value in row["command"])
+        assert ("-DRETAINED_OPTION=7" in row["command"]) is explicit
+        assert ("-I" + str(project["source"]) in row["command"]) is explicit
+    archive_objects = {ref["path"] for archive in proof["archives"] for ref in archive["objects"]}
+    assert archive_objects == {str(project["object"])}
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["DEP_FILE", "SOURCE", "OBJECT", "UNOWNED", "static_missing_pic",
+                                    "inherited_global", "inherited_rule"])
+def test_cmake_optional_ninja_compiler_fields_reject_unqualified_or_required_values(
+        verifier, completed_source_case, change):
+    case = completed_source_case
+    use_cmake_optional_ninja_compiler_fields(case, change=change)
+    with pytest.raises(ValueError, match="field|PIC|pic|compiler|variable|binding"):
+        case.capture(verifier)

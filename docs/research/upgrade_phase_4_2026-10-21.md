@@ -1026,3 +1026,19 @@ Focused RED reproduced four failures with ten passes in 0.73 seconds. All
 SHA-256 `ac7f15a4449471e103948065040df365b840802f8950f8bdb45fbce5780f7459`.
 Root source/test review SHA-256 `8cab609586120b87351ffb10b5d6105d4b1b49034bf228dab7878f127537d53e`.
 Actual capture/replay and runtime/application gates remain pending.
+
+## Omitted optional Ninja compiler fields
+
+The next actual Arrow 26 capture reached LZ4’s built CLI objects. CMake omits
+empty `DEFINES` and `FLAGS` fields there; primary Ninja source confirms missing
+variables expand to empty. The parser now permits only the three ordinary
+optional fields (`DEFINES`, `INCLUDES`, `FLAGS`), preserves explicit values, and
+rejects unqualified nonempty inherited bindings. Required and unknown fields
+still fail closed. Standalone CLI objects need not be PIC; selected static
+archive members retain their exact PIC and archive-membership checks.
+
+Focused RED recorded four failures and 18 passes in 1.22 seconds. All 201 tests
+then passed in 8.57 seconds, exit 0 without interruption; execution receipt
+SHA-256 `13c0776d3a7ae78000ec8b679795ac07e8d0880838439bf44b83f544f4c17c6c`.
+Root review SHA-256 `aa6d93a6fecc92404175fdafa14e943a83ac214c1c63631de136f11919c73548`. Actual capture/replay
+and native/application qualification remain required; no runtime was admitted.
