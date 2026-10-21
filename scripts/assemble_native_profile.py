@@ -79,55 +79,66 @@ def preserve_inputs(receipt, directory):
     return receipt
 
 
-def normalize_arrow26_receipt(raw, path):
-    """Adapt the exact nested 26 receipt without modifying its historical bytes."""
+
+def _normalize_private_arrow_receipt(raw, path, family):
+    """Preserve raw/nested bytes and publish a separate finite-family wrapper."""
     if __package__:
         runtime = importlib.import_module(f'{__package__}.native_runtime')
     else:
-        spec = importlib.util.spec_from_file_location('assembly_arrow26_runtime', Path(__file__).with_name('native_runtime.py'))
+        spec = importlib.util.spec_from_file_location('assembly_private_arrow_runtime', Path(__file__).with_name('native_runtime.py'))
         runtime = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(runtime)
+    pins = runtime._arrow_private_pins(family)
+    label = pins['label']
     path = Path(path).absolute()
     if json.loads(path.read_bytes()) != raw:
-        raise ValueError('Arrow 26 raw receipt changed before normalization')
-    # Validate the schema before using any nested member. A status flag or an
-    # existing wheel never substitutes for the completed source/link evidence.
-    inputs = runtime._arrow26_evidence(raw, path.parent)
+        raise ValueError(label + ' raw receipt changed before normalization')
+    inputs = runtime._arrow_private_checked(raw, path.parent, family)
     raw_record = file_record(path)
     inputs.append(raw_record)
-    inputs = [dict(item, kind='arrow26-build-input') for item in inputs]
+    inputs = [dict(item, kind='private-arrow-build-input') for item in inputs]
     receipt = {'schema_version': 1, 'name': 'pyarrow', 'version': raw['version'],
-               'wheel_sha256': raw['wheel_sha256'], 'source_revision': raw['source_revision'],
-               'toolchain': raw['toolchain'], 'inputs': inputs,
+               'source_policy': family, 'wheel_sha256': raw['wheel_sha256'],
+               'source_revision': raw['source_revision'],
+               'toolchain': runtime._arrow_private_toolchain(raw, family), 'inputs': inputs,
                'inputs_sha256': hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
                'native_link_artifacts': raw['native_link_artifacts'],
-               'effective_versions': raw['effective_versions'],
-               'native_files': raw.get('native_files', []),
-               'arrow26_build_receipt': raw_record,
-               'limitations': ['Requires the retained source/build trees and reviewed host; no self-contained rebuild or native security clearance is asserted.']}
-    runtime._arrow26_security(receipt, path.parent, raw['version'])
+               'effective_versions': runtime._arrow_private_effective_versions(raw, family),
+               'native_files': raw.get('native_files', []), pins['raw_field']: raw_record,
+               'limitations': ['Retained exact source/build evidence only; isolated rebuild, installed native qualification and independent security review remain required.']}
+    runtime._arrow_private_security(receipt, path.parent, raw['version'], family)
     wheel = raw.get('wheel')
-    wheel_path = runtime._file(wheel, path.parent, 'Arrow 26 raw wheel')
+    wheel_path = runtime._file(wheel, path.parent, label + ' raw wheel')
     if wheel['sha256'] != raw['wheel_sha256']:
-        raise ValueError('Arrow 26 raw wheel checksum differs')
-    # Use the unchanged common wheel/ABI validator too. Its source receipt is
-    # published content-addressed below only after all nested material passes.
+        raise ValueError(label + ' raw wheel checksum differs')
     with zipfile.ZipFile(wheel_path) as bundle:
         names = [name for name in bundle.namelist() if name.endswith('.dist-info/METADATA')]
         if len(names) != 1:
-            raise ValueError('Arrow 26 wheel metadata is ambiguous')
+            raise ValueError(label + ' wheel metadata is ambiguous')
         import email
         metadata = email.message_from_bytes(bundle.read(names[0]))
         if metadata['Name'] != 'pyarrow' or metadata['Version'] != raw['version']:
-            raise ValueError('Arrow 26 wheel identity differs from its raw receipt')
+            raise ValueError(label + ' wheel identity differs from its raw receipt')
         wheel_metadata = names[0].removesuffix('METADATA') + 'WHEEL'
         if 'Tag: cp314-cp314-linux_x86_64' not in bundle.read(wheel_metadata).decode():
-            raise ValueError('Arrow 26 wheel has the wrong Python/platform ABI')
-        for library in ('arrow', 'arrow_compute', 'arrow_acero', 'arrow_dataset', 'arrow_flight',
-                        'arrow_s3', 'arrow_substrait', 'parquet'):
-            if bundle.read('pyarrow/lib' + library + '.so.2600')[:4] != b'\x7fELF':
-                raise ValueError('Arrow 26 wheel lacks required native libraries')
+            raise ValueError(label + ' wheel has the wrong Python/platform ABI')
+        libraries = ['arrow', 'arrow_compute', 'arrow_acero', 'arrow_dataset', 'arrow_flight',
+                     'arrow_substrait', 'parquet']
+        if family == runtime.ARROW26_PRIVATE_FAMILY:
+            libraries.append('arrow_s3')
+        abi = '2600' if family == runtime.ARROW26_PRIVATE_FAMILY else '2500'
+        for library in libraries:
+            if bundle.read('pyarrow/lib' + library + '.so.' + abi)[:4] != b'\x7fELF':
+                raise ValueError(label + ' wheel lacks required native libraries')
     return receipt
+
+
+def normalize_arrow26_receipt(raw, path):
+    return _normalize_private_arrow_receipt(raw, path, 'arrow26-integrated-private-network-v2')
+
+
+def normalize_arrow25_network_receipt(raw, path):
+    return _normalize_private_arrow_receipt(raw, path, 'arrow25-two-compute-patches-private-network-v1')
 
 
 def deployment_host_inventory(profile, expected):
@@ -332,6 +343,10 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
         if name == 'pyarrow' and version.startswith('26.'):
             receipt = normalize_arrow26_receipt(receipt, path)
             path = preserve_receipt(receipt, root / '.native-runtime/build-materials', name)
+        if name == 'pyarrow' and (receipt.get('source_policy') == 'arrow25-two-compute-patches-private-network-v1'
+                                  or receipt.get('kind') == 'corrective_arrow25_private_network_build'):
+            receipt = normalize_arrow25_network_receipt(receipt, path)
+            path = preserve_receipt(receipt, root / '.native-runtime/build-materials', name)
         source_descriptor = receipt.get('source_receipt')
         if isinstance(source_descriptor, dict):
             source_path = Path(source_descriptor['path'])
@@ -355,11 +370,13 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
             receipt['inputs_sha256'] = hashlib.sha256(json.dumps(receipt['inputs'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             path = preserve_receipt(receipt, root / '.native-runtime/build-materials', name)
         doc['artifacts'].append({'name': name, 'version': version,
-                                 **wheel, 'source_receipt': file_record(path)})
+                                 **wheel, 'source_receipt': file_record(path),
+                                 **({'source_policy': receipt['source_policy']} if receipt.get('source_policy') in (
+                                    'arrow25-two-compute-patches-private-network-v1', 'arrow26-integrated-private-network-v2') else {})})
         doc['inputs'].append(file_record(path) | {'kind': 'build-receipt'})
         for item in receipt.get('native_files', []):
             item = dict(item)
-            if not item['owner'].startswith(('dpkg:', 'wheel:', 'python-runtime')):
+            if not item['owner'].startswith(('dpkg:', 'wheel:', 'python-runtime', 'private-network:', 'private-openssl:')):
                 item['owner'] = 'dpkg:' + item['owner'].split(':', 1)[0]
             doc['native_files'].append(item)
         with zipfile.ZipFile(wheel['path']) as archive:
@@ -381,19 +398,22 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
         for name in ('effective_versions', 'native_inventory', 'extension_policy', 'tls', 'geometry'):
             doc['checks'].append({'name': name, 'script': file_record(checks),
                 'args': ['--check', name, '--profile', '{profile}', '--generation', '{generation}']})
+    private_arrow = any(item.get('name') == 'pyarrow' and (
+        item.get('source_policy') in ('arrow25-two-compute-patches-private-network-v1', 'arrow26-integrated-private-network-v2')
+        or item['version'].startswith('26.')) for item in doc['artifacts'])
     for script in ('native_runtime.py', 'check_native_runtime.py', 'check_native_tls.py',
                    'build_native_psycopg.py', 'build_native_arrow.py', 'build_native_duckdb.py',
                    'build_native_lxml.py', 'build_native_project.py', 'attest_native_python.py',
                    'refresh_native_host.py', 'assemble_native_profile.py'):
+        if private_arrow and script == 'build_native_arrow.py':
+            continue
         path = root / 'scripts' / script
         if path.is_file():
             doc['inputs'].append(file_record(path) | {'kind': 'check' if script.startswith('check_') else 'recipe'})
     build_root = root / '.native-runtime'
-    arrow26 = any(item.get('name') == 'pyarrow' and item['version'].startswith('26.')
-                  for item in doc['artifacts'])
-    if arrow26:
+    if private_arrow:
         doc['rebuild_supported'] = False
-        doc['limitations'].append('Arrow 26 profile rebuild is unsupported; use the reviewed isolated recipe.')
+        doc['limitations'].append('Private-provider Arrow profile rebuild is unsupported; use the reviewed isolated recipe.')
     definitions = [
         ('build_native_project.py', ['--python', str(build_root / 'biominer/build-env/bin/python'),
                                     '--root', str(root), '--output', '{output}/biominer']),
@@ -409,7 +429,7 @@ def assemble(root, output, python, preserve=False, duckdb_receipt=None, biominer
                                  '--output', '{output}/lxml', '--jobs', '4']),
     ]
     for script, args in definitions:
-        if arrow26 and script == 'build_native_arrow.py':
+        if private_arrow and script == 'build_native_arrow.py':
             continue
         if (root / 'scripts' / script).is_file():
             doc['recipes'].append({'script': file_record(root / 'scripts' / script), 'args': args})

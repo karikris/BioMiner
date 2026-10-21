@@ -62,6 +62,16 @@ def test_raw_arrow26_missing_materials_cannot_publish_a_candidate(tmp_path, monk
     assert not output.exists()
 
 
+def test_private_arrow25_incomplete_raw_receipt_uses_its_distinct_normalizer(tmp_path):
+    path = tmp_path / 'private25-raw.json'
+    raw = {'schema_version': 1, 'name': 'pyarrow', 'status': 'compiled_unverified',
+           'source_policy': 'arrow25-two-compute-patches-private-network-v1',
+           'version': '25.0.1+biominer.0123456789ab'}
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match='Arrow 25'):
+        assembler.normalize_arrow25_network_receipt(raw, path)
+
+
 def test_preservation_keeps_exact_toolchain_bytes(tmp_path):
     script = Path(__file__).parents[1] / 'scripts/assemble_native_profile.py'
     spec = importlib.util.spec_from_file_location('assembler', script)

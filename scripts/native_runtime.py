@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 import zipfile
 from pathlib import Path
@@ -69,7 +70,7 @@ ARROW_OFFSET_FILES = {
 ARROW26_BUILD_RECEIPT_SHA256 = None
 ARROW26_SOURCE_REVISION = '446167169a0dc547e00e1bc29f417a40c0ca267a'
 ARROW26_ARCHIVE_SHA256 = '764adbb5601a4d0d9d67a10cf04892d33cfac9fd43012f08a2d7c9956a7a90d2'
-ARROW26_RECIPE_SHA256 = '1629657fa2ec79fac6045a314d675371f95e756f6bb3da71729df1f440ab2182'
+ARROW26_RECIPE_SHA256 = 'fc4768b4f4918687ebfaa8edd63a49b314cdb1fb88c4549d5436d32391e12ec8'
 ARROW26_BUILDER_RECEIPT_SHA256 = '303c3f5561d8e93e9e60d5bef476c3da8ebfedaa33c379433bda26e5352da561'
 ARROW26_PYTHON_RUNTIME_PINS = {
     'receipt': '43a7e96c319752ec519a3c7e213cbb063bb8d140bbb598e69ceb6b49b2c787f4',
@@ -83,12 +84,16 @@ ARROW26_INTEGRATED_SOURCES = {
     'cpp/src/arrow/compute/kernels/scalar_if_else.cc': '87f5ce8b675c9dcbaf1f45b25e2515a161fe3bf4b1b567acba0ecea287510fa8',
 }
 ARROW26_TRANSFORMATIONS = [
-    {'relative': 'cpp/cmake_modules/ThirdpartyToolchain.cmake',
-     'original_sha256': '3dff91dcec6ab6f12e38021c383db580de571d722c5fa39b173aeb044317c6e3',
-     'sha256': '58ccd8affd230c009e17a879ab46aaf47efde9da111c4d7f93a1358bb74996ac'},
-    {'relative': 'cpp/thirdparty/versions.txt',
-     'original_sha256': '4c071a79172875a47f389f65e47a43bcb89531822b32d8b0c5c32909f0043628',
-     'sha256': '2b48264c14ca45e8c53253ed9b07aab5e134634939123c66f53f05dd5a828676'},
+    {
+        "relative": "cpp/cmake_modules/ThirdpartyToolchain.cmake",
+        "original_sha256": "3dff91dcec6ab6f12e38021c383db580de571d722c5fa39b173aeb044317c6e3",
+        "sha256": "1789d7d856a58ddec7aa8207ff15e2edaefc43a5afa8defd8aa382cc09894345"
+    },
+    {
+        "relative": "cpp/thirdparty/versions.txt",
+        "original_sha256": "4c071a79172875a47f389f65e47a43bcb89531822b32d8b0c5c32909f0043628",
+        "sha256": "da8d6287e7f60f54d142bfcd3a794eb564a0cf8d147aa2a63f8908315d1819c0"
+    }
 ]
 ARROW26_DEPENDENCIES = {
     'boost': {'version': '1.92.0', 'sha256': 'f51707c27359a0df0cac1beada86de31bb5eed5e8285592dadec384df99c2984'},
@@ -96,9 +101,6 @@ ARROW26_DEPENDENCIES = {
     'uriparser': {'version': '1.0.2', 'sha256': 'dd2e4843f43de6f5aedf430e530f1e2d159eba8ca4d64c2787af1c20f707a9e4'},
     'zlib': {'version': '1.3.2', 'sha256': 'bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16'},
 }
-ARROW26_ZLIB_PATCH_SHA256 = '110ff14375733173d8aa54574473424fbd7dfe4b81f1ca34a759c6fe14b15b14'
-ARROW26_ZLIB_ORIGINAL_SHA256 = '2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04'
-ARROW26_ZLIB_PATCHED_SHA256 = '31d0da140edf382b82b13e2d87a22f59e158d9014ee026459e01cf437d0ab07d'
 ARROW26_OPENSSL_PINS = {
     'receipt': '66d41e5fa8cee1cdb865a7df41620685776c96fd8eba9abcc6a70505ca3da13a',
     'source_archive': 'f3091b7ccb41a11d877b7406b7afc9dd9c5003d299c6bb33cff882127bc06c91',
@@ -117,6 +119,100 @@ ARROW26_BUILDER_PINS = {
 ARROW26_FEATURES = {'ACERO', 'AZURE', 'COMPUTE', 'CSV', 'DATASET', 'FILESYSTEM',
                     'FLIGHT', 'GCS', 'HDFS', 'JSON', 'ORC', 'PARQUET', 'S3', 'SUBSTRAIT'}
 ARROW26_CODECS = {'BROTLI', 'BZ2', 'LZ4', 'SNAPPY', 'ZLIB', 'ZSTD'}
+
+# These two private-provider families have never been admitted. Raw receipt and
+# private-prefix pins stay closed until independent actual-build review.
+ARROW26_PRIVATE_FAMILY = 'arrow26-integrated-private-network-v2'
+ARROW25_NETWORK_FAMILY = 'arrow25-two-compute-patches-private-network-v1'
+ARROW25_NETWORK_BUILD_RECEIPT_SHA256 = None
+ARROW25_NETWORK_SOURCE_REVISION = ARROW_SOURCE_REVISION
+ARROW25_NETWORK_ARCHIVE_SHA256 = ARROW_ARCHIVE_SHA256
+ARROW25_NETWORK_RECIPE_SHA256 = 'bb295e44dba11aa52cfa5be1bfb1053ee949bba8d4388a57a92f7f84c4523f12'
+ARROW25_NETWORK_TRANSFORMATIONS = [
+    {
+        "relative": "cpp/cmake_modules/ThirdpartyToolchain.cmake",
+        "original_sha256": "36873bdf3a91dbe13830eccefb70bf6369a948e1c1231aa45201d9c8ee85763b",
+        "sha256": "f49fdca1cb0bab086ae85b377dd38170317f0d3060f7146e4da4b5405e153c17"
+    },
+    {
+        "relative": "cpp/thirdparty/versions.txt",
+        "original_sha256": "c90e546c2a0706b6dda862a19eff8c13d77e3c0972291de75f3bac9d2e21fea7",
+        "sha256": "aa6b048322591b6fb5e68f06d523ea74fcbe63ed0feea266cfd96b3f04193e6e"
+    }
+]
+ARROW25_NETWORK_SOURCES = {
+    'cpp/src/arrow/compute/kernels/vector_replace.cc': ARROW_SECURITY_FILES['cpp/src/arrow/compute/kernels/vector_replace.cc']['patched_sha256'],
+    'cpp/src/arrow/compute/kernels/vector_replace_test.cc': ARROW_OFFSET_FILES['cpp/src/arrow/compute/kernels/vector_replace_test.cc']['patched_sha256'],
+    'cpp/src/arrow/compute/kernels/copy_data_internal.h': ARROW_OFFSET_FILES['cpp/src/arrow/compute/kernels/copy_data_internal.h']['patched_sha256'],
+    'cpp/src/arrow/compute/kernels/scalar_if_else.cc': 'd2f6c4f91e7e1bd9a0281d6c60989dd4cda493aa4eda51e503da61c2ab4d5770',
+}
+ARROW25_NETWORK_DEPENDENCIES = {'boost': ARROW26_DEPENDENCIES['boost']}
+ARROW_NETWORK_HELPER_SHA256 = "a8cb0355e3abfa4415093268c17678d63ea1e745a48f4a5dd750a6a01d037414"
+ARROW_NETWORK_BUILD_RECEIPT_SHA256 = "9371f44d18d198179e2a4dc808dc534feef7faca9e3d27328f4bcbfcb84c6b99"
+ARROW_NETWORK_ARCHIVES = ('libcurl.a', 'libxml2.a', 'libiconv.a', 'libcharset.a', 'libz.a', 'libnghttp2.a')
+ARROW_NETWORK_COMPONENTS = {
+    'libcurl': ('curl', '8.23.0'), 'libxml2': ('libxml2', '2.15.4'),
+    'libiconv': ('libiconv', '1.19'), 'libcharset': ('libiconv', '1.19'),
+    'zlib': ('zlib', '1.3.2'), 'libnghttp2': ('nghttp2', '1.68.0-2ubuntu0.2'),
+}
+ARROW_NETWORK_ZLIB_PATCH_SHA256 = '110ff14375733173d8aa54574473424fbd7dfe4b81f1ca34a759c6fe14b15b14'
+ARROW_NETWORK_ZLIB_ORIGINAL_SHA256 = '2ce783294c688330c716bfe106f43167d3dae5be84994176bc304d205d4f5b04'
+ARROW_NETWORK_ZLIB_PATCHED_SHA256 = '31d0da140edf382b82b13e2d87a22f59e158d9014ee026459e01cf437d0ab07d'
+ARROW_PRIVATE_FAMILIES = {
+    ARROW26_PRIVATE_FAMILY: ('Arrow 26', 'ARROW26', '26.0.0', 'arrow26_build_receipt'),
+    ARROW25_NETWORK_FAMILY: ('Arrow 25', 'ARROW25_NETWORK', '25.0.1', 'arrow25_network_build_receipt'),
+}
+
+
+def _arrow_private_pins(family):
+    if family not in ARROW_PRIVATE_FAMILIES:
+        raise ProfileError('unreviewed private Arrow family')
+    label, prefix, version, raw_field = ARROW_PRIVATE_FAMILIES[family]
+    return {'label': label, 'version': version, 'raw_field': raw_field,
+            **{name: globals()[prefix + '_' + suffix] for name, suffix in (
+                ('source_revision', 'SOURCE_REVISION'), ('archive_sha256', 'ARCHIVE_SHA256'),
+                ('recipe_sha256', 'RECIPE_SHA256'), ('transformations', 'TRANSFORMATIONS'),
+                ('dependencies', 'DEPENDENCIES'), ('raw_sha256', 'BUILD_RECEIPT_SHA256'))},
+            'sources': ARROW26_INTEGRATED_SOURCES if family == ARROW26_PRIVATE_FAMILY else ARROW25_NETWORK_SOURCES}
+
+
+def _arrow_private_toolchain(raw, family):
+    return raw.get('toolchain') if family == ARROW26_PRIVATE_FAMILY else raw.get('builder', {}).get('toolchain')
+
+
+def _arrow_private_effective_versions(raw, family):
+    if family == ARROW26_PRIVATE_FAMILY:
+        return raw.get('effective_versions')
+    return {'pyarrow': raw.get('version'), 'openssl': raw.get('openssl', {}).get('version'),
+            **{key: item.get('version') for key, item in raw.get('dependencies', {}).items()},
+            'curl': '8.23.0', 'libxml2': '2.15.4', 'libiconv': '1.19', 'zlib': '1.3.2',
+            'nghttp2': '1.68.0-2ubuntu0.2'}
+
+
+def _arrow_protected_provider(path):
+    return isinstance(path, str) and bool(re.fullmatch(
+        r'lib(?:curl(?:-[^.]+)?|xml2|z|iconv|charset|ssl|crypto|nghttp2)(?:\.a|\.so(?:\.[0-9]+)*)', Path(path).name))
+
+
+def _arrow_private_flags(context):
+    prefix, network = Path(context['openssl_prefix']), Path(context['network_prefix'])
+    return {
+        'CMAKE_PROJECT_INCLUDE': str(Path(context['work']) / 'private-network.cmake'),
+        'CMAKE_FIND_PACKAGE_PREFER_CONFIG': 'OFF', 'ZLIB_SOURCE': 'SYSTEM',
+        'ZLIB_LIBRARY': str(network / 'lib/libz.a'), 'ZLIB_LIBRARY_RELEASE': str(network / 'lib/libz.a'),
+        'ZLIB_LIBRARY_DEBUG': str(network / 'lib/libz.a'), 'ZLIB_INCLUDE_DIR': str(network / 'include'),
+        'CURL_NO_CURL_CMAKE': 'TRUE', 'CURL_USE_STATIC_LIBS': 'TRUE',
+        'CURL_LIBRARY': str(network / 'lib/libcurl.a'), 'CURL_LIBRARY_RELEASE': str(network / 'lib/libcurl.a'),
+        'CURL_LIBRARY_DEBUG': str(network / 'lib/libcurl.a'), 'CURL_INCLUDE_DIR': str(network / 'include'),
+        'LIBXML2_LIBRARY': str(network / 'lib/libxml2.a'), 'LIBXML2_INCLUDE_DIR': str(network / 'include/libxml2'),
+        'Iconv_LIBRARY': str(network / 'lib/libiconv.a'), 'Iconv_INCLUDE_DIR': str(network / 'include'),
+        'Iconv_IS_BUILT_IN': 'FALSE', 'NGHTTP2_LIBRARY': str(network / 'lib/libnghttp2.a'),
+        'NGHTTP2_INCLUDE_DIR': str(network / 'include'), 'OPENSSL_USE_STATIC_LIBS': 'TRUE',
+        'OPENSSL_ROOT_DIR': str(prefix), 'OPENSSL_INCLUDE_DIR': str(prefix / 'include'),
+        'OPENSSL_CRYPTO_LIBRARY': str(prefix / 'lib/libcrypto.a'), 'OPENSSL_SSL_LIBRARY': str(prefix / 'lib/libssl.a'),
+    }
+
+
 RUNTIME_CHECKS = {'effective_versions', 'native_inventory', 'extension_policy'}
 INSTALL_CHECKS = RUNTIME_CHECKS | {'tls', 'geometry'}
 BLOCKED_ENV = {'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONUSERBASE', 'GDAL_DRIVER_PATH', 'OPENSSL_MODULES', 'OPENSSL_CONF'}
@@ -348,13 +444,219 @@ def _arrow_security(receipt: dict[str, Any], base: Path, version: str) -> None:
         raise ProfileError('Arrow wheel version does not match the retained build inputs')
 
 
-def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> list[dict]:
+def _arrow_private_cmake(prefix: Path, openssl: Path) -> bytes:
+    """Bind global static imports before upstream find modules can omit links."""
+    for path in (prefix, openssl):
+        if not path.is_absolute() or any(character in str(path) for character in '\t\n\r;"$\\{}'):
+            raise ValueError("network/OpenSSL path contains unsupported CMake characters")
+    targets = (
+        ("OpenSSL::Crypto", openssl / "lib/libcrypto.a", openssl / "include", "Threads::Threads;${CMAKE_DL_LIBS}"),
+        ("OpenSSL::SSL", openssl / "lib/libssl.a", openssl / "include", "OpenSSL::Crypto"),
+        ("ZLIB::ZLIB", prefix / "lib/libz.a", prefix / "include", ""),
+        ("biominer_nghttp2", prefix / "lib/libnghttp2.a", prefix / "include", ""),
+        ("biominer_charset", prefix / "lib/libcharset.a", prefix / "include", ""),
+        ("Iconv::Iconv", prefix / "lib/libiconv.a", prefix / "include", ""),
+        ("LibXml2::LibXml2", prefix / "lib/libxml2.a", prefix / "include/libxml2", "Iconv::Iconv;ZLIB::ZLIB;m"),
+        ("CURL::libcurl", prefix / "lib/libcurl.a", prefix / "include", "ZLIB::ZLIB;OpenSSL::SSL;biominer_nghttp2;Threads::Threads;${CMAKE_DL_LIBS}"),
+    )
+    lines = ["# Recipe-owned exact private imports; no host pkg-config interfaces.",
+             "include_guard(GLOBAL)", "find_package(Threads REQUIRED)"]
+    for target, archive, include, dependencies in targets:
+        lines += [f"if(TARGET {target})", f'  message(FATAL_ERROR "private provider target already exists: {target}")',
+                  "endif()", f"add_library({target} STATIC IMPORTED GLOBAL)",
+                  f"set_target_properties({target} PROPERTIES", f'  IMPORTED_LOCATION "{archive}"',
+                  '  IMPORTED_LINK_INTERFACE_LANGUAGES "C"', f'  INTERFACE_INCLUDE_DIRECTORIES "{include}"',
+                  f'  INTERFACE_LINK_LIBRARIES "{dependencies}")']
+    lines += ['set_property(TARGET CURL::libcurl APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS "CURL_STATICLIB")',
+              'set_property(TARGET LibXml2::LibXml2 APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS "LIBXML_STATIC")']
+    return ("\n".join(lines) + "\n").encode()
+
+
+
+
+def _arrow_network_evidence(raw, manifest, pins, take, read, tree, rows, require):
+    """Retain the reviewed prefix's complete byte closure without running it."""
+    network = manifest.get('network')
+    require(isinstance(network, dict) and raw.get('network') == network,
+            'private network descriptor is missing or inconsistent')
+    require(isinstance(ARROW_NETWORK_HELPER_SHA256, str) and isinstance(ARROW_NETWORK_BUILD_RECEIPT_SHA256, str),
+            'private network helper/build review and exact pins are pending')
+    helper = take(network.get('helper'), 'private network helper', ARROW_NETWORK_HELPER_SHA256)
+    build = read(network.get('receipt'), 'private network receipt', ARROW_NETWORK_BUILD_RECEIPT_SHA256)
+    require(network.get('build') == build
+            and (build.get('schema_version'), build.get('kind'), build.get('status'), build.get('ready'))
+            == (1, 'private_network_static_build', 'compiled_unverified', False),
+            'private network build identity differs')
+    prefix = network.get('prefix')
+    require(isinstance(prefix, str) and Path(prefix).is_absolute()
+            and build.get('prefix') == prefix and manifest.get('context', {}).get('network_prefix') == prefix
+            and Path(network['receipt']['path']).parent / 'prefix' == Path(prefix),
+            'private network prefix identity differs')
+    listed = rows(network.get('files'), 'complete private network closure')
+    closure = {}
+    for reference in listed:
+        require(isinstance(reference.get('path'), str) and reference['path'] not in closure,
+                'private network closure has duplicate/malformed paths')
+        take(reference, 'private network closure')
+        closure[reference['path']] = reference['sha256']
+    require(closure.get(network['receipt']['path']) == network['receipt']['sha256'],
+            'private network closure omits its original receipt')
+    private = network.get('private_files')
+    require(isinstance(private, dict), 'private network ownership is missing')
+    for path, metadata in private.items():
+        require(isinstance(path, str) and Path(path).is_absolute() and Path(path).is_relative_to(prefix)
+                and isinstance(metadata, dict) and metadata.get('component') in ARROW_NETWORK_COMPONENTS,
+                'private network ownership path/component differs')
+        require((metadata.get('source_package'), metadata.get('source_version'))
+                == ARROW_NETWORK_COMPONENTS[metadata['component']]
+                and closure.get(path) == metadata.get('sha256'), 'private network source ownership differs')
+    required = [str(Path(prefix) / 'lib' / name) for name in ARROW_NETWORK_ARCHIVES]
+    required += [str(Path(prefix) / 'include' / name) for name in
+                 ('curl/curl.h', 'libxml2/libxml/parser.h', 'iconv.h', 'zlib.h', 'nghttp2/nghttp2.h')]
+    require(all(path in private for path in required), 'private network closure omits required archives/headers')
+    work = Path(network['receipt']['path']).parent
+    parsed = set()
+
+    def consume(reference):
+        if isinstance(reference.get('path'), str) and Path(reference['path']).is_relative_to(work):
+            require(closure.get(reference.get('path')) == reference.get('sha256'),
+                    'nested private network evidence is absent from its closure')
+        path = take(reference, 'nested private network evidence')
+        # External source/advisory receipts remain exact leaf evidence. Their
+        # observations are historical, while the helper's descriptor enumerates
+        # every physically consumed source/build/provider byte separately.
+        if (path.suffix == '.json' and Path(reference['path']).is_relative_to(work)
+                and reference['path'] not in parsed):
+            parsed.add(reference['path'])
+            document = json.loads(path.read_bytes())
+            require(isinstance(document, (dict, list)), 'nested private network JSON must be an object or array')
+            walk(document)
+        return path
+
+    def walk(value, key=''):
+        if isinstance(value, dict):
+            if 'path' in value and 'sha256' in value:
+                consume(value)
+            # original_source is historical: its file bytes are in the original
+            # archive, not at the final patched source root.
+            if key != 'original_source' and isinstance(value.get('root'), str) and isinstance(value.get('files'), list):
+                converted = []
+                for row in value['files']:
+                    require(isinstance(row, dict), 'private network inventory row is malformed')
+                    if row.get('relative') == '.' and row.get('kind') == 'directory':
+                        continue
+                    converted.append({**row, 'type': row.get('kind', row.get('type', 'file'))})
+                tree(value['root'], converted, 'private network inventory')
+                for row in converted:
+                    if row['type'] in ('file', 'generated'):
+                        require(closure.get(str(Path(value['root']) / row['relative'])) == row['sha256'],
+                                'private network inventory leaf is absent from its closure')
+            for name, child in value.items():
+                if key == 'original_source' and name == 'files':
+                    continue
+                walk(child, name)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, key)
+
+    walk(build)
+    take(build.get('recipe'), 'private prefix captured recipe', ARROW_NETWORK_HELPER_SHA256)
+    require(build.get('openssl', {}).get('prefix') == manifest['context']['openssl_prefix'],
+            'private network selected different OpenSSL')
+    for row in manifest['openssl']['static_archives']:
+        require(closure.get(row['path']) == row['sha256'], 'private network closure omits selected OpenSSL')
+    patch = build.get('zlib_patch')
+    require(isinstance(patch, dict) and patch.get('patch_commit') == LXML_ZLIB_PATCH_COMMIT
+            and patch.get('original_gzwrite_sha256') == ARROW_NETWORK_ZLIB_ORIGINAL_SHA256
+            and patch.get('patched_gzwrite_sha256') == ARROW_NETWORK_ZLIB_PATCHED_SHA256,
+            'private zlib patch/source chain differs')
+    take(patch.get('patch'), 'private zlib patch', ARROW_NETWORK_ZLIB_PATCH_SHA256)
+    ngpatch = build.get('nghttp2_patch')
+    require(isinstance(ngpatch, dict) and ngpatch.get('source_package') == 'nghttp2'
+            and ngpatch.get('source_version') == '1.68.0-2ubuntu0.2',
+            'private nghttp2 distribution source identity differs')
+    original = ngpatch.get('original_source')
+    require(isinstance(original, dict) and isinstance(original.get('root'), str),
+            'nghttp2 original source inventory is absent')
+    old_files = {row.get('relative'): row for row in rows(original.get('files'), 'original nghttp2 inventory')}
+    original_archive = take(ngpatch.get('archive'), 'original nghttp2 archive')
+    # Check original inventory hashes directly against retained archive bytes.
+    # This remains valid after the original patched build tree is removed.
+    with tarfile.open(original_archive) as archive:
+        for member in archive.getmembers():
+            parts = Path(member.name).parts
+            require(parts and not Path(member.name).is_absolute() and '..' not in parts,
+                    'nghttp2 source archive has an unsafe path')
+            relative = Path(*parts[1:]).as_posix()
+            row = old_files.get(relative)
+            if member.isfile():
+                stream = archive.extractfile(member)
+                require(isinstance(row, dict) and row.get('sha256') == hashlib.sha256(stream.read()).hexdigest(),
+                        'historical nghttp2 source differs from its original archive')
+    stages = rows(ngpatch.get('stages'), 'ordered nghttp2 source patches')
+    final_inventory = ngpatch.get('final_source')
+    require(isinstance(final_inventory, dict), 'final nghttp2 source inventory is absent')
+    final = {row.get('relative'): row.get('sha256') for row in rows(
+        final_inventory.get('files'), 'final nghttp2 source inventory') if row.get('kind') == 'file'}
+    current = {name: row.get('sha256') for name, row in old_files.items() if row.get('kind') == 'file'}
+    for stage in stages:
+        take(stage.get('patch'), 'nghttp2 ordered patch')
+        command = read(stage.get('command'), 'nghttp2 patch command')
+        require(command.get('exit_code') == 0 and command.get('cleanup') == 'terminal',
+                'nghttp2 patch command lacks successful terminal evidence')
+        before, after = stage.get('before_files'), stage.get('after_files')
+        require(isinstance(before, dict) and isinstance(after, dict) and set(before) == set(after)
+                and all(current.get(name) == value for name, value in before.items()),
+                'nghttp2 ordered patch chain is discontinuous')
+        current.update(after)
+    require(all(final.get(name) == value for name, value in current.items()),
+            'nghttp2 final source differs from ordered patches')
+    compiled = build.get('nghttp2_build')
+    require(isinstance(compiled, dict), 'nghttp2 source-built PIC output evidence is absent')
+    for name in ('archive', 'public_header', 'version_template', 'generated_version_header',
+                 'compile_commands', 'target_source_manifest'):
+        take(compiled.get(name), 'nghttp2 compiled ' + name)
+    for name in ('objects', 'compiled_sources', 'installed'):
+        for item in rows(compiled.get(name), 'nghttp2 compiled ' + name):
+            take(item, 'nghttp2 compiled ' + name)
+    command_docs = {}
+    for reference in rows(build.get('commands'), 'private build commands'):
+        command = read(reference, 'private build command')
+        require(command.get('exit_code') == 0 and command.get('cleanup') == 'terminal',
+                'private build command lacks successful terminal evidence')
+        if isinstance(command.get('log'), dict):
+            take(command['log'], 'private build command log')
+        command_docs[Path(reference['path']).name] = command
+    for name in ('probe-whole-archive-pic-link', 'probe-charset-whole-archive-pic-link'):
+        command = command_docs.get(name + '-command.json', {})
+        args = command.get('argv', [])
+        require(isinstance(args, list) and '-shared' in args and '-Wl,-z,defs' in args
+                and '-Wl,-z,text' in args and '-Wl,--whole-archive' in args,
+                'private static whole-archive PIC proof is absent')
+    linkage = build.get('linkage')
+    require(isinstance(linkage, dict) and linkage.get('dynamic_private_dependencies') == [],
+            'private prefix dynamic linkage proof differs')
+    observation = {'curl': '8.23.0', 'openssl': '3.6.5', 'zlib': '1.3.2', 'libxml2': '2.15.4',
+                   'libiconv': '1.19', 'nghttp2': '1.68.0',
+                   **{key: True for key in ('http', 'https', 'http2', 'xml', 'xpath', 'encoding', 'gzip_xml')}}
+    require(build.get('probe', {}).get('observation') == observation and build.get('effective_versions') == observation,
+            'private prefix HTTP/TLS/HTTP2/compression/XML capability evidence differs')
+    metadata_key = 'provider_cmake' if pins['version'].startswith('26') else 'private_network_cmake'
+    metadata = take(manifest.get(metadata_key), 'private network CMake metadata')
+    require(metadata.read_bytes() == _arrow_private_cmake(Path(prefix), Path(manifest['context']['openssl_prefix'])),
+            'private network static target metadata differs from the reviewed interfaces')
+    return network
+
+
+def _arrow_private_evidence(raw: dict[str, Any], base: Path, family: str, retained_inputs=None) -> list[dict]:
     """Check the known 26 schemas and enumerate their exact retained byte closure.
 
     Nested JSON is never rewritten. During admission, historical descriptors
     resolve through the wrapper's retained hashes, including root-relative
     source inventories. Host observations remain history, not retained inputs.
     """
+    pins = _arrow_private_pins(family)
+    family_label = pins['label']
     collected, verified = {}, {}
     retained_by_hash = None
     if retained_inputs is not None:
@@ -364,7 +666,7 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
 
     def require(condition, label):
         if not condition:
-            raise ProfileError('Arrow 26 ' + label)
+            raise ProfileError(family_label + ' ' + label)
 
     def rows(value, label, *, nonempty=True):
         require(isinstance(value, list) and (bool(value) or not nonempty)
@@ -373,7 +675,7 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
 
     def take(item, label, expected=None):
         require(isinstance(item, dict) and isinstance(item.get('path'), str), label + ' requires a file')
-        digest = _hash(item.get('sha256'), 'Arrow 26 ' + label)
+        digest = _hash(item.get('sha256'), family_label + ' ' + label)
         require(expected is None or digest == expected, label + ' differs from reviewed bytes')
         selected = item
         if retained_by_hash is not None:
@@ -381,7 +683,7 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
             require(selected is not None, label + ' must be a retained input')
         key = (selected['path'], digest)
         if key not in verified:
-            verified[key] = _file(selected, base, 'Arrow 26 ' + label)
+            verified[key] = _file(selected, base, family_label + ' ' + label)
         path = verified[key]
         record = {'path': str(path), 'sha256': digest}
         collected[(str(path), digest)] = record
@@ -394,7 +696,7 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
         try:
             return path.read_text(errors='strict')
         except UnicodeDecodeError as exc:
-            raise ProfileError('Arrow 26 ' + label + ' must be UTF-8 text') from exc
+            raise ProfileError(family_label + ' ' + label + ' must be UTF-8 text') from exc
 
     def tree(root, records, label):
         require(isinstance(root, (str, Path)) and Path(root).is_absolute(), label + ' root must be absolute')
@@ -416,48 +718,89 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
                 require(resolved.resolve().is_relative_to(Path(root).resolve()), label + ' symlink escapes source tree')
         return result
 
-    required = {'recipe', 'build_inputs', 'source_verification', 'patch_application',
-                'compiled_dependencies', 'compiled_sources', 'native_link_artifacts',
-                'linked_static_archives', 'toolchain', 'toolchain_versions',
-                'python_build_distributions', 'effective_versions', 'build', 'wheel', 'wheel_sha256'}
+    required = {'recipe', 'build_inputs', 'source_verification', 'compiled_dependencies',
+                'compiled_sources', 'native_link_artifacts', 'final_native_link_artifacts',
+                'linked_static_archives', 'wheel', 'wheel_sha256'}
     require(type(raw.get('schema_version')) is int and raw['schema_version'] == 1
             and raw.get('status') == 'compiled_unverified' and raw.get('name') == 'pyarrow'
             and required <= raw.keys(), 'raw receipt is incomplete or not compiled_unverified')
     require(all(isinstance(raw[name], dict) for name in (
-        'recipe', 'build_inputs', 'source_verification', 'patch_application',
-        'compiled_dependencies', 'compiled_sources', 'toolchain', 'toolchain_versions',
-        'effective_versions', 'build', 'wheel')), 'raw receipt object fields are malformed')
-    require(raw.get('source_revision') == ARROW26_SOURCE_REVISION, 'source revision is unreviewed')
+        'recipe', 'build_inputs', 'source_verification', 'compiled_dependencies', 'compiled_sources', 'wheel')),
+        'raw receipt object fields are malformed')
+    require(raw.get('source_revision') == pins['source_revision'], 'source revision is unreviewed')
     manifest = read(raw['build_inputs'], 'build inputs')
-    version = '26.0.0+biominer.' + raw['build_inputs']['sha256'][:12]
-    require(raw.get('version') == version and raw['effective_versions'].get('pyarrow') == version,
-            'wheel version differs from the immutable build-input digest')
     require(type(manifest.get('schema_version')) is int and manifest['schema_version'] == 1
-            and manifest.get('source_policy') == 'arrow26-integrated-v1'
-            and manifest.get('arrow_commit') == ARROW26_SOURCE_REVISION,
+            and manifest.get('source_policy') == family
+            and manifest.get('arrow_commit') == pins['source_revision'],
             'build manifest has the wrong source family/policy')
-    take(raw['recipe'], 'recipe', ARROW26_RECIPE_SHA256)
-    take(manifest.get('recipe'), 'manifest recipe', ARROW26_RECIPE_SHA256)
-    take(manifest.get('source_archive'), 'source archive', ARROW26_ARCHIVE_SHA256)
+    version = pins['version'] + '+biominer.' + raw['build_inputs']['sha256'][:12]
+    effective_versions = _arrow_private_effective_versions(raw, family)
+    require(isinstance(effective_versions, dict), 'effective versions must be an object')
+    require(raw.get('version') == version and effective_versions.get('pyarrow') == version,
+            'wheel version differs from the immutable build-input digest')
+    toolchain = _arrow_private_toolchain(raw, family)
+    require(isinstance(toolchain, dict) and isinstance(raw.get('toolchain_versions'), dict),
+            'raw receipt toolchain fields are malformed')
+    take(raw['recipe'], 'recipe', pins['recipe_sha256'])
+    take(manifest.get('recipe'), 'manifest recipe', pins['recipe_sha256'])
+    take(manifest.get('source_archive'), 'source archive', pins['archive_sha256'])
     source = read(raw['source_verification'], 'source verification')
     require(manifest.get('source_verification') == raw['source_verification'],
             'source verification differs between receipt and manifest')
-    expected_sources = [{'relative': name, 'sha256': value}
-                        for name, value in sorted(ARROW26_INTEGRATED_SOURCES.items())]
-    require(source.get('schema_version') == 1 and source.get('source_revision') == ARROW26_SOURCE_REVISION
+    require(isinstance(pins['transformations'], list), 'reviewed source transformations are pending')
+    require(all(isinstance(value, str) and SHA.fullmatch(value) for value in pins['sources'].values()),
+            'reviewed source hashes are pending')
+    expected_sources = [{'relative': name, 'sha256': value} for name, value in sorted(pins['sources'].items())]
+    require(source.get('schema_version') == 1 and source.get('source_revision') == pins['source_revision']
             and source.get('archive') == manifest['source_archive']
-            and source.get('integrated_sources') == expected_sources
-            and manifest.get('integrated_sources') == expected_sources
-            and source.get('transformations') == ARROW26_TRANSFORMATIONS,
-            'source verification lacks exact integrated fixes and transformations')
+            and source.get('transformations') == pins['transformations'],
+            'source verification lacks exact reviewed transformations')
+    if family == ARROW26_PRIVATE_FAMILY:
+        require(source.get('integrated_sources') == expected_sources
+                and manifest.get('integrated_sources') == expected_sources,
+                'source verification lacks exact integrated fixes')
+    else:
+        require(raw.get('kind') == 'corrective_arrow25_private_network_build' and raw.get('ready') is False
+                and raw.get('source_policy') == family and source.get('source_policy') == family,
+                'corrective source family identity differs')
+        security = source.get('security_patches')
+        require(isinstance(security, dict) and manifest.get('security_patches') == security,
+                'ordered compute patch evidence differs')
+        application = read(manifest.get('patch_application'), 'compute patch application')
+        require(application == security and raw.get('patch_application') == manifest['patch_application']
+                and security.get('source_revision') == ARROW_SOURCE_REVISION,
+                'compute patch application differs')
+        stages = rows(security.get('patches'), 'ordered compute patches')
+        require(len(stages) == 2, 'both ordered compute patches are required')
+        final_hashes = {}
+        for stage, (commit, digest, files) in zip(stages, (
+                (ARROW_SECURITY_PATCH_COMMIT, ARROW_SECURITY_PATCH_SHA256, ARROW_SECURITY_FILES),
+                (ARROW_OFFSET_PATCH_COMMIT, ARROW_OFFSET_PATCH_SHA256, ARROW_OFFSET_FILES))):
+            require(stage.get('commit') == commit
+                    and stage.get('files') == [{'relative': relative, **values} for relative, values in files.items()],
+                    'reviewed ordered compute patch stage differs')
+            take(stage.get('patch'), 'ordered compute patch', digest)
+            for relative, values in files.items():
+                require(relative not in final_hashes or final_hashes[relative] == values['original_sha256'],
+                        'compute patch chain is discontinuous')
+                final_hashes[relative] = values['patched_sha256']
+        require(security.get('final_sources') == [{'relative': relative, 'sha256': value}
+                for relative, value in sorted(final_hashes.items())], 'final compute patch source set differs')
+        take(manifest.get('patch_tool'), 'compute patch tool')
     context = manifest.get('context')
     require(isinstance(context, dict) and isinstance(context.get('work'), str)
             and Path(context['work']).is_absolute()
             and isinstance(context.get('openssl_prefix'), str)
             and Path(context['openssl_prefix']).is_absolute(), 'build context is missing')
-    source_root = Path(context['work']) / ('arrow-' + ARROW26_SOURCE_REVISION)
+    source_root = Path(context['work']) / ('arrow-' + pins['source_revision'])
     initial_sources = tree(source_root, source.get('files'), 'verified Arrow tree')
-    for item in [*expected_sources, *ARROW26_TRANSFORMATIONS]:
+    if family == ARROW25_NETWORK_FAMILY:
+        backend = source.get('backend')
+        require(isinstance(backend, dict) and backend.get('path') == 'python/pyproject.toml'
+                and backend.get('backend') == '_build_backend' and backend.get('implementation') == 'scikit-build-core'
+                and initial_sources.get('python/pyproject.toml', {}).get('sha256') == backend.get('sha256'),
+                'Python backend differs from the exact Arrow 25 source')
+    for item in [*expected_sources, *pins['transformations']]:
         require(initial_sources.get(item['relative'], {}).get('sha256') == item['sha256'],
                 'verified source inventory omits a reviewed integrated/transformed file')
 
@@ -477,19 +820,19 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
     distributions = rows(builder.get('distributions'), 'builder distributions')
     require(len(distributions) == len(ARROW26_BUILDER_PINS)
             and {row.get('name'): row.get('version') for row in distributions} == ARROW26_BUILDER_PINS
-            and raw['python_build_distributions'] == distributions,
+            and (family != ARROW26_PRIVATE_FAMILY or raw.get('python_build_distributions') == distributions),
             'builder distributions differ from approved pins')
     for row in distributions:
         for name in ('wheel', 'metadata', 'record'):
             take(row.get(name), 'builder distribution ' + name)
-    require(raw['toolchain'] == builder.get('toolchain')
-            and set(raw['toolchain']) == {'cc', 'cxx', 'cmake', 'ninja', 'ld'}
+    require(toolchain == builder.get('toolchain')
+            and set(toolchain) == {'cc', 'cxx', 'cmake', 'ninja', 'ld'}
             and raw['toolchain_versions'] == manifest.get('toolchain_versions'),
             'toolchain identity differs from the approved builder')
-    for name, item in raw['toolchain'].items():
+    for name, item in toolchain.items():
         take(item, 'toolchain ' + name)
     for name in ('python', 'cc', 'cxx'):
-        selected = builder['python'] if name == 'python' else raw['toolchain'][name]
+        selected = builder['python'] if name == 'python' else toolchain[name]
         require(context.get(name) == selected['path'], 'build context tool differs from the approved builder')
     python_runtime = manifest.get('python_runtime')
     require(isinstance(python_runtime, dict) and raw.get('python_runtime') == python_runtime
@@ -513,18 +856,18 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
         take(item, 'selected Python runtime file')
 
     dependencies = manifest.get('dependencies')
-    require(isinstance(dependencies, dict) and set(dependencies) == set(ARROW26_DEPENDENCIES),
+    require(isinstance(dependencies, dict) and set(dependencies) == set(pins['dependencies']),
             'pinned dependency archive set is incomplete')
-    for name, pins in ARROW26_DEPENDENCIES.items():
+    for name, dependency_pins in pins['dependencies'].items():
         item = dependencies[name]
-        require(isinstance(item, dict) and item.get('version') == pins['version']
-                and item.get('sha256') == pins['sha256'], name + ' dependency pin differs')
-        take(item.get('archive'), name + ' source archive', pins['sha256'])
-        require(raw['effective_versions'].get(name) == pins['version'], name + ' effective version differs')
+        require(isinstance(item, dict) and item.get('version') == dependency_pins['version']
+                and item.get('sha256') == dependency_pins['sha256'], name + ' dependency pin differs')
+        take(item.get('archive'), name + ' source archive', dependency_pins['sha256'])
+        require(effective_versions.get(name) == dependency_pins['version'], name + ' effective version differs')
     openssl = manifest.get('openssl')
     require(isinstance(openssl, dict) and openssl.get('version') == '3.6.5'
             and openssl.get('source_commit') == 'c8bd5a57108599ac650bbae77fcabe3109dab2e8'
-            and raw['effective_versions'].get('openssl') == '3.6.5', 'private OpenSSL source identity differs')
+            and effective_versions.get('openssl') == '3.6.5', 'private OpenSSL source identity differs')
     for name, value in ARROW26_OPENSSL_PINS.items():
         take(openssl.get(name), 'OpenSSL ' + name, value)
     private_static = rows(openssl.get('static_archives'), 'OpenSSL static archives')
@@ -534,20 +877,10 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
             and {Path(row.get('path', '')).name: row.get('sha256') for row in private_static}
             == ARROW26_OPENSSL_STATIC, 'OpenSSL static archive set differs')
     tree(Path(openssl['header']['path']).parent.parent, openssl.get('headers'), 'OpenSSL headers')
-    take(manifest.get('zlib_patch'), 'zlib patch', ARROW26_ZLIB_PATCH_SHA256)
-    take(manifest.get('patch_tool'), 'patch tool')
+    require('zlib_patch' not in manifest, 'obsolete bundled zlib patch execution is forbidden')
     take(manifest.get('cmake_file_api_query'), 'File API query')
-    application = read(raw['patch_application'], 'zlib patch application')
-    require(application.get('schema_version') == 1
-            and application.get('patch_commit') == 'df84af25dc1942490e1d1c899a07619152a46148'
-            and application.get('original_gzwrite_sha256') == ARROW26_ZLIB_ORIGINAL_SHA256
-            and application.get('patched_gzwrite_sha256') == ARROW26_ZLIB_PATCHED_SHA256
-            and application.get('patch') == manifest['zlib_patch']
-            and application.get('archive') == dependencies['zlib']['archive'],
-            'zlib patch application differs from the reviewed exact chain')
-    zlib_sources = tree(application.get('source'), application.get('files'), 'patched zlib tree')
-    require(zlib_sources.get('gzwrite.c', {}).get('sha256') == ARROW26_ZLIB_PATCHED_SHA256,
-            'zlib final source is missing or unpatched')
+    network = _arrow_network_evidence(raw, manifest, pins, take, read, tree, rows, require)
+    network_files = network['private_files']
 
     budget = manifest.get('compiler_budget', {})
     require(isinstance(budget, dict) and type(budget.get('maximum_jobs')) is int
@@ -584,22 +917,23 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
                 values[key] = value
         return values
 
+    private_flags = _arrow_private_flags(context)
     common_flags = {'CMAKE_C_COMPILER': context['cc'], 'CMAKE_CXX_COMPILER': context['cxx'],
-                    **{name: context['python'] for name in ('Python3_EXECUTABLE', 'Python_EXECUTABLE', 'PYTHON_EXECUTABLE')}}
+                    **{name: context['python'] for name in ('Python3_EXECUTABLE', 'Python_EXECUTABLE', 'PYTHON_EXECUTABLE')},
+                    **private_flags}
+    bundled = ('simdjson', 'uriparser', 'Boost') if family == ARROW26_PRIVATE_FAMILY else ('Boost',)
     cpp_expected = {
         **common_flags, **{'ARROW_' + name: 'ON' for name in ARROW26_FEATURES},
         **{'ARROW_WITH_' + name: 'ON' for name in ARROW26_CODECS},
         **{'ARROW_' + name: 'OFF' for name in ('TESTING', 'BUILD_TESTS', 'BUILD_BENCHMARKS', 'BUILD_INTEGRATION', 'GANDIVA')},
-        **{name + '_SOURCE': 'BUNDLED' for name in ('simdjson', 'uriparser', 'Boost', 'ZLIB')},
+        **{name + '_SOURCE': 'BUNDLED' for name in bundled},
         'ARROW_BUILD_SHARED': 'ON', 'ARROW_BUILD_STATIC': 'OFF',
         'ARROW_DEPENDENCY_SOURCE': 'AUTO', 'ARROW_DEPENDENCY_USE_SHARED': 'OFF',
         'ARROW_JEMALLOC': 'ON', 'ARROW_MIMALLOC': 'ON', 'PARQUET_REQUIRE_ENCRYPTION': 'ON',
-        'OPENSSL_USE_STATIC_LIBS': 'TRUE', 'OPENSSL_ROOT_DIR': context['openssl_prefix'],
-        'OPENSSL_CRYPTO_LIBRARY': str(Path(context['openssl_prefix']) / 'lib/libcrypto.a'),
-        'OPENSSL_SSL_LIBRARY': str(Path(context['openssl_prefix']) / 'lib/libssl.a'),
         'CMAKE_MAKE_PROGRAM': builder['toolchain']['ninja']['path'],
-        'URIPARSER_BUILD_TESTS': 'OFF', 'BIOMINER_WHEEL_VERSION': '{wheel_version}',
     }
+    if family == ARROW26_PRIVATE_FAMILY:
+        cpp_expected['URIPARSER_BUILD_TESTS'] = 'OFF'
     cpp_flags = flags(commands['cpp_configure'], '-D')
     require(commands['cpp_configure'][:7] == [builder['toolchain']['cmake']['path'], '-S',
             str(source_root / 'cpp'), '-B', str(Path(context['work']) / 'cpp-build'), '-G', 'Ninja']
@@ -608,16 +942,20 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
     python_expected = {**common_flags, **{'PYARROW_' + name: 'ON' for name in (
         'ACERO', 'AZURE', 'DATASET', 'FLIGHT', 'GCS', 'HDFS', 'ORC', 'PARQUET', 'S3',
         'SUBSTRAIT', 'PARQUET_ENCRYPTION')}, 'PYARROW_GANDIVA': 'OFF', 'PYARROW_BUNDLE_ARROW_CPP': 'ON'}
+    packages = ['Arrow', 'ArrowCompute', 'ArrowAcero', 'ArrowDataset', 'ArrowFlight', 'ArrowSubstrait', 'Parquet']
+    if family == ARROW26_PRIVATE_FAMILY:
+        packages.append('ArrowS3')
     python_expected.update({name + '_DIR': str(Path(context['work']) / 'arrow-prefix/lib/cmake' / name)
-        for name in ('Arrow', 'ArrowCompute', 'ArrowAcero', 'ArrowDataset', 'ArrowFlight', 'ArrowS3', 'ArrowSubstrait', 'Parquet')})
+                           for name in packages})
     python_flags = flags(commands['python_build'], '--config-setting=cmake.define.')
     require(commands['python_build'][:7] == [context['python'], '-I', '-B', '-m', 'build', '--wheel', '--no-isolation']
             and commands['python_build'][-1] == str(source_root / 'python')
+            and '--config-setting=build-dir=' + str(Path(context['work']) / 'python-build') in commands['python_build']
             and [arg for arg in commands['python_build'] if arg.startswith('--config-setting=build.tool-args=')]
             == ['--config-setting=build.tool-args=-j' + str(budget['maximum_jobs'])]
             and all(python_flags.get(key) == value for key, value in python_expected.items()),
             'Python build command omits reviewed features or exceeds the compiler budget')
-    build = raw['build']
+    build = raw['build'] if family == ARROW26_PRIVATE_FAMILY else raw
     require(isinstance(build, dict) and all(build.get(k) == value for k, value in manifest.items())
             and build.get('build_inputs') == raw['build_inputs'] and build.get('wheel_version') == version,
             'compiled build history differs from immutable inputs')
@@ -633,8 +971,8 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
     require(all(final_sources.get(name) == value for name, value in initial_sources.items())
             and set(final_sources) - set(initial_sources) <= {'python/pyarrow/_generated_version.py'},
             'compiled source tree differs from the verified source tree')
-    consumers = rows(compiled.get('integrated_header_consumers'), 'integrated header consumers')
-    expected_consumers = {str(source_root / name): value for name, value in ARROW26_INTEGRATED_SOURCES.items()
+    consumers = rows(compiled.get('integrated_header_consumers' if family == ARROW26_PRIVATE_FAMILY else 'patched_header_consumers'), 'integrated header consumers')
+    expected_consumers = {str(source_root / name): value for name, value in pins['sources'].items()
                           if Path(name).name in ('scalar_if_else.cc', 'vector_replace.cc')}
     require(len(consumers) == len(expected_consumers)
             and {item.get('path'): item.get('sha256') for item in consumers} == expected_consumers,
@@ -723,7 +1061,7 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
         source_records.append({json.dumps(item, sort_keys=True, separators=(',', ':'))
                                for item in row['files']})
     forced = selected.get('forced_bundled_source_verification')
-    require(isinstance(forced, dict) and set(forced) == set(ARROW26_DEPENDENCIES),
+    require(isinstance(forced, dict) and set(forced) == set(pins['dependencies']) - ({'zlib'} if family == ARROW26_PRIVATE_FAMILY else set()),
             'bundled dependency source verification is incomplete')
     for name, files in forced.items():
         required_records = {json.dumps(item, sort_keys=True, separators=(',', ':'))
@@ -736,6 +1074,9 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
         for item in rows(selected.get(name), name, nonempty=name != 'downloaded_archives'):
             take(item, 'selected ' + name)
             provider = item.get('provider')
+            if _arrow_protected_provider(item.get('path', '')):
+                require(item['path'] in network_files or item['path'] in private_selected,
+                        'unapproved host network/crypto provider selected')
             if provider is not None:
                 require(isinstance(provider, dict), 'selected native provider must be an object')
                 kind = provider.get('kind')
@@ -745,6 +1086,13 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
                             and provider.get('receipt') == openssl['receipt']
                             and provider.get('source_commit') == openssl['source_commit'],
                             'private OpenSSL provider is not an approved source-attested archive')
+                elif kind == 'private_network':
+                    expected = network_files.get(item['path'])
+                    require(expected is not None and item['sha256'] == expected['sha256']
+                            and provider.get('file') == {key: item[key] for key in ('path', 'sha256')}
+                            and provider.get('receipt') == network['receipt'] and provider.get('helper') == network['helper']
+                            and all(provider.get(key) == expected[key] for key in ('component', 'source_package', 'source_version')),
+                            'private network provider lacks exact source ownership')
                 elif kind == 'python_runtime':
                     require(python_selected.get(item['path']) == item['sha256']
                             and provider.get('source_build') == 'Astral20260929'
@@ -755,46 +1103,97 @@ def _arrow26_evidence(raw: dict[str, Any], base: Path, retained_inputs=None) -> 
                                 for field in ('package', 'version', 'source_package', 'source_version')),
                             'system native input lacks exact provider/source identity')
     linked = rows(raw['linked_static_archives'], 'linked static archives')
+    linked_paths = set()
     for item in linked:
         take(item, 'linked static archive')
-    zlibs = [item for item in selected['static_archives'] if Path(item['path']).name == 'libz.a']
-    linked_bytes = {(row['path'], row['sha256']) for row in linked}
-    require(len(zlibs) == 1 and (zlibs[0]['path'], zlibs[0]['sha256']) in linked_bytes
-            and all((row['path'], row['sha256']) in linked_bytes for row in private_static),
-            'actual patched zlib/private OpenSSL static linkage is incomplete')
-    linked_paths = {item['path'] for item in linked}
-    maps = rows(raw['native_link_artifacts'], 'final link maps')
-    mapped = set()
-    for item in maps:
+        linked_paths.add(item['path'])
+        if _arrow_protected_provider(item['path']):
+            require(item['path'] in network_files or item['path'] in private_selected,
+                    'unapproved host network/crypto static provider linked')
+    required_static = {str(Path(network['prefix']) / 'lib' / name) for name in ARROW_NETWORK_ARCHIVES
+                       if name != 'libcharset.a'} | set(private_selected)
+    require(required_static <= linked_paths, 'actual private network/OpenSSL linkage is incomplete')
+    require(len([name for name in linked_paths if Path(name).name == 'libz.a']) == 1,
+            'exactly one private zlib provider must be linked')
+    all_maps = rows(raw['native_link_artifacts'], 'link maps')
+    final_maps = rows(raw['final_native_link_artifacts'], 'final link maps')
+    require(all(item in all_maps for item in final_maps), 'final maps are not retained link artifacts')
+    mapped, contributed = set(), set()
+    for item in all_maps:
+        take(item, 'link map')
+    for item in final_maps:
+        name = Path(item['path'])
+        work = Path(context['work'])
+        require((name.is_relative_to(work / 'cpp-build') or name.is_relative_to(work / 'python-build'))
+                and not any(part in {'CMakeScratch', 'CMakeTmp', '_deps'} for part in name.relative_to(work).parts)
+                and re.fullmatch(r'.+\.so(?:\.[0-9]+)*\.map', name.name),
+                'final map belongs to a probe or unsupported consumer')
         content = text(take(item, 'final link map'), 'link map')
         require('Linker script and memory map' in content, 'link map is not a linker output')
-        mapped.update(re.findall(r'(?:^|\s)(/[^\s()]+\.a)(?:\(|\s|$)', content, re.M))
-    require(linked_paths <= mapped, 'link maps omit selected static inputs')
+        stage = work / ('python-build' if name.is_relative_to(work / 'python-build') else 'cpp-build')
+        for value in re.findall(r'(?:^|\s)([^\s()]+(?:\.a|\.so(?:\.[0-9]+)*))(?=[\s()]|$)', content, re.M):
+            path = os.path.normpath(str(stage / value))
+            if _arrow_protected_provider(path):
+                require(path in network_files or path in private_selected,
+                        'final map contains an unapproved host network/crypto provider')
+            if path.endswith('.a'):
+                mapped.add(path)
+        contributed.update(os.path.normpath(str(stage / value)) for value in
+                           re.findall(r'(?:^|\s)([^\s()]+\.a)\([^\s()]+\)', content, re.M))
+    require(linked_paths <= mapped and required_static <= contributed,
+            'final link maps omit a consumed private archive member')
     return list(collected.values())
 
 
-def _arrow26_security(receipt: dict[str, Any], base: Path, version: str) -> None:
-    record = receipt.get('arrow26_build_receipt')
+def _arrow_private_checked(raw, base, family, retained_inputs=None):
+    try:
+        return _arrow_private_evidence(raw, base, family, retained_inputs)
+    except ProfileError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, tarfile.TarError) as error:
+        raise ProfileError(_arrow_private_pins(family)['label'] + ' malformed private build evidence: ' + str(error)) from error
+
+
+def _arrow26_evidence(raw, base, retained_inputs=None):
+    return _arrow_private_checked(raw, base, ARROW26_PRIVATE_FAMILY, retained_inputs)
+
+
+def _arrow25_network_evidence(raw, base, retained_inputs=None):
+    return _arrow_private_checked(raw, base, ARROW25_NETWORK_FAMILY, retained_inputs)
+
+
+def _arrow_private_security(receipt, base, version, family):
+    pins = _arrow_private_pins(family)
+    label, field = pins['label'], pins['raw_field']
+    record = receipt.get(field)
     if not isinstance(record, dict):
-        raise ProfileError('Arrow 26 requires its normalized raw receipt reference')
-    if ARROW26_BUILD_RECEIPT_SHA256 is None:
-        raise ProfileError('Arrow 26 completed raw receipt review and exact pin are pending')
-    if record.get('sha256') != ARROW26_BUILD_RECEIPT_SHA256:
-        raise ProfileError('Arrow 26 raw receipt differs from the independently reviewed build')
+        raise ProfileError(label + ' requires its normalized raw receipt reference')
+    if pins['raw_sha256'] is None:
+        raise ProfileError(label + ' completed raw receipt review and exact pin are pending')
+    if record.get('sha256') != pins['raw_sha256']:
+        raise ProfileError(label + ' raw receipt differs from the independently reviewed build')
     matches = [row for row in receipt['inputs'] if row.get('sha256') == record['sha256']]
     if not matches:
-        raise ProfileError('Arrow 26 raw receipt must be a retained input')
-    raw = _read_json(_file(matches[0], base, 'Arrow 26 raw receipt'))
-    _arrow26_evidence(raw, base, receipt['inputs'])
-    if (receipt.get('version') != version or raw.get('version') != version
-            or receipt['wheel_sha256'] != raw['wheel_sha256']
+        raise ProfileError(label + ' raw receipt must be a retained input')
+    raw = _read_json(_file(matches[0], base, label + ' raw receipt'))
+    _arrow_private_checked(raw, base, family, receipt['inputs'])
+    if (receipt.get('source_policy') != family or receipt.get('version') != version
+            or raw.get('version') != version or receipt['wheel_sha256'] != raw['wheel_sha256']
             or receipt['source_revision'] != raw['source_revision']
-            or receipt['effective_versions'] != raw['effective_versions']
+            or receipt['effective_versions'] != _arrow_private_effective_versions(raw, family)
             or {key: row['sha256'] for key, row in receipt['toolchain'].items()}
-            != {key: row['sha256'] for key, row in raw['toolchain'].items()}
+            != {key: row['sha256'] for key, row in _arrow_private_toolchain(raw, family).items()}
             or [row['sha256'] for row in receipt['native_link_artifacts']]
             != [row['sha256'] for row in raw['native_link_artifacts']]):
-        raise ProfileError('Arrow 26 wrapper identity differs from its retained raw receipt')
+        raise ProfileError(label + ' wrapper identity differs from its retained raw receipt')
+
+
+def _arrow26_security(receipt, base, version):
+    return _arrow_private_security(receipt, base, version, ARROW26_PRIVATE_FAMILY)
+
+
+def _arrow25_network_security(receipt, base, version):
+    return _arrow_private_security(receipt, base, version, ARROW25_NETWORK_FAMILY)
 
 
 def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Path:
@@ -867,7 +1266,10 @@ def _wheel(artifact: dict[str, Any], base: Path, project: dict[str, Any]) -> Pat
         if artifact['version'].startswith('26.0.0+biominer.'):
             _arrow26_security(receipt, receipt_path.parent, artifact['version'])
         else:
-            _arrow_security(receipt, receipt_path.parent, artifact['version'])
+            if 'arrow25_network_build_receipt' in receipt or receipt.get('source_policy') == ARROW25_NETWORK_FAMILY:
+                _arrow25_network_security(receipt, receipt_path.parent, artifact['version'])
+            else:
+                _arrow_security(receipt, receipt_path.parent, artifact['version'])
     if name == 'lxml':
         if any(receipt['effective_versions'].get(key) != value
                for key, value in LXML_NATIVE_VERSIONS.items()):
@@ -1147,6 +1549,11 @@ def build(profile: str | Path, output: str | Path) -> dict[str, Any]:
     if any(item.get('name') == 'pyarrow' and str(item.get('version', '')).startswith('26.')
            for item in doc['artifacts']):
         raise ProfileError('Arrow 26 profile rebuild is unsupported; use the reviewed isolated recipe')
+    for item in doc['artifacts']:
+        if item.get('name') == 'pyarrow' and str(item.get('version', '')).startswith('25.'):
+            source = _read_json(_file(item.get('source_receipt'), path.parent, 'Arrow 25 source receipt'))
+            if 'arrow25_network_build_receipt' in source or source.get('source_policy') == ARROW25_NETWORK_FAMILY:
+                raise ProfileError('Arrow 25 private-network profile rebuild is unsupported; use the reviewed isolated recipe')
     _inputs(doc, path.parent)
     if not doc['recipes']:
         raise ProfileError('profile has no explicit build recipes')

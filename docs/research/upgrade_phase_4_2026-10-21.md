@@ -551,3 +551,36 @@ The receipt remains `compiled_unverified`, `ready:false`. No Arrow installation,
 runtime admission, safe fallback or whole-host security clearance follows from
 these prefix observations. Installed-provider findings remain open pending
 replacement runtime qualification.
+
+## Task 4.3: private-provider receipt families
+
+The new corrective Arrow 25 and Arrow 26 v2 families share strict evidence
+validation while retaining distinct raw formats, source/patch contracts and
+normalizer backlinks. The obsolete, never-admitted Arrow 26 v1 policy is
+removed. The original Arrow 25 security function, its nine `ARROW_` assignments
+and the separate `VERSIONS` identity remain unchanged. New-family rebuilds
+reject the legacy recipe before probes or output creation.
+
+Both assembly modes, relocation and the unchanged freezer preserve exact
+nested bytes and source/provider/compiler/File API/static-consumer evidence.
+The normalizer never executes the network helper. Historical original source
+inventories bind original archives, not the current patched files; external
+observation receipts remain exact retained leaves. Independent review found
+that owned compiler-command JSON arrays were rejected as objects. Root
+reproduced both family failures, then the nested-only dict/list reader fixed
+the mismatch while keeping control receipts object-only.
+
+The final four-file test run passed 259 tests in 11.22 seconds. Receipt
+`phase4/private-family-admission-final-prefix-pins-1/execution.json` has SHA-256
+`e1d6283f757af25f5afb7db017c9bc09c054c57f908a15c6c4a5eef194dbc316`,
+supervisor/runner exit 0 and no interruption. Independent SPEC/QUALITY review
+passed; only the two approved prefix/helper pins changed afterward, with an
+exact source comparison and test rerun. A separate read-only network-subroutine
+probe accepted all 12,479 actual prefix descriptor files and 70 private files.
+It did not synthesize an Arrow compiled receipt or run full Arrow admission.
+
+Both actual Arrow raw receipt pins remain unset. The real third configure
+attempt completed CMake, then rejected ORC's `ZLIB_LIBRARY=ZLIB::ZLIB` cache
+normalization. Its output remains preserved; a narrowly bound alias correction
+and fresh configuration are required before compilation. This foundation
+does not qualify a wheel, installed runtime or fallback.
