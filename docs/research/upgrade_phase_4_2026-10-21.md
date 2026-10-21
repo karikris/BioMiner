@@ -854,3 +854,31 @@ The legacy admission function and protected historical assignments remain
 byte-exact. Actual final source attestation, native wheel qualification and
 the application compatibility checks remain separate tasks. No runtime is
 activated by this adapter change.
+
+## Source-proof verification primitives
+
+A standalone standard-library verifier now checks source archive membership,
+current source bytes, exact generated-file derivations, the disjoint 21-member
+supplemental cohort, and retained copies selected by checksum. The AWS header
+derivation checks the captured static/default configuration. It performs no
+recipe, generator, compiler or native-tool execution. Its completed-attestation
+reader rejects unqualified ExternalProject rules; capture/CLI orchestration,
+complete final-subject checks and additional generated-source rules remain
+separate work against the actual completed builds.
+
+The initial test run recorded 29 setup errors because the implementation was
+intentionally absent, then all 29 primitive tests passed. Independent review
+found that checking each symbolic-link target alone missed cycles and escapes
+through directory links. Eight additional tests reproduced six failures and
+two passes in 0.27 seconds. The inventory-only component resolver fixes those
+cases in both original-source and retained-copy modes without accessing
+historical directories.
+
+All 37 primitive tests passed in 0.19 seconds, exit 0 without interruption;
+execution receipt SHA-256 is
+`edb3c58b4b1ee4c5b3d8fe824ba742aa7305cfa785e03d3c1286230118620f7f`.
+Independent review passed within this primitive scope and closed its chain
+finding; addendum SHA-256 is
+`f705174d9aabeba38912edc8cd0d5f0decae8ab4091e5a1428be569af96deff1`.
+No actual final attestation, wheel qualification, runtime admission or phase
+completion is claimed by these synthetic tests.
