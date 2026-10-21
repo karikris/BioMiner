@@ -1636,10 +1636,20 @@ def _artifact_closure(raw, work, evidence):
     return result
 
 
-def _verify_inventory_files(root, files, resolver, *, check_layout=True):
+def _verify_inventory_files(root, files, resolver, *, check_layout=True, original_archive=None):
     inventory = _inventory(files)
+    layout = dict(inventory)
+    if original_archive is not None:
+        # Recipes verify archive directories but omit them from their compact
+        # file/symlink receipt. Qualify only original archive directory members,
+        # including empty submodule directories that have no inventoried child.
+        for name, row in _archive_index(original_archive, resolver).items():
+            if row["type"] == "directory":
+                existing = layout.setdefault(name, {"relative": name, "type": "directory"})
+                _require(existing["type"] == "directory",
+                         "source object type differs from original archive directory")
     if check_layout and resolver.retained is None:
-        _check_current_layout(root, inventory)
+        _check_current_layout(root, layout)
     for name, row in inventory.items():
         if row["type"] in {"file", "generated"}:
             resolver.read({"path": root + "/" + name, "sha256": row["sha256"]})
@@ -1692,7 +1702,8 @@ def _assemble_attestation(raw_ref, cohort_ref, resolver, *, captured=None, produ
         _require(role in {"cc", "cxx", "cmake", "ninja", "ld", "ar", "ranlib", "make"},
                  "completed subject has an unqualified toolchain role")
         evidence.tool(role, reference["path"], toolchain)
-    _verify_inventory_files(arrow, compile_info.get("files"), resolver)
+    _verify_inventory_files(arrow, compile_info.get("files"), resolver,
+                            original_archive=manifest.get("source_archive"))
     resolver.read(manifest.get("source_archive"))
     if manifest.get("source_verification") is not None:
         resolver.read(manifest["source_verification"])

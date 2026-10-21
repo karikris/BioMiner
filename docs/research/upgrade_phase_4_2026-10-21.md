@@ -1009,3 +1009,20 @@ Root source/test review passed, with SHA-256
 This remains source/test evidence. Actual final-build capture, retained replay
 and native/application qualification are pending. Runtime admission remains
 closed; phase 4 remains incomplete and unpushed.
+
+## Archive-owned empty source directories
+
+The first actual corrected Arrow 26 source capture stopped on three empty
+source directories: `testing`, `cpp/submodules` and
+`cpp/submodules/parquet-testing`. The pinned archive declares them; the recipe
+checks them but emits a compact file/symlink inventory. GitHits inspection of
+the exact Arrow `.gitmodules` confirms the two submodule paths.
+
+The reader now augments only this layout check with original archive directory
+members. Unknown empty directories, changed types, missing archive directories
+and changed archive bytes remain rejected; frozen receipts are unchanged.
+Focused RED reproduced four failures with ten passes in 0.73 seconds. All
+179 tests then passed in 7.88 seconds, exit 0 without interruption; receipt
+SHA-256 `ac7f15a4449471e103948065040df365b840802f8950f8bdb45fbce5780f7459`.
+Root source/test review SHA-256 `8cab609586120b87351ffb10b5d6105d4b1b49034bf228dab7878f127537d53e`.
+Actual capture/replay and runtime/application gates remain pending.

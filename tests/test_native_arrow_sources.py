@@ -1218,3 +1218,67 @@ def test_lz4_unhashed_download_rejects_unowned_or_conflicting_download_evidence(
                                                "https://example.invalid/foreign.tar.gz"))
     with pytest.raises(ValueError, match="archive|source|configur|ownership|download|LZ4|hash"):
         case.capture(verifier)
+
+
+ARROW_ARCHIVE_EMPTY_DIRECTORIES = ("testing", "cpp/submodules", "cpp/submodules/parquet-testing")
+
+
+def use_arrow_archive_empty_directories(case, *, directory_member=True):
+    """The frozen recipes validate directories but emit only files/symlinks."""
+    path = Path(case.manifest["source_archive"]["path"])
+    with tarfile.open(path) as original:
+        contents = [(member.name, original.extractfile(member).read())
+                    for member in original.getmembers() if member.isfile()]
+    with tarfile.open(path, "w:gz") as archive:
+        for name, data in contents:
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+        for relative in ARROW_ARCHIVE_EMPTY_DIRECTORIES:
+            member = tarfile.TarInfo("upstream/" + relative)
+            if directory_member:
+                member.type = tarfile.DIRTYPE
+                archive.addfile(member)
+            else:
+                data = b"original archive file, not a directory\n"
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+            (case.arrow / relative).mkdir(parents=True, exist_ok=True)
+    case.manifest["source_archive"] = record(path)
+    case.refresh()
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_completed_arrow_source_accepts_only_archive_owned_empty_directories(
+        verifier, completed_source_case, tmp_path, monkeypatch, retained):
+    case = completed_source_case
+    use_arrow_archive_empty_directories(case)
+    compiled = json.loads(Path(case.source_ref["path"]).read_bytes())
+    assert not set(ARROW_ARCHIVE_EMPTY_DIRECTORIES).intersection(row["relative"] for row in compiled["files"])
+    attestation = case.publish(verifier, tmp_path / "archive-empty-directory-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    assert case.manifest["source_archive"] in initial["files"]
+    assert initial["attestation"]["subject"]["compiled_sources"] == case.source_ref
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["unknown_directory", "wrong_type", "missing_directory",
+                                    "archive_file_member", "archive_hash"])
+def test_completed_arrow_source_rejects_unqualified_empty_directory_layout(
+        verifier, completed_source_case, change):
+    case = completed_source_case
+    use_arrow_archive_empty_directories(case, directory_member=change != "archive_file_member")
+    if change == "unknown_directory":
+        (case.arrow / "unrecorded-empty-directory").mkdir()
+    elif change == "wrong_type":
+        path = case.arrow / "testing"
+        path.rmdir()
+        path.write_bytes(b"directory replaced with a file\n")
+    elif change == "missing_directory":
+        (case.arrow / "testing").rmdir()
+    elif change == "archive_hash":
+        path = Path(case.manifest["source_archive"]["path"])
+        path.write_bytes(path.read_bytes() + b"changed referenced archive bytes")
+    with pytest.raises(ValueError, match="source|archive|layout|checksum|director|object"):
+        case.capture(verifier)
