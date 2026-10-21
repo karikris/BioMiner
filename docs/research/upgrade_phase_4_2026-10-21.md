@@ -114,3 +114,58 @@ configured in `pyproject.toml`.
 Actual Arrow configuration, compilation, dependency/advisory review, runtime
 admission and phase gates remain pending. The new raw build receipt is explicitly
 `compiled_unverified`; task 4.3 must implement its distinct admission policy.
+
+Task 4.1 was committed on `main` as
+`3fcd4e5fad78a950ef20acbba398417389f6110e`. Independent SPEC approval is
+`phase4/task4.1-independent-spec-review-1/spec-review.json`, SHA-256
+`1a984a68e7506ff3be0fdc4fde9d1bd2e085f3c6686b75f7b91c996678c1f13e`;
+QUALITY approval is `phase4/task4.1-independent-quality-review-1/quality-review.json`,
+SHA-256 `76b3c2f1315492f6a0cc0173998e94d54b48cbc3e9786b782744aa4cae7208d3`.
+The additional create-only QUALITY v2 receipt binds the final staged verification:
+SHA-256 `2adc9a6acc97d345bcdd45967738c52999cc7550a53bca7df6f47c0e0bee800d`.
+The phase push remains pending the complete phase-4 gates.
+
+
+### Configuration correction: use CMake's native target model
+
+The first actual configure attempt failed during generation. The new inventory
+hook evaluated `LINK_ONLY` outside link context and mapped distinct configured
+targets to the same output filename. Independent inspection also found that
+root-scope target lookups could misidentify child-local imported targets. The
+failed generation is preserved at
+`.native-runtime/arrow26-security-20261021-1/build`. Its outer receipt is
+`phase4/configure-outer-1/execution.json`, SHA-256
+`0c61ca8fcae1dc157e5156274a73e027f0efc4397ad8dd7e5adca84826480be4`;
+inner receipt `phase4/configure-execution-1/execution.json` has SHA-256
+`d2543ee8bd33ab090693347c8aa59dc00af5bd5bbfa995aa598dd28235bcb2fa`.
+Both exit codes are 1, interruption is null, cleanup succeeded, and the sampled
+compiler maximum was one during configuration probes. No Arrow target build ran.
+
+The correction removes that custom generator hook and uses the pinned CMake
+4.2.3 File API codemodel 2.9. It retains built and abstract/imported targets with
+native scoped IDs, resolved artifact paths and evaluated link fragments. The
+successful index, model and every consumed target reply are hash-bound. Missing,
+escaping or mismatched references and older models fail closed. The empty query
+is part of the immutable precompile inputs. System native inputs retain provider
+and source-package identities; bare `-l` flags still require final link-map
+resolution. Existing source, crypto, compiler, feature and resume guards remain.
+
+A real bounded CMake fixture confirms three `Repeated` imported targets retain
+three distinct root/child IDs and archive paths, and both `LINK_ONLY` consumers
+resolve their own child archive. Its parser verification is
+`phase4/cmake-file-api-scope-2/parser-verification.json`, SHA-256
+`faf29ac8262b0b81d7f078d89a30ca78ff22749df91283e9b56bafea5838d3a2`.
+The initial fixture ordering was invalid CMake; that failed fixture and both
+minimal reproductions of the original hook defects are preserved. A proposed
+raw-metadata/sidecar repair was rejected before implementation because it did
+not resolve directory scope. Those RED results remain historical evidence.
+
+The new File API tests first failed in all five cases against the old collector,
+then the complete recipe suite passed 60 tests in 0.90 seconds. The supervised
+GREEN receipt is `phase4/task4.1-focused-4/execution.json`, SHA-256
+`729a000c9cea32fce9712c221e55da864806b6ea161dcaef0ce945ab541a267a`;
+supervisor/runner exit 0, interruption null. Current corrected recipe SHA-256 is
+`d375b96ba64dd5380a4b57469670321bbb6183d0f25ce58658a4782d941e2fb1`.
+The exact upstream CMake source/docs and GitHits search/read/grep/status results
+are retained in `phase4/cmake-inventory-research-1/githits.json`. The next actual
+configure uses a fresh generation; the failed receipt and source stay intact.

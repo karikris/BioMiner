@@ -519,7 +519,7 @@ def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
         context = {"work": str(work), "openssl_prefix": str(prefix), "python": builder["python"]["path"],
                    "cc": builder["toolchain"]["cc"]["path"], "cxx": builder["toolchain"]["cxx"]["path"]}
         cache = work / "cpp-build/CMakeCache.txt"
-        cache.parent.mkdir()
+        cache.parent.mkdir(exist_ok=True)
         cache.write_text("\n".join(f"{key}:STRING={value}" for key, value in
                                    recipe.expected_cache(context, stage="cpp").items()) + "\n")
         return {"command": command, "exit_code": 0}
@@ -554,3 +554,78 @@ def test_cli_bad_configure_approval_preserves_incomplete_receipt_and_checkpoint(
     assert receipt.read_bytes() == before
     assert recipe.tree_inventory(work) == before_tree
     assert stages == ["configure"]
+
+
+def configured_target_fixture(recipe, tmp_path):
+    work = tmp_path / "work"
+    build = work / "cpp-build"
+    reply = build / ".cmake/api/v1/reply"
+    reply.mkdir(parents=True)
+    write_json(work / "build-inputs.json", {"openssl": {"static_archives": []}})
+    (build / "biominer-boost-selection.txt").write_text(
+        "algorithm;crc;numeric/conversion;scope_exit;throw_exception;tokenizer;locale;thread;uuid\n"
+    )
+    for name in ("simdjson", "uriparser", "boost"):
+        source = build / "_deps" / (name + "-src")
+        source.mkdir(parents=True)
+        (source / "input.h").write_bytes(b"approved source\n")
+        archive = work / "inputs" / recipe.DEPENDENCIES[name]["filename"]
+        archive.parent.mkdir(exist_ok=True)
+        archive_at(archive, name, {"input.h": b"approved source\n"})
+    source = work / f"arrow-{recipe.ARROW_COMMIT}/cpp"
+    versions = source / "thirdparty/versions.txt"
+    versions.parent.mkdir(parents=True)
+    versions.write_text("")
+    archives = []
+    targets = []
+    for name in ("one", "two"):
+        archive = work / (name + ".a")
+        archive.write_bytes(name.encode())
+        archives.append(archive)
+        target = {"name": "Repeated", "id": name, "type": "STATIC_LIBRARY",
+                  "imported": True, "local": True,
+                  "paths": {"source": name, "build": name},
+                  "artifacts": [{"path": str(archive)}]}
+        write_json(reply / (name + ".json"), target)
+        targets.append({"name": "Repeated", "id": name, "jsonFile": name + ".json"})
+    write_json(reply / "model.json", {"kind": "codemodel", "version": {"major": 2, "minor": 9},
+        "paths": {"source": str(source), "build": str(build)},
+        "configurations": [{"name": "Release", "targets": [], "abstractTargets": targets}]})
+    write_json(reply / "index-test.json", {"reply": {"codemodel-v2": {
+        "kind": "codemodel", "version": {"major": 2, "minor": 9}, "jsonFile": "model.json"}}})
+    return work, reply, archives
+
+
+def test_dependency_inventory_preserves_scoped_imported_target_identity(recipe, tmp_path):
+    work, reply, archives = configured_target_fixture(recipe, tmp_path)
+
+    observed = recipe.capture_dependencies(work, compiled=False)
+
+    assert [row["target"] for row in observed["targets"]] == ["Repeated", "Repeated"]
+    assert [row["id"] for row in observed["targets"]] == ["one", "two"]
+    assert [row["artifact"] for row in observed["targets"]] == list(map(str, archives))
+    assert [row["record"] for row in observed["targets"]] == [record(reply / "one.json"), record(reply / "two.json")]
+    assert observed["static_archives"] == [record(path) for path in archives]
+    assert len(observed["file_api"]) == 4
+
+
+@pytest.mark.parametrize("change", ["missing", "escape", "identity", "version"])
+def test_dependency_inventory_rejects_invalid_file_api_evidence(recipe, tmp_path, change):
+    work, reply, _ = configured_target_fixture(recipe, tmp_path)
+    if change == "missing":
+        (reply / "one.json").unlink()
+    elif change == "escape":
+        model = json.loads((reply / "model.json").read_bytes())
+        model["configurations"][0]["abstractTargets"][0]["jsonFile"] = "../one.json"
+        write_json(reply / "model.json", model)
+    elif change == "identity":
+        target = json.loads((reply / "one.json").read_bytes())
+        target["id"] = "different"
+        write_json(reply / "one.json", target)
+    else:
+        model = json.loads((reply / "model.json").read_bytes())
+        model["version"]["minor"] = 8
+        write_json(reply / "model.json", model)
+
+    with pytest.raises(ValueError, match="File API"):
+        recipe.capture_dependencies(work, compiled=False)

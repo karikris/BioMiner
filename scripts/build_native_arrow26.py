@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -78,39 +79,6 @@ VERSION_PATCHES = (
 ZLIB_CMAKE_ANCHOR = '    set(ZLIB_CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS} "-DCMAKE_INSTALL_PREFIX=${ZLIB_PREFIX}")'
 ZLIB_PROJECT_ANCHOR = '                        URL_HASH "SHA256=${ARROW_ZLIB_BUILD_SHA256_CHECKSUM}"'
 BOOST_SELECTION_ANCHOR = "  fetchcontent_makeavailable(boost)"
-
-# Deferred until Arrow's top-level directory is complete. The target properties
-# record configured selection; actual linker maps separately establish linkage.
-DEPENDENCY_CAPTURE_CMAKE = r'''
-# BioMiner: retain actual configured targets and their source/link inputs.
-function(biominer_capture_directory directory)
-  get_property(local_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
-  get_property(imported_targets DIRECTORY "${directory}" PROPERTY IMPORTED_TARGETS)
-  foreach(target IN LISTS local_targets imported_targets)
-    if(NOT TARGET "${target}")
-      continue()
-    endif()
-    get_target_property(kind "${target}" TYPE)
-    get_target_property(source_dir "${target}" SOURCE_DIR)
-    get_target_property(binary_dir "${target}" BINARY_DIR)
-    get_target_property(includes "${target}" INTERFACE_INCLUDE_DIRECTORIES)
-    get_target_property(links "${target}" INTERFACE_LINK_LIBRARIES)
-    string(MAKE_C_IDENTIFIER "${target}" safe_target)
-    set(artifact "")
-    if(kind MATCHES "^(STATIC|SHARED|MODULE|UNKNOWN)_LIBRARY$")
-      set(artifact "$<TARGET_FILE:${target}>")
-    endif()
-    file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/biominer-targets/${safe_target}.tsv"
-         CONTENT "${target}\t${kind}\t${source_dir}\t${binary_dir}\t${artifact}\t${includes}\t${links}\n")
-  endforeach()
-  get_property(children DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
-  foreach(child IN LISTS children)
-    biominer_capture_directory("${child}")
-  endforeach()
-endfunction()
-cmake_language(DEFER CALL biominer_capture_directory "${CMAKE_SOURCE_DIR}")
-'''
-
 
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
@@ -250,7 +218,6 @@ def source_transformations(bundle: tarfile.TarFile, root: str) -> dict:
         ' --wheel-version "${BIOMINER_WHEEL_VERSION}"')
     toolchain = exact_replace(toolchain, BOOST_SELECTION_ANCHOR, BOOST_SELECTION_ANCHOR +
         '\n  file(WRITE "${CMAKE_BINARY_DIR}/biominer-boost-selection.txt" "${BOOST_INCLUDE_LIBRARIES}\\n")')
-    toolchain += DEPENDENCY_CAPTURE_CMAKE.encode()
     versions_path = "cpp/thirdparty/versions.txt"
     versions = bundle.extractfile(root + "/" + versions_path).read()
     for before, after in VERSION_PATCHES:
@@ -551,13 +518,76 @@ def system_provider(path: Path) -> dict:
             "source_and_advisory_review": "required_before_runtime_admission"}
 
 
+def capture_cmake_targets(build: Path, expected_source: Path) -> tuple[list, list]:
+    """Use CMake's scoped target identities and already evaluated link inputs."""
+    reply = build / ".cmake/api/v1/reply"
+    if reply.resolve() != reply:
+        raise ValueError("File API reply directory contains a symlink")
+    indexes = list(reply.glob("index-*.json"))
+    if len(indexes) != 1:
+        raise ValueError("File API requires one current successful index")
+    records = {}
+
+    def read(path):
+        if path.parent != reply or path.is_symlink() or not path.is_file():
+            raise ValueError("File API reply reference is missing or escapes its directory")
+        records[str(path)] = file_record(path)
+        try:
+            return json.loads(path.read_bytes())
+        except (ValueError, UnicodeError) as error:
+            raise ValueError("File API reply is not valid JSON") from error
+
+    def referenced(item):
+        name = item.get("jsonFile")
+        if not isinstance(name, str) or Path(name).name != name or name in {".", ".."}:
+            raise ValueError("File API reply reference is invalid")
+        return reply / name
+
+    index = read(indexes[0])
+    model = read(referenced(index.get("reply", {}).get("codemodel-v2", {})))
+    version = model.get("version", {})
+    if (model.get("kind") != "codemodel" or version.get("major") != 2
+            or type(version.get("minor")) is not int or version["minor"] < 9
+            or model.get("paths") != {"source": str(expected_source), "build": str(build)}):
+        raise ValueError("File API codemodel version or source/build identity rejected")
+    configurations = model.get("configurations", [])
+    if len(configurations) != 1:
+        raise ValueError("File API requires a single Ninja configuration")
+    configuration = configurations[0]
+    rows, identities = [], set()
+    for entry in configuration.get("targets", []) + configuration.get("abstractTargets", []):
+        path = referenced(entry)
+        target = read(path)
+        identity = target.get("id")
+        if (not isinstance(identity, str) or not identity or identity in identities
+                or identity != entry.get("id") or target.get("name") != entry.get("name")):
+            raise ValueError("File API target identity is missing, duplicated or mismatched")
+        identities.add(identity)
+        paths = target.get("paths", {})
+        if not all(isinstance(paths.get(key), str) for key in ("source", "build")):
+            raise ValueError("File API target source/build paths are missing")
+        artifacts = [str((build / item["path"]).absolute()) for item in target.get("artifacts", [])]
+        rows.append({
+            "target": target["name"], "id": identity, "kind": target["type"],
+            "source": str((expected_source / paths["source"]).absolute()),
+            "binary": str((build / paths["build"]).absolute()),
+            "artifact": artifacts[0] if artifacts else "", "artifacts": artifacts,
+            "imported": target.get("imported", False), "local": target.get("local", False),
+            "includes": [item for group in target.get("compileGroups", []) for item in group.get("includes", [])],
+            "links": target.get("link", {}).get("commandFragments", []),
+            "interface_links": target.get("interfaceLinkLibraries", []),
+            "record": file_record(path),
+        })
+    if not rows:
+        raise ValueError("File API target inventory is empty")
+    return sorted(rows, key=lambda row: row["id"]), [records[name] for name in sorted(records)]
+
+
 def capture_dependencies(work: Path, *, compiled: bool) -> dict:
     build = work / "cpp-build"
     inputs = json.loads((work / "build-inputs.json").read_bytes())
     private_archives = {str(Path(row["path"]).resolve()): row for row in inputs["openssl"]["static_archives"]}
-    target_paths = sorted((build / "biominer-targets").glob("*.tsv"))
-    if not target_paths:
-        raise ValueError("configured dependency target inventory missing")
+    targets, file_api = capture_cmake_targets(build, work / f"arrow-{ARROW_COMMIT}/cpp")
     boost = build / "biominer-boost-selection.txt"
     if not boost.is_file():
         raise ValueError("actual Boost component selection missing")
@@ -565,19 +595,20 @@ def capture_dependencies(work: Path, *, compiled: bool) -> dict:
     required_boost = {"algorithm", "crc", "numeric/conversion", "scope_exit", "throw_exception", "tokenizer", "locale", "thread", "uuid"}
     if not required_boost.issubset(components):
         raise ValueError("actual Boost component selection lacks required components")
-    targets, static_archives, source_roots = [], {}, set()
-    for path in target_paths:
-        fields = path.read_text().rstrip("\n").split("\t")
-        if len(fields) != 7:
-            raise ValueError(f"malformed dependency target inventory: {path}")
-        target, kind, source, binary, artifact, includes, links = fields
+    static_archives, native_inputs, source_roots = {}, {}, set()
+    for row in targets:
+        target, source = row["target"], row["source"]
         if re.search(r"(^|::)(gtest|gmock)(_|$)", target, re.I) or "aws-lc" in source:
             raise ValueError(f"unapproved testing/crypto dependency selected: {target}")
-        row = {"target": target, "kind": kind, "source": source, "binary": binary,
-               "artifact": artifact, "includes": includes, "links": links, "record": file_record(path)}
-        targets.append(row)
-        candidate = Path(artifact)
-        if artifact.endswith(".a") and candidate.is_file():
+        candidates = {Path(value) for value in row["artifacts"]}
+        for fragment in row["links"]:
+            if fragment.get("role") == "libraries":
+                for value in shlex.split(fragment["fragment"]):
+                    if not value.startswith("-") and re.search(r"\.(a|so(?:\.[0-9]+)*)$", value):
+                        candidates.add((build / value).absolute())
+        for candidate in sorted(candidates):
+            if not re.search(r"\.(a|so(?:\.[0-9]+)*)$", candidate.name) or not candidate.is_file():
+                continue
             item = file_record(candidate)
             if str(candidate.resolve()) in private_archives:
                 check_record(private_archives[str(candidate.resolve())], "private OpenSSL archive")
@@ -585,7 +616,9 @@ def capture_dependencies(work: Path, *, compiled: bool) -> dict:
                                     "receipt": inputs["openssl"]["receipt"], "source_commit": inputs["openssl"]["source_commit"]}
             elif not candidate.resolve().is_relative_to(work):
                 item["provider"] = system_provider(candidate.resolve())
-            static_archives[str(candidate)] = item
+            native_inputs[str(candidate)] = item
+            if candidate.name.endswith(".a"):
+                static_archives[str(candidate)] = item
         source_path = Path(source)
         if source_path.is_dir() and source_path.is_relative_to(build):
             source_roots.add(source_path)
@@ -624,11 +657,12 @@ def capture_dependencies(work: Path, *, compiled: bool) -> dict:
             item["matches_arrow_versions_pin"] = item["sha256"] in reviewed_hashes
             archives.append(item)
     return {"schema_version": 1, "stage": "compiled" if compiled else "configured", "targets": targets,
+            "file_api": file_api, "native_inputs": sorted(native_inputs.values(), key=lambda row: row["path"]),
             "boost_components": components, "boost_selection": file_record(boost),
             "static_archives": sorted(static_archives.values(), key=lambda row: row["path"]),
             "source_trees": [{"path": str(path), "files": tree_inventory(path)} for path in sorted(source_roots)],
             "forced_bundled_source_verification": forced, "downloaded_archives": archives,
-            "coverage": "Configured targets are a superset. Final link maps identify used archives. System source and advisory review remains required; unsupported coverage is not clearance."}
+            "coverage": "CMake File API 2.9 includes build and scoped imported targets plus resolved link fragments. Bare -l flags require final linker-map resolution. Targets are a superset; final maps establish actual linkage. System source/advisory review remains required."}
 
 
 def verify_configured_selection(configured: dict, current: dict) -> None:
@@ -641,9 +675,11 @@ def verify_configured_selection(configured: dict, current: dict) -> None:
     for name in ("targets", "boost_components", "boost_selection", "forced_bundled_source_verification"):
         if configured[name] != current[name]:
             raise ValueError(f"configured dependency selection changed: {name}")
-    for name in ("static_archives", "downloaded_archives"):
-        observed = {row["path"]: row for row in current[name]}
-        for row in configured[name]:
+    if configured.get("file_api") != current.get("file_api"):
+        raise ValueError("configured File API evidence changed")
+    for name in ("static_archives", "native_inputs", "downloaded_archives"):
+        observed = {row["path"]: row for row in current.get(name, [])}
+        for row in configured.get(name, []):
             if observed.get(row["path"]) != row:
                 raise ValueError(f"configured dependency input changed: {row['path']}")
     observed_trees = {row["path"]: row for row in current["source_trees"]}
@@ -910,6 +946,9 @@ def main(argv: list | None = None) -> int:
         source, source_verification = prepare_source(archive, work, resume=args.resume)
         recipe_record = preserve_recipe(work, recipe_bytes, resume=args.resume)
         (work / "inputs").mkdir(exist_ok=True)
+        query = work / "cpp-build/.cmake/api/v1/query/codemodel-v2"
+        query.parent.mkdir(parents=True, exist_ok=True)
+        query_record = preserve(query, b"", resume=args.resume, label="CMake File API query")
         dependencies = {}
         for name, path in archives.items():
             copied = preserve(work / "inputs" / DEPENDENCIES[name]["filename"], path.read_bytes(),
@@ -930,6 +969,7 @@ def main(argv: list | None = None) -> int:
             "builder": builder, "observed_builder": observed_builder, "toolchain_versions": tool_versions,
             "openssl": openssl, "dependencies": dependencies, "zlib_patch": zlib_patch,
             "patch_tool": file_record(Path("/usr/bin/patch")), "commands": commands, "context": context,
+            "cmake_file_api_query": query_record,
             "compiler_budget": {"maximum_jobs": args.jobs, "outer_ninja_jobs": args.jobs, "nested_cmake_jobs": 1, "nested_make_jobs": 1},
             "features": FEATURES, "codecs": CODECS,
             "version_environment": {"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYARROW": "{wheel_version}"},
