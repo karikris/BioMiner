@@ -1085,6 +1085,160 @@ def test_rapidjson_target_compatibility_requires_exact_original_block(recipe, so
             recipe.source_transformations(archive, "arrow")
 
 
+AZURE_FETCH_BLOCK = (
+    '  fetchcontent_makeavailable(azure_sdk)\n'
+    '  if(CMAKE_VERSION VERSION_LESS 3.28)'
+)
+
+
+def azure_xml_transform_fixture(recipe, source_inputs, *, fetch_block=AZURE_FETCH_BLOCK):
+    original = source_inputs[3]["cpp/cmake_modules/ThirdpartyToolchain.cmake"]
+    original = original.replace(AZURE_FETCH_BLOCK.encode(), b"")
+    wrapper = (
+        '\nfunction(build_azure_sdk)\n'
+        + fetch_block + '\n'
+        '    set_property(DIRECTORY ${azure_sdk_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)\n'
+        '  endif()\n'
+        '  set(AZURE_SDK_VENDORED TRUE PARENT_SCOPE)\n'
+        'endfunction()\n'
+    )
+    packed, _ = source_transform_fixture(recipe, source_inputs, toolchain=original + wrapper.encode())
+    with tarfile.open(fileobj=packed) as archive:
+        transformed = recipe.source_transformations(archive, "arrow")[
+            "cpp/cmake_modules/ThirdpartyToolchain.cmake"].decode()
+    transformed_wrapper = "function(build_azure_sdk)\n" + transformed.split(
+        "function(build_azure_sdk)\n", 1)[1].split("\nendfunction()", 1)[0] + "\nendfunction()\n"
+    return wrapper.lstrip("\n"), transformed_wrapper
+
+
+def azure_xml_cmake_graph(tmp_path, wrapper, *, target_variant="valid", windows=False):
+    """Model Azure's raw XML archive link without borrowing its target interface."""
+    harness = tmp_path / "source"
+    expected = harness / "sdk-source/sdk/storage/azure-storage-common"
+    actual = harness / "foreign-source" if target_variant == "foreign_source" else expected
+    actual.mkdir(parents=True)
+    expected.mkdir(parents=True, exist_ok=True)
+    (harness / "iconv.c").write_text("int biominer_iconv_open(void) { return 19; }\n")
+    (harness / "xml.c").write_text(
+        "extern int biominer_iconv_open(void);\n"
+        "int biominer_xml_read(void) { return biominer_iconv_open(); }\n")
+    (harness / "consumer.c").write_text(
+        "extern int biominer_azure_read(void);\n"
+        "int biominer_consume(void) { return biominer_azure_read(); }\n")
+    (actual / "common.c").write_text(
+        "extern int biominer_xml_read(void);\n"
+        "int biominer_azure_read(void) { return biominer_xml_read(); }\n")
+    if target_variant == "missing":
+        target = 'add_library(unrelated_common STATIC common.c)\n'
+    elif target_variant == "alias":
+        target = (
+            'add_library(real_common STATIC common.c)\n'
+            'add_library(azure-storage-common ALIAS real_common)\n')
+    elif target_variant == "imported":
+        target = (
+            'add_library(azure-storage-common STATIC IMPORTED GLOBAL)\n'
+            'set_property(TARGET azure-storage-common PROPERTY IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libxml_stub.a")\n')
+    else:
+        kind = "SHARED" if target_variant == "shared" else "STATIC"
+        target = (
+            f'add_library(azure-storage-common {kind} common.c)\n'
+            'set_property(TARGET azure-storage-common PROPERTY POSITION_INDEPENDENT_CODE ON)\n'
+            'target_link_libraries(azure-storage-common PRIVATE ${LIBXML2_LIBRARIES})\n'
+            'add_dependencies(azure-storage-common owned_xml)\n')
+    common_source = (
+        '# Exact Azure-like upstream raw-variable dependency remains unchanged.\n' + target)
+    common_cmake = actual / "CMakeLists.txt"
+    common_cmake.write_text(common_source)
+    (harness / "CMakeLists.txt").write_text(
+        'cmake_minimum_required(VERSION 3.29)\n'
+        'project(azure_private_xml LANGUAGES C)\n'
+        'set(CMAKE_C_COMPILER /usr/bin/cc)\n'
+        'add_library(owned_iconv STATIC iconv.c)\n'
+        'set_target_properties(owned_iconv PROPERTIES OUTPUT_NAME iconv_stub POSITION_INDEPENDENT_CODE ON)\n'
+        'add_library(owned_xml STATIC xml.c)\n'
+        'set_target_properties(owned_xml PROPERTIES OUTPUT_NAME xml_stub POSITION_INDEPENDENT_CODE ON)\n'
+        'add_library(Iconv::Iconv STATIC IMPORTED GLOBAL)\n'
+        'set_target_properties(Iconv::Iconv PROPERTIES IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libiconv_stub.a")\n'
+        'add_dependencies(Iconv::Iconv owned_iconv)\n'
+        'add_library(LibXml2::LibXml2 STATIC IMPORTED GLOBAL)\n'
+        'set_target_properties(LibXml2::LibXml2 PROPERTIES IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libxml_stub.a" '
+        'INTERFACE_LINK_LIBRARIES Iconv::Iconv)\n'
+        'add_dependencies(LibXml2::LibXml2 owned_xml)\n'
+        'set(LIBXML2_LIBRARIES "${CMAKE_BINARY_DIR}/libxml_stub.a")\n'
+        'macro(fetchcontent_makeavailable dependency)\n'
+        '  if(NOT "${dependency}" STREQUAL "azure_sdk")\n'
+        '    message(FATAL_ERROR "unexpected dependency")\n'
+        '  endif()\n'
+        '  set(azure_sdk_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sdk-source")\n'
+        f'  add_subdirectory("{actual}" "${{CMAKE_BINARY_DIR}}/azure-common")\n'
+        'endmacro()\n'
+        f'set(WIN32 {"TRUE" if windows else "FALSE"})\n'
+        + wrapper +
+        'build_azure_sdk()\n'
+        'if(TARGET azure-storage-common)\n'
+        '  get_target_property(links azure-storage-common LINK_LIBRARIES)\n'
+        '  file(WRITE "${CMAKE_BINARY_DIR}/azure-links.txt" "${links}")\n'
+        'endif()\n'
+        'add_library(consumer SHARED consumer.c)\n'
+        'target_link_libraries(consumer PRIVATE azure-storage-common)\n'
+        'target_link_options(consumer PRIVATE "-Wl,-z,defs")\n')
+    build = tmp_path / "build"
+    configure = subprocess.run(
+        ["/usr/bin/cmake", "-S", str(harness), "-B", str(build), "-G", "Ninja",
+         "-DCMAKE_MAKE_PROGRAM=/usr/bin/ninja", "-DCMAKE_C_COMPILER=/usr/bin/cc"],
+        text=True, capture_output=True, timeout=30)
+    assert common_cmake.read_text() == common_source
+    return configure, build
+
+
+def test_azure_private_xml_interface_resolves_actual_final_shared_consumer(
+        recipe, source_inputs, tmp_path):
+    original, transformed = azure_xml_transform_fixture(recipe, source_inputs)
+    before, before_build = azure_xml_cmake_graph(tmp_path / "before", original)
+    assert before.returncode == 0, before.stdout + before.stderr
+    broken = subprocess.run(
+        ["/usr/bin/cmake", "--build", str(before_build), "--target", "consumer", "--parallel", "1"],
+        text=True, capture_output=True, timeout=30)
+    assert broken.returncode != 0
+    assert "biominer_iconv_open" in broken.stdout + broken.stderr
+
+    after, after_build = azure_xml_cmake_graph(tmp_path / "after", transformed)
+    assert after.returncode == 0, after.stdout + after.stderr
+    fixed = subprocess.run(
+        ["/usr/bin/cmake", "--build", str(after_build), "--target", "consumer", "--parallel", "1"],
+        text=True, capture_output=True, timeout=30)
+    assert fixed.returncode == 0, fixed.stdout + fixed.stderr
+    links = (after_build / "azure-links.txt").read_text().split(";")
+    assert str(after_build / "libxml_stub.a") in links
+    assert links.count("LibXml2::LibXml2") == 1
+    assert (after_build / "libconsumer.so").read_bytes().startswith(b"\x7fELF")
+
+
+@pytest.mark.parametrize("variant", ["foreign_source", "shared", "imported", "alias", "missing"])
+def test_azure_private_xml_interface_rejects_unowned_or_wrong_kind_target(
+        recipe, source_inputs, tmp_path, variant):
+    _, transformed = azure_xml_transform_fixture(recipe, source_inputs)
+    configured, _ = azure_xml_cmake_graph(tmp_path, transformed, target_variant=variant)
+    assert configured.returncode != 0, "unproven Azure target was accepted"
+    assert "private Azure XML dependency" in configured.stdout + configured.stderr
+
+
+def test_azure_private_xml_interface_leaves_windows_dependency_unchanged(
+        recipe, source_inputs, tmp_path):
+    _, transformed = azure_xml_transform_fixture(recipe, source_inputs)
+    configured, build = azure_xml_cmake_graph(tmp_path, transformed, windows=True)
+    assert configured.returncode == 0, configured.stdout + configured.stderr
+    assert "LibXml2::LibXml2" not in (build / "azure-links.txt").read_text().split(";")
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_azure_private_xml_interface_requires_exact_unique_source_anchor(
+        recipe, source_inputs, mutation):
+    block = "" if mutation == "missing" else AZURE_FETCH_BLOCK + "\n" + AZURE_FETCH_BLOCK
+    with pytest.raises(ValueError, match="anchor|transformation"):
+        azure_xml_transform_fixture(recipe, source_inputs, fetch_block=block)
+
+
 def test_sdk_cohort_pins_are_the_complete_reviewed_finite_table(recipe):
     assert getattr(recipe, "SDK_COHORT", {}) == EXPECTED_SDK_COHORT
     for name, pins in EXPECTED_SDK_COHORT.items():

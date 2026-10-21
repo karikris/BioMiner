@@ -66,6 +66,25 @@ TOOLCHAIN_PATCHES = (
      '  endif()\n'
      '  target_include_directories(RapidJSON INTERFACE "$<BUILD_INTERFACE:${rapidjson_SOURCE_DIR}/include>")\n'
      '  add_dependencies(RapidJSON rapidjson)'),
+    ('  fetchcontent_makeavailable(azure_sdk)\n'
+     '  if(CMAKE_VERSION VERSION_LESS 3.28)',
+     '  fetchcontent_makeavailable(azure_sdk)\n'
+     '  if(NOT WIN32)\n'
+     '    if(NOT TARGET azure-storage-common OR NOT TARGET LibXml2::LibXml2)\n'
+     '      message(FATAL_ERROR "private Azure XML dependency requires expected targets")\n'
+     '    endif()\n'
+     '    get_target_property(_biominer_azure_alias azure-storage-common ALIASED_TARGET)\n'
+     '    get_target_property(_biominer_azure_imported azure-storage-common IMPORTED)\n'
+     '    get_target_property(_biominer_azure_type azure-storage-common TYPE)\n'
+     '    get_target_property(_biominer_azure_source azure-storage-common SOURCE_DIR)\n'
+     '    if(_biominer_azure_alias OR _biominer_azure_imported\n'
+     '       OR NOT _biominer_azure_type STREQUAL "STATIC_LIBRARY"\n'
+     '       OR NOT _biominer_azure_source STREQUAL "${azure_sdk_SOURCE_DIR}/sdk/storage/azure-storage-common")\n'
+     '      message(FATAL_ERROR "private Azure XML dependency requires the owned static Azure target")\n'
+     '    endif()\n'
+     '    target_link_libraries(azure-storage-common PRIVATE LibXml2::LibXml2)\n'
+     '  endif()\n'
+     '  if(CMAKE_VERSION VERSION_LESS 3.28)'),
     ('set(MAKE_BUILD_ARGS "-j${NPROC}")', 'set(MAKE_BUILD_ARGS "-j1")'),
 )
 

@@ -882,3 +882,34 @@ finding; addendum SHA-256 is
 `f705174d9aabeba38912edc8cd0d5f0decae8ab4091e5a1428be569af96deff1`.
 No actual final attestation, wheel qualification, runtime admission or phase
 completion is claimed by these synthetic tests.
+
+## Azure static XML link-interface correction: Arrow 25
+
+The completed Arrow 26 wheel failed its first native import with
+`undefined symbol: libiconv_open`. Read-only inspection of the completed
+corrective Arrow 25 library found the same three unresolved `libiconv` symbols.
+Both builds had compiled successfully; compilation and a union of link maps
+did not establish that each final library could load. The failed build
+generations and candidate environment remain intact and unqualified.
+
+Exact Azure and CMake source inspection through GitHits explains the missing
+dependency: Azure storage-common privately links the raw `LIBXML2_LIBRARIES`
+archive path, bypassing the existing `LibXml2::LibXml2` interface to Iconv, zlib
+and the math library. The Arrow 25 recipe now adds that named dependency to
+the source-owned static Azure target immediately after its FetchContent step.
+The finite transformation rejects missing or duplicate anchors, aliases,
+imported targets, shared libraries and foreign source directories. Windows
+behavior, dependency source bytes, providers, capabilities and flags remain
+unchanged. A direct Azure source patch and linker group flags were rejected
+because the existing named interface expresses the missing dependency.
+
+Root-owned RED recorded eight failures and one pass in 3.55 seconds. The
+corrected complete Arrow 25/26 recipe suites passed 450 tests in 8.14 seconds,
+exit 0 without interruption; execution receipt SHA-256 is
+`b1d5d96e9985bd58cb9bc1c24ca5fdc3dc991083adb97468baa96c5be4c81f76`.
+The tests include an actual tiny shared-library link that fails without the
+interface and succeeds with it; `-z,defs` belongs only to this fixture.
+Independent Arrow 25 source/test review passed; review SHA-256 is
+`a1fbf36afbfa4c056528d2f262f2cd8f9a518a166192aadc7b51d4708b4e7de4`.
+Fresh full builds and native imports remain required; this correction neither
+activates a runtime nor completes phase 4.
