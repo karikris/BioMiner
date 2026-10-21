@@ -2050,3 +2050,217 @@ def test_azure_private_xml_interface_requires_exact_unique_source_anchor(
     with pytest.raises(ValueError, match="anchor|transformation"):
         azure_xml_transform_fixture(recipe, source_inputs, monkeypatch, fetch_block=block)
     assert not source_inputs[1].exists()
+
+
+# Independent Arrow 26 foreach anchor: other AWS products must stay unchanged.
+AWS_CORE_FETCH_BLOCK = (
+    '    fetchcontent_makeavailable(${AWSSDK_PRODUCT})\n'
+    '    if(CMAKE_VERSION VERSION_LESS 3.28)'
+)
+
+
+def aws_core_curl_transform_fixture(
+        recipe, source_inputs, monkeypatch, *, fetch_block=AWS_CORE_FETCH_BLOCK):
+    archive, work, original = source_inputs
+    files = dict(original)
+    key = "cpp/cmake_modules/ThirdpartyToolchain.cmake"
+    toolchain = files[key].replace(AWS_CORE_FETCH_BLOCK.encode(), b"")
+    wrapper = (
+        'function(build_aws_sdk)\n'
+        '  foreach(AWSSDK_PRODUCT IN LISTS AWSSDK_PRODUCTS)\n'
+        + fetch_block + '\n'
+        '      set_property(DIRECTORY ${${AWSSDK_PRODUCT}_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)\n'
+        '    endif()\n'
+        '  endforeach()\n'
+        'endfunction()\n'
+    )
+    files[key] = toolchain + b"\n" + wrapper.encode()
+    archive_at(archive, f"arrow-{recipe.ARROW_COMMIT}", files,
+               {"python/NOTICE.txt": "../NOTICE.txt"})
+    monkeypatch.setattr(recipe, "ARROW_ARCHIVE_SHA256", digest(archive.read_bytes()))
+    source, _ = recipe.prepare_source(archive, work, resume=False)
+    transformed = (source / key).read_text()
+    transformed_wrapper = "function(build_aws_sdk)\n" + transformed.split(
+        "function(build_aws_sdk)\n", 1)[1].split("\nendfunction()", 1)[0] + "\nendfunction()\n"
+    assert (source / "NOTICE.txt").read_bytes() == original["NOTICE.txt"]
+    return wrapper, transformed_wrapper
+
+
+def aws_core_curl_cmake_graph(tmp_path, wrapper, *, target_variant="valid",
+                              windows=False, product="aws-sdk-cpp", full_interface=False,
+                              strict_link=False):
+    """Raw crypto-before-curl loses static dependencies in a later S3-like DSO."""
+    harness = tmp_path / "source"
+    expected = harness / "sdk-source/src/aws-cpp-sdk-core"
+    actual = harness / "foreign-source" if target_variant == "foreign_source" else expected
+    actual.mkdir(parents=True)
+    expected.mkdir(parents=True, exist_ok=True)
+    (harness / "crypto.c").write_text("int biominer_X509_INFO_free(void) { return 31; }\n")
+    (harness / "ssl.c").write_text(
+        "extern int biominer_X509_INFO_free(void);\n"
+        "int biominer_SSL_connect(void) { return biominer_X509_INFO_free(); }\n")
+    (harness / "http2.c").write_text(
+        "int biominer_nghttp2_session_new(void) { return 11; }\n")
+    curl = (
+        "extern int biominer_X509_INFO_free(void);\n"
+        "extern int biominer_SSL_connect(void);\n"
+        "extern int biominer_nghttp2_session_new(void);\n"
+        "int biominer_curl_easy(void) { return biominer_X509_INFO_free()"
+        + (" + biominer_SSL_connect() + biominer_nghttp2_session_new()" if full_interface else "")
+        + "; }\n")
+    (harness / "curl.c").write_text(curl)
+    (actual / "core.c").write_text(
+        "extern int biominer_curl_easy(void);\n"
+        "int biominer_aws_read(void) { return biominer_curl_easy(); }\n")
+    (harness / "consumer.c").write_text(
+        "extern int biominer_aws_read(void);\n"
+        "int biominer_s3_read(void) { return biominer_aws_read(); }\n")
+    if target_variant == "missing":
+        target = 'add_library(unrelated_core STATIC core.c)\n'
+    elif target_variant == "alias":
+        target = (
+            'add_library(real_core STATIC core.c)\n'
+            'add_library(aws-cpp-sdk-core ALIAS real_core)\n')
+    elif target_variant == "imported":
+        target = (
+            'add_library(aws-cpp-sdk-core STATIC IMPORTED GLOBAL)\n'
+            'set_property(TARGET aws-cpp-sdk-core PROPERTY IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libcurl_stub.a")\n')
+    else:
+        kind = "SHARED" if target_variant == "shared" else "STATIC"
+        target = (
+            f'add_library(aws-cpp-sdk-core {kind} core.c)\n'
+            'set_property(TARGET aws-cpp-sdk-core PROPERTY POSITION_INDEPENDENT_CODE ON)\n'
+            'target_link_libraries(aws-cpp-sdk-core PRIVATE '
+            '"${CMAKE_BINARY_DIR}/libcrypto_stub.a" "${CMAKE_BINARY_DIR}/libcurl_stub.a")\n'
+            'add_dependencies(aws-cpp-sdk-core owned_crypto owned_curl)\n')
+    core_source = '# SDK-like upstream raw static links remain unchanged.\n' + target
+    core_cmake = actual / "CMakeLists.txt"
+    core_cmake.write_text(core_source)
+    named_curl = "" if target_variant == "missing_curl" else (
+        'add_library(CURL::libcurl STATIC IMPORTED GLOBAL)\n'
+        'set_target_properties(CURL::libcurl PROPERTIES '
+        'IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libcurl_stub.a" '
+        'INTERFACE_LINK_LIBRARIES "OpenSSL::SSL;NGHTTP2::NGHTTP2")\n'
+        'add_dependencies(CURL::libcurl owned_curl)\n')
+    (harness / "CMakeLists.txt").write_text(
+        'cmake_minimum_required(VERSION 3.29)\n'
+        'project(aws_private_curl LANGUAGES C)\n'
+        'foreach(component crypto ssl http2 curl)\n'
+        '  add_library(owned_${component} STATIC ${component}.c)\n'
+        '  set_target_properties(owned_${component} PROPERTIES '
+        'OUTPUT_NAME ${component}_stub POSITION_INDEPENDENT_CODE ON)\n'
+        'endforeach()\n'
+        'add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)\n'
+        'set_property(TARGET OpenSSL::Crypto PROPERTY IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libcrypto_stub.a")\n'
+        'add_dependencies(OpenSSL::Crypto owned_crypto)\n'
+        'add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)\n'
+        'set_target_properties(OpenSSL::SSL PROPERTIES '
+        'IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libssl_stub.a" INTERFACE_LINK_LIBRARIES OpenSSL::Crypto)\n'
+        'add_dependencies(OpenSSL::SSL owned_ssl)\n'
+        'add_library(NGHTTP2::NGHTTP2 STATIC IMPORTED GLOBAL)\n'
+        'set_property(TARGET NGHTTP2::NGHTTP2 PROPERTY IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/libhttp2_stub.a")\n'
+        'add_dependencies(NGHTTP2::NGHTTP2 owned_http2)\n'
+        + named_curl +
+        'macro(fetchcontent_makeavailable dependency)\n'
+        f'  if(NOT "${{dependency}}" STREQUAL "{product}")\n'
+        '    message(FATAL_ERROR "unexpected dependency")\n'
+        '  endif()\n'
+        '  set(aws-sdk-cpp_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sdk-source")\n'
+        f'  add_subdirectory("{actual}" "${{CMAKE_BINARY_DIR}}/aws-core")\n'
+        'endmacro()\n'
+        f'set(WIN32 {"TRUE" if windows else "FALSE"})\n'
+        f'set(AWSSDK_PRODUCTS "{product}")\n'
+        + wrapper +
+        'build_aws_sdk()\n'
+        'if(TARGET aws-cpp-sdk-core)\n'
+        '  get_target_property(links aws-cpp-sdk-core LINK_LIBRARIES)\n'
+        '  file(WRITE "${CMAKE_BINARY_DIR}/aws-links.txt" "${links}")\n'
+        'endif()\n'
+        'add_library(consumer SHARED consumer.c)\n'
+        'target_link_libraries(consumer PRIVATE aws-cpp-sdk-core)\n'
+        + ('target_link_options(consumer PRIVATE "-Wl,-z,defs")\n' if strict_link else ""))
+    build = tmp_path / "build"
+    configure = subprocess.run(
+        ["/usr/bin/cmake", "-S", str(harness), "-B", str(build), "-G", "Ninja",
+         "-DCMAKE_MAKE_PROGRAM=/usr/bin/ninja", "-DCMAKE_C_COMPILER=/usr/bin/cc"],
+        text=True, capture_output=True, timeout=30)
+    assert core_cmake.read_text() == core_source
+    return configure, build
+
+
+def load_aws_curl_stub(build):
+    # A fresh loader makes unresolved DSO symbols observable without importing a candidate.
+    return subprocess.run(
+        [sys.executable, "-I", "-B", "-c",
+         'import ctypes,sys; lib=ctypes.CDLL(sys.argv[1]); '
+         'lib.biominer_s3_read.restype=ctypes.c_int; print(lib.biominer_s3_read())',
+         str(build / "libconsumer.so")],
+        text=True, capture_output=True, timeout=10)
+
+
+@pytest.mark.parametrize("full_interface,strict_link", [(False, False), (True, False), (True, True)],
+                         ids=["X509-order", "SSL-and-HTTP2", "strict-fixture-link"])
+def test_aws_private_curl_interface_resolves_final_shared_consumer_at_runtime(
+        recipe, source_inputs, monkeypatch, tmp_path, full_interface, strict_link):
+    original, transformed = aws_core_curl_transform_fixture(recipe, source_inputs, monkeypatch)
+    before, before_build = aws_core_curl_cmake_graph(
+        tmp_path / "before", original, full_interface=full_interface, strict_link=strict_link)
+    assert before.returncode == 0, before.stdout + before.stderr
+    broken_build = subprocess.run(
+        ["/usr/bin/cmake", "--build", str(before_build), "--target", "consumer", "--parallel", "1"],
+        text=True, capture_output=True, timeout=30)
+    if strict_link:
+        assert broken_build.returncode != 0
+        assert "biominer_X509_INFO_free" in broken_build.stdout + broken_build.stderr
+    else:
+        assert broken_build.returncode == 0, broken_build.stdout + broken_build.stderr
+        broken_load = load_aws_curl_stub(before_build)
+        assert broken_load.returncode != 0
+        if not full_interface:
+            assert "biominer_X509_INFO_free" in broken_load.stderr
+        else:
+            assert any(symbol in broken_load.stderr for symbol in (
+                "biominer_X509_INFO_free", "biominer_SSL_connect", "biominer_nghttp2_session_new"))
+
+    after, after_build = aws_core_curl_cmake_graph(
+        tmp_path / "after", transformed, full_interface=full_interface, strict_link=strict_link)
+    assert after.returncode == 0, after.stdout + after.stderr
+    fixed_build = subprocess.run(
+        ["/usr/bin/cmake", "--build", str(after_build), "--target", "consumer", "--parallel", "1"],
+        text=True, capture_output=True, timeout=30)
+    assert fixed_build.returncode == 0, fixed_build.stdout + fixed_build.stderr
+    fixed_load = load_aws_curl_stub(after_build)
+    assert fixed_load.returncode == 0, fixed_load.stdout + fixed_load.stderr
+    assert fixed_load.stdout.strip() == ("73" if full_interface else "31")
+    links = (after_build / "aws-links.txt").read_text().split(";")
+    assert links[:2] == [str(after_build / "libcrypto_stub.a"), str(after_build / "libcurl_stub.a")]
+    assert links.count("CURL::libcurl") == 1
+
+
+@pytest.mark.parametrize("variant", ["foreign_source", "shared", "imported", "alias", "missing", "missing_curl"])
+def test_aws_private_curl_interface_rejects_unowned_or_wrong_kind_target(
+        recipe, source_inputs, monkeypatch, tmp_path, variant):
+    _, transformed = aws_core_curl_transform_fixture(recipe, source_inputs, monkeypatch)
+    configured, _ = aws_core_curl_cmake_graph(tmp_path, transformed, target_variant=variant)
+    assert configured.returncode != 0, "unproven AWS core or missing CURL target was accepted"
+    assert "private AWS CURL dependency" in configured.stdout + configured.stderr
+
+
+@pytest.mark.parametrize("windows,product", [(True, "aws-sdk-cpp"), (False, "aws-c-common")])
+def test_aws_private_curl_interface_leaves_other_platforms_or_products_unchanged(
+        recipe, source_inputs, monkeypatch, tmp_path, windows, product):
+    _, transformed = aws_core_curl_transform_fixture(recipe, source_inputs, monkeypatch)
+    configured, build = aws_core_curl_cmake_graph(
+        tmp_path, transformed, windows=windows, product=product)
+    assert configured.returncode == 0, configured.stdout + configured.stderr
+    assert (build / "aws-links.txt").read_text().split(";") == [
+        str(build / "libcrypto_stub.a"), str(build / "libcurl_stub.a")]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_aws_private_curl_interface_requires_exact_unique_source_anchor(
+        recipe, source_inputs, monkeypatch, mutation):
+    block = "" if mutation == "missing" else AWS_CORE_FETCH_BLOCK + "\n" + AWS_CORE_FETCH_BLOCK
+    with pytest.raises(ValueError, match="anchor|transformation"):
+        aws_core_curl_transform_fixture(recipe, source_inputs, monkeypatch, fetch_block=block)
+    assert not source_inputs[1].exists()

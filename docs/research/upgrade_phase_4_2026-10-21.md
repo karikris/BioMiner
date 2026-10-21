@@ -1058,3 +1058,28 @@ passed in 10.06 seconds, exit 0 without interruption; receipt SHA-256
 Root review SHA-256 `0a1a771cf92f942e186ebb9b5ee5e1e123560a634bd6d7436f5169da85e096de`. Actual source capture
 and retained replay remain pending. Independently, native S3 import failed on
 `X509_INFO_free`; source provenance does not clear that runtime failure.
+
+## Arrow 26 split S3 library and AWS curl interface
+
+The corrected generation 7 passed version, native ownership/import-order and
+compiled extension-policy checks. Its loopback TLS check then failed because
+`pyarrow._s3fs` could not load `libarrow_s3.so.2600`: `X509_INFO_free` was
+unresolved. The separately guarded Arrow 25 S3 import passed; fresh Arrow 26
+Azure, GCS and HDFS imports also passed. These failures remain retained.
+
+GitHits source inspection and the actual linker graph show AWS SDK core uses
+raw `CURL_LIBRARIES`. Arrow 26’s separate S3 library receives crypto before curl
+and omits SSL and HTTP2, bypassing the complete `CURL::libcurl` interface. The
+recipe now adds a private named-target edge only to the owned static AWS core
+target on the applicable non-Windows product path. Alias, imported, shared,
+foreign and missing targets are rejected. Arrow 25, provider bytes, enabled
+features and production linker flags remain unchanged.
+
+Root RED recorded 11 failures and two passes in 2.09 seconds. Both complete
+recipe suites passed 463 tests in 11.45 seconds, exit 0 without interruption;
+receipt SHA-256 `8bd26f644d6838db9b1e991825dc663b02f282f2cdbec954e200eab26a384960`.
+The small DSO tests verify runtime calls and SSL/HTTP2 transitive linkage;
+`-z,defs` is used only in a synthetic fixture. Independent source/test review
+passed, SHA-256 `9219fa13da504d2658a6bd6fe9130d3ccb3ddb35f5037ed1fe09045cdb74dbae`.
+A fresh Arrow 26 generation and all subsequent compatibility checks are still
+required. No runtime was admitted or activated; phase 4 remains incomplete.

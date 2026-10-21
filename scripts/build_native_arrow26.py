@@ -325,6 +325,25 @@ NETWORK_COMPONENTS = {
 TOOLCHAIN_PATCHES = (
     ("list(APPEND AWSSDK_PRODUCTS aws-lc s2n-tls)",
      "list(APPEND AWSSDK_PRODUCTS s2n-tls)\n    add_library(crypto ALIAS OpenSSL::Crypto)"),
+    ('    fetchcontent_makeavailable(${AWSSDK_PRODUCT})\n'
+     '    if(CMAKE_VERSION VERSION_LESS 3.28)',
+     '    fetchcontent_makeavailable(${AWSSDK_PRODUCT})\n'
+     '    if(NOT WIN32 AND "${AWSSDK_PRODUCT}" STREQUAL "aws-sdk-cpp")\n'
+     '      if(NOT TARGET aws-cpp-sdk-core OR NOT TARGET CURL::libcurl)\n'
+     '        message(FATAL_ERROR "private AWS CURL dependency requires expected targets")\n'
+     '      endif()\n'
+     '      get_target_property(_biominer_aws_alias aws-cpp-sdk-core ALIASED_TARGET)\n'
+     '      get_target_property(_biominer_aws_imported aws-cpp-sdk-core IMPORTED)\n'
+     '      get_target_property(_biominer_aws_type aws-cpp-sdk-core TYPE)\n'
+     '      get_target_property(_biominer_aws_source aws-cpp-sdk-core SOURCE_DIR)\n'
+     '      if(_biominer_aws_alias OR _biominer_aws_imported\n'
+     '         OR NOT "${_biominer_aws_type}" STREQUAL "STATIC_LIBRARY"\n'
+     '         OR NOT "${_biominer_aws_source}" STREQUAL "${aws-sdk-cpp_SOURCE_DIR}/src/aws-cpp-sdk-core")\n'
+     '        message(FATAL_ERROR "private AWS CURL dependency requires the owned static AWS target")\n'
+     '      endif()\n'
+     '      target_link_libraries(aws-cpp-sdk-core PRIVATE CURL::libcurl)\n'
+     '    endif()\n'
+     '    if(CMAKE_VERSION VERSION_LESS 3.28)'),
     ("  fetchcontent_makeavailable(cares)",
      "  fetchcontent_makeavailable(cares)\n  set_target_properties(c-ares PROPERTIES UNITY_BUILD OFF)"),
     ("  fetchcontent_makeavailable(uriparser)",
