@@ -48,3 +48,28 @@ resource comparison, phase-5 publication/push and phase-6 recovery remain
 required. The first live attempt passed PostgreSQL and cleaned both namespaces,
 but S3 failed; resource preflight rejected an alias. These later-task failures
 remain unresolved at this checkpoint and do not invalidate the passed matrix.
+
+
+## Task 5.3a: resource harness preflight
+
+Starting main SHA: `9dac03387158e08abd433ca6526df05fd28bf630`.
+The first metadata-only preflight rejected a retained matrix builder's Python
+symlink. No benchmark worker or result was produced. The matrix already allows
+this declared link to the exact SHA-bound canonical base interpreter. The
+resource helper now applies that same narrow policy to original matrix inputs,
+records the literal link chain, and checks it again with target and byte hashes.
+Other aliases, changed link text and resource-owned aliases remain rejected.
+A prior correction compares retained wheel copies by exact name, version and
+whole-archive SHA rather than requiring equal filesystem paths.
+
+The new alias cases first produced 8 failures and 4 passes against the old
+helper; all 65 controls then passed. The actual corrected metadata preflight
+passed without creating qualification outputs. Independent SPEC/QUALITY review
+approved the concrete input set. The 12 measured workers remain unrun at this
+commit; no performance claim follows from these controls.
+
+The corrected helper/context are `ac1cdaac…` / `81059294…`; actual GREEN and
+metadata execution hashes are `e1d9b6ef…` and `d7ff62e3…`. Review is
+`candidate-resource-benchmark-alias-independent-review-2.json`, SHA-256
+`9f0f04a0ff2f87c75f2ca2b3127a8f0175f943dd3f3faa0efb43748695144a08`.
+All original failed preflight evidence and prior helper bytes remain retained.
