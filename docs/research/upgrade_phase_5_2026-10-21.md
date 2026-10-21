@@ -73,3 +73,28 @@ metadata execution hashes are `e1d9b6ef…` and `d7ff62e3…`. Review is
 `candidate-resource-benchmark-alias-independent-review-2.json`, SHA-256
 `9f0f04a0ff2f87c75f2ca2b3127a8f0175f943dd3f3faa0efb43748695144a08`.
 All original failed preflight evidence and prior helper bytes remain retained.
+
+
+## Task 5.4: prepare the phase-6 synthetic recovery handoff
+
+Starting main SHA: `ee33b5262c65bffe4dcf7f95eef21f80ec6d927e`.
+The reviewed finite coordinator is prepared for six sequential commands across
+the two complete application candidates: paired tiny synthetic probes, paired
+collection, and 35 recovery cases per runtime. It verifies whole frozen
+installations, source, private Git metadata, 44 common dependency archives and
+331 identical application payloads. Each candidate retains its correct Arrow
+floor and exact application/source identity. Both remain unregistered.
+
+The coordinator's 42 controls passed, including actual authorization tests for
+full-suite success and independent-review identities. Root's actual metadata
+check passed without workers, credentials, authorization or qualification
+outputs. Closing independent review approved this preparation. Its helper,
+context and metadata receipt hashes are `2af907bc…`, `3bddc635…` and
+`a3e59448…`; the review is `622a427f…`.
+
+Execution still requires the actual completed phase-5 push and a fresh phase-6
+continuation, bound independent launch review, six successful commands and
+unchanged final inputs. Unexplained logical, provenance or physical differences
+stop extraction. Any observed writer-version difference needs a concrete,
+independently reviewed disposition preserving both original artifact hashes.
+No canary, recovery, fallback or production result is claimed by preparation.
