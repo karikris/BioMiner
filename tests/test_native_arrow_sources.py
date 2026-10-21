@@ -460,6 +460,8 @@ class CompletedSourceCase:
             name: value["archive"]["sha256"] for name, value in self.ep.items() if name != "jemalloc"},
                             raising=False)
         self.make_arrow_inputs()
+        if schema_kind == "25":
+            add_arrow25_header_only_xsimd(self, verifier, monkeypatch)
         self.make_final_artifacts()
         self.refresh()
 
@@ -757,9 +759,10 @@ def test_completed_capture_binds_exact_subject_cohort_and_all_selected_external_
     assert doc["legacy"] == case.legacy
     assert set(doc["supplemental"]) == set(SDK_NAMES)
     assert len(set(doc["legacy"]) | set(doc["supplemental"])) == (24 if case.kind == "26" else 22)
-    assert set(doc["external_projects"]) == set(EP_NAMES)
+    assert set(doc["external_projects"]) == set(EP_NAMES) | ({"xsimd"} if case.kind == "25" else set())
     assert {row["archive"]["sha256"] for row in doc["external_projects"].values()} == {
-        row["archive"]["sha256"] for row in case.ep.values()}
+        row["archive"]["sha256"] for row in case.ep.values()} | (
+            {case.xsimd["archive"]["sha256"]} if case.kind == "25" else set())
     assert Path(case.raw_ref["path"]).read_bytes() == original_raw
 
 
@@ -1727,4 +1730,216 @@ def test_arrow25_flat_receipt_layout_is_not_a_fallback_for_arrow26(
     case.raw["builder"] = {"toolchain": case.raw.pop("toolchain")}
     case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
     with pytest.raises(ValueError, match="context|build|toolchain|shape"):
+        case.capture(verifier)
+
+
+XSIMD_ARROW25_DECLARATION = b'''macro(build_xsimd)
+  message(STATUS "Building xsimd from source")
+  set(XSIMD_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/xsimd_ep/src/xsimd_ep-install")
+  set(XSIMD_CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS} "-DCMAKE_INSTALL_PREFIX=${XSIMD_PREFIX}")
+
+  externalproject_add(xsimd_ep
+                      ${EP_COMMON_OPTIONS}
+                      PREFIX "${CMAKE_BINARY_DIR}"
+                      URL ${XSIMD_SOURCE_URL}
+                      URL_HASH "SHA256=${ARROW_XSIMD_BUILD_SHA256_CHECKSUM}"
+                      CMAKE_ARGS ${XSIMD_CMAKE_ARGS})
+
+  set(XSIMD_INCLUDE_DIR "${XSIMD_PREFIX}/include")
+  # The include directory must exist before it is referenced by a target.
+  file(MAKE_DIRECTORY "${XSIMD_INCLUDE_DIR}")
+
+  add_library(arrow::xsimd INTERFACE IMPORTED)
+  target_include_directories(arrow::xsimd INTERFACE "${XSIMD_INCLUDE_DIR}")
+  add_dependencies(arrow::xsimd xsimd_ep)
+
+  set(XSIMD_VENDORED TRUE)
+endmacro()
+'''
+
+
+def add_arrow25_header_only_xsimd(case, verifier, monkeypatch):
+    """Arrow25 uses PREFIX cpp-build, not the common *_ep-prefix layout."""
+    source, binary = case.cpp / "src/xsimd_ep", case.cpp / "src/xsimd_ep-build"
+    prefix = case.cpp / "xsimd_ep/src/xsimd_ep-install"
+    include = prefix / "include"
+    original = {
+        "CMakeLists.txt": b"project(xsimd)\nadd_library(xsimd INTERFACE)\n"
+                          b"install(DIRECTORY include/xsimd DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})\n",
+        "include/xsimd/xsimd.hpp": b"#include <xsimd/config/xsimd_config.hpp>\n",
+        "include/xsimd/config/xsimd_config.hpp": b"#define XSIMD_VERSION_MAJOR 14\n"
+                                                   b"#define XSIMD_VERSION_MINOR 2\n"
+                                                   b"#define XSIMD_VERSION_PATCH 0\n",
+        "LICENSE": b"synthetic upstream license\n",
+    }
+    archive = case.bundle(case.cpp / "src/14.2.0.tar.gz", source, original)
+    monkeypatch.setattr(verifier, "XSIMD_ARCHIVE_SHA256", archive["sha256"], raising=False)
+    case.archives.append({**archive, "matches_arrow_versions_pin": True})
+    installed = [case.put(include / name.removeprefix("include/"), data)
+                 for name, data in original.items() if name.startswith("include/")]
+    # These unused package exports are outside the claimed installed-header payload.
+    unused_metadata = case.put(prefix / "share/cmake/xsimd/xsimdTargets.cmake", b"unused package export\n")
+    stamp = case.cpp / "src/xsimd_ep-stamp"
+    args = [case.toolchain["cmake"]["path"], "-DBUILD_SHARED_LIBS=OFF", "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_C_COMPILER=" + case.toolchain["cc"]["path"],
+            "-DCMAKE_CXX_COMPILER=" + case.toolchain["cxx"]["path"], "-DCMAKE_CXX_STANDARD=20",
+            "-DCMAKE_INSTALL_PREFIX=" + str(prefix), "-GNinja", "-S", "<SOURCE_DIR><SOURCE_SUBDIR>",
+            "-B", "<BINARY_DIR>"]
+    cfg = case.put(case.cpp / "tmp/xsimd_ep-cfgcmd.txt", ("cmd='" + ";".join(args) + "'\n").encode())
+    expanded = [value.replace("<SOURCE_DIR><SOURCE_SUBDIR>", str(source)).replace("<BINARY_DIR>", str(binary))
+                for value in args]
+    command = case.put(stamp / "xsimd_ep-configure-Release.cmake",
+                       ('set(command "' + ";".join(expanded) + '")\n').encode())
+    download = case.put(stamp / "xsimd_ep-urlinfo.txt", (
+        "source_dir=" + str(source) + "\nhash=SHA256=" + archive["sha256"]
+        + "\nurl(s)=https://github.com/xtensor-stack/xsimd/archive/14.2.0.tar.gz\n").encode())
+    cache_values = {
+        "CMAKE_HOME_DIRECTORY": str(source), "CMAKE_CACHEFILE_DIR": str(binary),
+        "CMAKE_INSTALL_PREFIX": str(prefix), "CMAKE_BUILD_TYPE": "Release", "BUILD_SHARED_LIBS": "OFF",
+        "CMAKE_C_COMPILER": case.toolchain["cc"]["path"], "CMAKE_CXX_COMPILER": case.toolchain["cxx"]["path"],
+        "CMAKE_COMMAND": case.toolchain["cmake"]["path"], "CMAKE_MAKE_PROGRAM": case.toolchain["ninja"]["path"],
+        "CMAKE_CXX_STANDARD": "20", "BUILD_TESTS": "OFF", "BUILD_BENCHMARK": "OFF", "BUILD_EXAMPLES": "OFF",
+        "XSIMD_SKIP_INSTALL": "OFF", "XSIMD_VERSION_MAJOR": "14", "XSIMD_VERSION_MINOR": "2",
+        "XSIMD_VERSION_PATCH": "0",
+    }
+    cache = case.put(binary / "CMakeCache.txt", "".join(
+        key + ":STRING=" + value + "\n" for key, value in cache_values.items()).encode())
+    declaration_path = case.arrow / "cpp/cmake_modules/ThirdpartyToolchain.cmake"
+    declaration = case.put(declaration_path, declaration_path.read_bytes() + XSIMD_ARROW25_DECLARATION)
+    versions_path = case.arrow / "cpp/thirdparty/versions.txt"
+    versions = case.put(versions_path, versions_path.read_bytes() + (
+        "ARROW_XSIMD_BUILD_VERSION=14.2.0\nARROW_XSIMD_BUILD_SHA256_CHECKSUM=" + archive["sha256"] + "\n").encode())
+    case.manifest["source_archive"] = case.bundle(Path(case.manifest["source_archive"]["path"]), case.arrow, {
+        "NOTICE.txt": b"synthetic Arrow upstream notice\n",
+        "cpp/cmake_modules/ThirdpartyToolchain.cmake": Path(declaration["path"]).read_bytes(),
+        "cpp/thirdparty/versions.txt": Path(versions["path"]).read_bytes(),
+    })
+    case.targets.extend([
+        {"target": "xsimd_ep", "kind": "UTILITY", "source": str(case.arrow / "cpp"),
+         "binary": str(case.cpp), "imported": False, "artifacts": []},
+        {"target": "arrow::xsimd", "kind": "INTERFACE_LIBRARY", "source": str(case.arrow / "cpp"),
+         "binary": str(case.cpp), "imported": True, "artifacts": []},
+    ])
+    consumer = case.put(case.arrow / "cpp/src/arrow/util/cpu_info.cc", b"#include <xsimd/xsimd.hpp>\n")
+    unity = case.put(case.cpp / "src/arrow/CMakeFiles/arrow_util.dir/Unity/unity_0_cxx.cxx",
+                     ('#include "' + consumer["path"] + '"\n').encode())
+    objects = []
+    for index, selected_source in enumerate((consumer, unity)):
+        obj = case.put(case.cpp / ("src/arrow/CMakeFiles/arrow_util.dir/xsimd_consumer" + str(index) + ".o"),
+                       b"\x7fELF synthetic Arrow xsimd header consumer " + str(index).encode())
+        objects.append(obj)
+        case.compile_commands.append({"directory": str(case.cpp), "file": selected_source["path"],
+            "command": case.toolchain["cxx"]["path"] + " -isystem " + str(include) + " -fPIC -c "
+                       + selected_source["path"] + " -o " + obj["path"], "output": obj["path"]})
+        case.ninja_commands.append("build " + str(Path(obj["path"]).relative_to(case.cpp))
+            + ": CXX_COMPILER__arrow_util " + selected_source["path"] + "\n")
+    case.main_compile = case.json(case.cpp / "compile_commands.json", case.compile_commands)
+    case.main_graph = case.put(case.cpp / "build.ninja", "".join(case.ninja_commands).encode())
+    case.xsimd = {"source": source, "binary": binary, "prefix": prefix, "include": include,
+                   "archive": archive, "installed": installed, "unused_metadata": unused_metadata,
+                   "cfg": cfg, "command": command, "download": download, "cache": cache,
+                   "declaration": declaration, "versions": versions, "consumer": consumer,
+                   "unity": unity, "objects": objects}
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_arrow25_xsimd_header_ep_binds_original_source_installed_headers_and_real_consumers(
+        verifier, actual_flat_arrow25_case, tmp_path, monkeypatch, retained):
+    case, project = actual_flat_arrow25_case, actual_flat_arrow25_case.xsimd
+    attestation = case.publish(verifier, tmp_path / "arrow25-xsimd-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    proof = initial["attestation"]["external_projects"]["xsimd"]
+    assert proof["kind"] == "header_only_external_project" and proof["target"] == "xsimd_ep"
+    assert proof["archive"] == project["archive"] and proof["source_root"] == str(project["source"])
+    assert [row for row in proof["files"] if row["type"] == "file"] == case.inventory(project["source"])
+    assert proof["installed_include_root"] == str(project["include"])
+    installed_files = {row["relative"]: row for row in proof["installed_files"] if row["type"] == "file"}
+    assert set(installed_files) == {str(Path(row["path"]).relative_to(project["include"]))
+                                    for row in project["installed"]}
+    assert proof["objects"] == [] and proof["archives"] == []
+    assert {row["object"]["path"] for row in proof["consumers"]} == {row["path"] for row in project["objects"]}
+    assert all(row["pic"] and row["command_record"] == case.main_compile for row in proof["consumers"])
+    assert any(project["consumer"] in row.get("included_sources", []) for row in proof["consumers"])
+    assert all(row["rule"] == "xsimd-installed-header-copy-v1" for row in proof["generated_outputs"])
+    for reference in (project["archive"], project["cfg"], project["command"], project["download"],
+                      project["cache"], project["declaration"], project["versions"],
+                      project["consumer"], project["unity"], *project["installed"], *project["objects"]):
+        assert reference in initial["files"]
+    assert project["unused_metadata"] not in initial["files"]
+    assert set(initial["supplemental"]) == set(SDK_NAMES)
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["missing_target", "foreign_target_source", "wrong_interface_type", "extra_ep",
+                                    "archive_pin", "archive_owner", "source_bytes", "extra_source", "declaration",
+                                    "version_pin", "cache_prefix", "cache_compiler", "configure_prefix",
+                                    "installed_bytes", "missing_header", "extra_header", "header_symlink",
+                                    "missing_include", "foreign_include", "missing_object", "foreign_consumer"])
+def test_arrow25_xsimd_header_ep_rejects_unbound_sources_headers_configuration_and_consumers(
+        verifier, actual_flat_arrow25_case, change):
+    case, project = actual_flat_arrow25_case, actual_flat_arrow25_case.xsimd
+    if change == "missing_target":
+        case.targets = [row for row in case.targets if row["target"] != "xsimd_ep"]
+    elif change == "foreign_target_source":
+        next(row for row in case.targets if row["target"] == "xsimd_ep")["source"] = str(case.root / "foreign")
+    elif change == "wrong_interface_type":
+        next(row for row in case.targets if row["target"] == "arrow::xsimd")["kind"] = "STATIC_LIBRARY"
+    elif change == "extra_ep":
+        case.targets.append({"target": "unqualified_ep", "kind": "UTILITY"})
+    elif change == "archive_pin":
+        next(row for row in case.archives if row["path"] == project["archive"]["path"])["sha256"] = "0" * 64
+    elif change == "archive_owner":
+        next(row for row in case.archives if row["path"] == project["archive"]["path"])["path"] = str(case.root / "14.2.0.tar.gz")
+    elif change in {"source_bytes", "extra_source"}:
+        case.put(project["source"] / ("include/xsimd/xsimd.hpp" if change == "source_bytes" else "unowned.h"), b"changed source\n")
+    elif change == "declaration":
+        path = Path(project["declaration"]["path"])
+        case.put(path, path.read_bytes().replace(b'PREFIX "${CMAKE_BINARY_DIR}"', b'PREFIX "foreign"'))
+    elif change == "version_pin":
+        path = Path(project["versions"]["path"])
+        case.put(path, path.read_bytes().replace(b"ARROW_XSIMD_BUILD_VERSION=14.2.0", b"ARROW_XSIMD_BUILD_VERSION=14.3.0"))
+    elif change in {"cache_prefix", "cache_compiler"}:
+        path = Path(project["cache"]["path"])
+        before = str(project["prefix"]) if change == "cache_prefix" else case.toolchain["cxx"]["path"]
+        case.put(path, path.read_text().replace(before, str(case.root / "foreign")).encode())
+    elif change == "configure_prefix":
+        for reference in (project["cfg"], project["command"]):
+            path = Path(reference["path"])
+            case.put(path, path.read_text().replace(str(project["prefix"]), str(case.root / "foreign")).encode())
+    elif change in {"installed_bytes", "missing_header", "header_symlink"}:
+        path = Path(project["installed"][0]["path"])
+        if change == "installed_bytes":
+            case.put(path, b"changed installed header\n")
+        else:
+            path.unlink()
+            if change == "header_symlink":
+                path.symlink_to("config/xsimd_config.hpp")
+    elif change == "extra_header":
+        case.put(project["include"] / "xsimd/unowned.hpp", b"unowned installed header\n")
+    elif change in {"missing_include", "foreign_include", "foreign_consumer"}:
+        for row in case.compile_commands:
+            if str(project["include"]) not in row["command"]:
+                continue
+            if change == "missing_include":
+                row["command"] = row["command"].replace(" -isystem " + str(project["include"]), "")
+            elif change == "foreign_include":
+                row["command"] = row["command"].replace(str(project["include"]), str(case.root / "foreign/include"))
+            else:
+                before = row["file"]
+                row["file"] = case.put(case.root / "foreign/consumer.cc", b"#include <xsimd/xsimd.hpp>\n")["path"]
+                row["command"] = row["command"].replace(before, row["file"])
+        case.main_compile = case.json(case.cpp / "compile_commands.json", case.compile_commands)
+    elif change == "missing_object":
+        Path(project["objects"][0]["path"]).unlink()
+    case.refresh()
+    with pytest.raises((ValueError, FileNotFoundError), match="xsimd|ExternalProject|source|header|configur|compiler|archive|include|object|target|tree|layout|file"):
+        case.capture(verifier)
+
+
+def test_arrow26_rejects_arrow25_only_xsimd_external_project(verifier, tmp_path, monkeypatch):
+    case = CompletedSourceCase(tmp_path, "26", verifier, monkeypatch)
+    add_arrow25_header_only_xsimd(case, verifier, monkeypatch)
+    case.refresh()
+    with pytest.raises(ValueError, match="ExternalProject|unqualified"):
         case.capture(verifier)

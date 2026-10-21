@@ -53,6 +53,7 @@ EP_ARCHIVE_SHA256 = {
     "utf8proc": "6f4f1b639daa6dca9f80bc5db1233e9cbaa31a67790887106160b33ef743f136",
 }
 ORC_ARCHIVE_SHA256 = "52fc762332442e8b05d7182f8c035f9e04d945b9a52be22ab69f28b3f37d4500"
+XSIMD_ARCHIVE_SHA256 = "21e841ab684b05331e81e7f782431753a029ef7b7d9d6d3ddab837e7782a40ee"
 CMAKE_LZ4_METADATA_SHA256 = {
     "4.2.3": {
         "Modules/CPack.cmake": "976f64fba5eff0e7f08262e8c4297bc172eab354c0ee78fa70c71893c86d25e5",
@@ -1703,6 +1704,152 @@ def _finish_ep_sources(source, files, original, generated, evidence, qualified_d
     return qualified, replacements
 
 
+def _xsimd_layout(work):
+    base = work + "/cpp-build"
+    return {"target": "xsimd_ep", "base": base, "source": base + "/src/xsimd_ep",
+            "binary": base + "/src/xsimd_ep-build", "stamp": base + "/src/xsimd_ep-stamp",
+            "cfg": base + "/tmp/xsimd_ep-cfgcmd.txt",
+            "installed_include": base + "/xsimd_ep/src/xsimd_ep-install/include"}
+
+
+def _header_only_xsimd(layout, manifest, selected, compile_info, evidence, toolchain, work, arrow):
+    """Prove Arrow25's selected headers; unused package exports are not payload."""
+    base, source, binary = layout["base"], layout["source"], layout["binary"]
+    archives = [row for row in selected.get("downloaded_archives", [])
+                if row.get("path") == base + "/src/14.2.0.tar.gz"
+                and row.get("sha256") == XSIMD_ARCHIVE_SHA256]
+    _require(len(archives) == 1, "xsimd ExternalProject archive pin/ownership differs")
+    archive = _reference(archives[0])
+    original = _archive_index(archive, evidence.resolver)
+    captured = evidence.captured.get("external_projects", {}).get("xsimd") if evidence.captured else None
+    files = evidence.tree(source, captured.get("files") if captured else None)
+    proved = _verify_archive_source(archive, source, files, {}, evidence.resolver)
+    for target, kind, imported in (("xsimd_ep", "UTILITY", False),
+                                   ("arrow::xsimd", "INTERFACE_LIBRARY", True)):
+        rows = [row for row in selected.get("targets", []) if row.get("target") == target]
+        _require(len(rows) == 1 and rows[0].get("kind") == kind
+                 and rows[0].get("imported") is imported and rows[0].get("source") == arrow + "/cpp"
+                 and rows[0].get("binary") == base and rows[0].get("artifacts") == [],
+                 "xsimd selected target type/source ownership differs")
+    arrow_original = _archive_index(manifest.get("source_archive"), evidence.resolver)
+    declaration = evidence.reference(arrow + "/cpp/cmake_modules/ThirdpartyToolchain.cmake")
+    versions = evidence.reference(arrow + "/cpp/thirdparty/versions.txt")
+    macro = r"^macro\(build_xsimd\)\n.*?^endmacro\(\)$"
+    declarations = [re.findall(macro, _text(data), re.M | re.S) for data in (
+        evidence.resolver.read(declaration),
+        arrow_original.get("cpp/cmake_modules/ThirdpartyToolchain.cmake", {}).get("data", b""))]
+    _require(len(declarations[0]) == 1 and declarations[0] == declarations[1],
+             "xsimd Arrow source-owned declaration differs from its original archive")
+    body = declarations[0][0]
+    _require('PREFIX "${CMAKE_BINARY_DIR}"' in body
+             and 'set(XSIMD_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/xsimd_ep/src/xsimd_ep-install")' in body
+             and "add_library(arrow::xsimd INTERFACE IMPORTED)" in body
+             and 'target_include_directories(arrow::xsimd INTERFACE "${XSIMD_INCLUDE_DIR}")' in body
+             and "add_dependencies(arrow::xsimd xsimd_ep)" in body,
+             "xsimd Arrow source-owned header/interface layout differs")
+    for data in (evidence.resolver.read(versions),
+                 arrow_original.get("cpp/thirdparty/versions.txt", {}).get("data", b"")):
+        text = _text(data)
+        for key, expected in (("ARROW_XSIMD_BUILD_VERSION", "14.2.0"),
+                              ("ARROW_XSIMD_BUILD_SHA256_CHECKSUM", XSIMD_ARCHIVE_SHA256)):
+            _require(re.findall(r"^" + key + r"=(.*)$", text, re.M) == [expected],
+                     "xsimd original/current Arrow version/archive pin differs")
+    entrypoint = _cmake_entrypoint("xsimd", layout, original, selected, evidence)
+    cmake_source = _text(evidence.resolver.read(entrypoint["source_entrypoint"]))
+    _require(re.search(r"add_library\(\s*xsimd\s+INTERFACE\s*\)", cmake_source)
+             and re.search(r"install\(\s*DIRECTORY\s+include/xsimd\s+DESTINATION\s+"
+                           r"\$\{CMAKE_INSTALL_INCLUDEDIR\}\s*\)", cmake_source),
+             "xsimd original source does not declare the selected header-only installation")
+    configuration = _ep_configuration("xsimd", layout, archive, evidence, cmake_entrypoint=entrypoint)
+    command, prefix = configuration["configure_command"], posixpath.dirname(layout["installed_include"])
+    expected_flags = {"CMAKE_C_COMPILER": toolchain["cc"]["path"],
+                      "CMAKE_CXX_COMPILER": toolchain["cxx"]["path"], "CMAKE_CXX_STANDARD": "20",
+                      "CMAKE_INSTALL_PREFIX": prefix, "BUILD_SHARED_LIBS": "OFF", "CMAKE_BUILD_TYPE": "Release"}
+    _require(command and command[0] == toolchain["cmake"]["path"] and command.count("-GNinja") == 1
+             and configuration["configure_command_record"] is not None
+             and all([value for value in command if value.startswith("-D" + key + "=")]
+                     == ["-D" + key + "=" + expected] for key, expected in expected_flags.items()),
+             "xsimd ExternalProject configure compiler/install ownership differs")
+    cmake = evidence.tool("cmake", command[0], toolchain)
+    cache_ref = evidence.reference(binary + "/CMakeCache.txt")
+    cache = _cache(evidence.resolver.read(cache_ref))
+    cache_expected = {**expected_flags, "CMAKE_HOME_DIRECTORY": source, "CMAKE_CACHEFILE_DIR": binary,
+                      "CMAKE_COMMAND": cmake["path"], "CMAKE_MAKE_PROGRAM": toolchain["ninja"]["path"],
+                      "BUILD_TESTS": "OFF", "BUILD_BENCHMARK": "OFF", "BUILD_EXAMPLES": "OFF",
+                      "XSIMD_SKIP_INSTALL": "OFF", "XSIMD_VERSION_MAJOR": "14",
+                      "XSIMD_VERSION_MINOR": "2", "XSIMD_VERSION_PATCH": "0"}
+    _require(all(cache.get(key) == value for key, value in cache_expected.items()),
+             "xsimd ExternalProject cache compiler/source/install ownership differs")
+    installed = evidence.tree(layout["installed_include"], captured.get("installed_files") if captured else None)
+    rows = _inventory(installed)
+    headers = {name.removeprefix("include/"): row for name, row in original.items()
+               if name.startswith("include/") and row["type"] == "file"}
+    directories = _parents(headers) | {name.removeprefix("include/") for name, row in original.items()
+                                      if name.startswith("include/") and row["type"] == "directory"}
+    _require(headers and {name for name, row in rows.items() if row["type"] == "file"} == set(headers)
+             and all((row["type"] == "file" and row["sha256"] == headers[name]["sha256"])
+                     or (row["type"] == "directory" and name in directories) for name, row in rows.items()),
+             "xsimd installed header inventory/bytes differ from original source")
+    generated = []
+    for name in sorted(headers):
+        generated.append(_generated_output("xsimd-installed-header-copy-v1",
+            layout["installed_include"] + "/" + name,
+            [_source_reference("include/" + name, source, original, evidence),
+             entrypoint["source_entrypoint"], declaration, cache_ref],
+            configuration["configure_command_record"], evidence))
+    compile_ref = _reference(compile_info.get("compile_commands"))
+    try:
+        database = json.loads(evidence.resolver.read(compile_ref))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("xsimd consumer compile database is malformed") from exc
+    _require(isinstance(database, list), "xsimd consumer compile database must contain entries")
+    graph = evidence.reference(base + "/build.ninja")
+    blocks = _ninja_blocks(evidence.resolver.read(graph))
+    consumers, used_headers, objects = [], False, set()
+    for entry in database:
+        _require(isinstance(entry, dict), "xsimd consumer compile entry is malformed")
+        tokens = entry.get("command", entry.get("arguments", []))
+        tokens = shlex.split(tokens) if isinstance(tokens, str) else list(tokens)
+        includes = [tokens[index + 1] for index, token in enumerate(tokens[:-1]) if token in {"-I", "-isystem"}]
+        includes += [token[2:] for token in tokens if token.startswith("-I") and token != "-I"]
+        includes += [token[len("-isystem"):] for token in tokens if token.startswith("-isystem") and token != "-isystem"]
+        if not any(_join(entry.get("directory"), value) == layout["installed_include"] for value in includes):
+            continue
+        _require(_under(entry.get("file", ""), arrow + "/cpp/src")
+                 or _under(entry.get("file", ""), base + "/src"),
+                 "xsimd header consumer belongs to another source tree")
+        row = _compile_record(tokens, entry.get("directory"), compile_ref, work, evidence, toolchain,
+                              source=entry.get("file"), output=entry.get("output"), require_pic=True)
+        output = row["object"]["path"]
+        _require(_under(output, base + "/src") and output not in objects
+                 and any("_COMPILER__" in block["rule"]
+                         and output in {_join(base, value) for value in block["outputs"]}
+                         and row["source"]["path"] in {_join(base, value) for value in block["inputs"]}
+                         for block in blocks), "xsimd consumer object/source has no owned main compiler graph")
+        objects.add(output)
+        source_refs = [row["source"]]
+        if "Unity" in PurePosixPath(row["source"]["path"]).parts:
+            includes = re.findall(r'^#include "([^"\n]+)"', _text(evidence.resolver.read(row["source"])), re.M)
+            _require(includes, "xsimd Unity consumer has no included source evidence")
+            row["included_sources"] = []
+            for include in includes:
+                path = _join(posixpath.dirname(row["source"]["path"]), include)
+                _require(_under(path, arrow + "/cpp/src"), "xsimd Unity consumer includes another source tree")
+                row["included_sources"].append(evidence.reference(path))
+            source_refs += row["included_sources"]
+        used_headers |= any(re.search(r'^\s*#\s*include\s*[<"]xsimd/',
+                                      _text(evidence.resolver.read(reference)), re.M) is not None
+                            for reference in source_refs)
+        consumers.append(row)
+    _require(consumers and used_headers, "xsimd selected headers have no actual Arrow include/source/object consumers")
+    return {"kind": "header_only_external_project", "target": "xsimd_ep", "archive": archive,
+            "source_root": source, "files": proved, **configuration, "cache": cache_ref,
+            "owner_declaration": declaration, "owner_versions": versions,
+            "installed_include_root": layout["installed_include"], "installed_files": installed,
+            "generated_outputs": generated, "consumers": consumers, "consumer_graph": graph,
+            "objects": [], "archives": []}
+
+
 def _external_project(name, layout, manifest, selected, compile_info, evidence, toolchain, version, work, arrow):
     archive_ref = (manifest["dependencies"][name]["archive"] if name == "jemalloc" else None)
     if archive_ref is None:
@@ -2049,6 +2196,8 @@ def _assemble_attestation(raw_ref, cohort_ref, resolver, *, captured=None, produ
         _require(entry["files"] == trees[source]["files"], "compiled source inventory is not canonical: " + name)
         supplemental[name] = entry
     layouts = {name: _ep_layout(name, work) for name in ("jemalloc", *EP_ARCHIVE_SHA256)}
+    if kind == "25":
+        layouts["xsimd"] = _xsimd_layout(work)
     selected_ep = {row.get("target") for row in selected.get("targets", [])
                    if isinstance(row, dict) and isinstance(row.get("target"), str) and row["target"].endswith("_ep")}
     _require(selected_ep == {row["target"] for row in layouts.values()},
@@ -2056,8 +2205,9 @@ def _assemble_attestation(raw_ref, cohort_ref, resolver, *, captured=None, produ
     version_match = re.fullmatch(r"cmake version ([0-9]+\.[0-9]+\.[0-9]+)",
                                  raw.get("toolchain_versions", {}).get("cmake", ""))
     version = version_match[1] if version_match else None
-    external = {name: _external_project(name, layout, manifest, selected, compile_info,
-                                       evidence, toolchain, version, work, arrow)
+    external = {name: (_header_only_xsimd(layout, manifest, selected, compile_info, evidence, toolchain, work, arrow)
+                       if name == "xsimd" else _external_project(name, layout, manifest, selected, compile_info,
+                                                               evidence, toolchain, version, work, arrow))
                 for name, layout in layouts.items()}
     supplemental["jemalloc"] = external["jemalloc"]
     verify_proof_union(kind, legacy, supplemental)

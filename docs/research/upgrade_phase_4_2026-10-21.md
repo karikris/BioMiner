@@ -1154,3 +1154,26 @@ Independent source/test review passed, SHA-256
 `3e4bb3f24c41f41bbf694fde597c1b3784b3429f9d1deaadda9e39dfcac65653`.
 Actual completed-build capture and retained replay remain pending; this task
 changes no runtime admission or phase-completion status.
+
+## Arrow 25 header-only xsimd source compatibility
+
+The actual capture stopped at an eighth ExternalProject, xsimd 14.2.0. GitHits
+confirms Arrow 25 installs its headers through an ExternalProject, whereas
+Arrow 26 uses FetchContent. The reader now requires the exact eight/seven
+family target sets. Arrow 25's additional proof binds the original archive
+and complete source tree, source-owned declarations and configuration, exact
+installed-header copies, and actual PIC consumer objects/compile graph,
+including Unity source references. It fabricates no xsimd static archive.
+Unused installed package exports are outside the claimed header payload.
+The 21-member supplemental cohort, legacy proof unions and admission pins
+remain unchanged.
+
+Focused RED recorded three failures, 21 passes and 260 deselections in
+1.08 seconds. All 284 tests passed in 13.78 seconds, exit 0 without
+interruption; receipt SHA-256
+`cb1a2c344d812cc85d5b43efb9c4a503ffd81373185330eebc407c805002a6b6`.
+Independent source/test review passed, SHA-256
+`e7f928048feddb972ab3f3c4755ed3b3afc802a4109f16addb2f920ae45a45b9`.
+Metadata comparison found no further known family differences in the shared
+seven projects. Actual completed-build capture/replay remains required;
+phase 4 is incomplete and no runtime was admitted.
