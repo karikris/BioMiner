@@ -2092,3 +2092,106 @@ def test_lz4_pkgconfig_version_rejects_duplicate_non_integer_or_unclosed_origina
     use_lz4_commented_version_constants(case, verifier, monkeypatch, comments="bare", change=change)
     with pytest.raises(ValueError, match="LZ4|version|ambiguous|integer|constant"):
         case.capture(verifier)
+
+
+def use_external_native_component_alias(case, shape):
+    root = case.root / "system-alias"
+    canonical = root / "usr/lib/libc.so"
+    links = []
+    if shape == "leaf-only":
+        token = root / "usr/lib/libc.alias"
+        links = [(token, "libc.so")]
+    elif shape == "parent-only":
+        token = root / "lib/libc.so"
+        links = [(root / "lib", "usr/lib")]
+    elif shape == "actual-loader-parent-and-leaf":
+        token = root / "lib64/ld.so"
+        (root / "usr/lib64").mkdir(parents=True)
+        links = [(root / "lib64", "usr/lib64"),
+                 (root / "usr/lib64/ld.so", "../lib/libc.so")]
+    else:
+        assert shape == "directory-link-before-parent-component"
+        token = root / "lib/ld.so"
+        canonical = root / "usr/lib/redirect/libc.so"
+        (root / "usr/lib/redirect/nested").mkdir(parents=True)
+        links = [(root / "lib", "usr/lib"),
+                 (root / "usr/lib/ld.so", "provider/../libc.so"),
+                 (root / "usr/lib/provider", "redirect/nested")]
+    native = case.put(canonical, b"\x7fELF synthetic canonical aliased native\n")
+    for path, target in links:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(target)
+    assert token.resolve(strict=True) == canonical
+    case.raw["native_files"][1] = {**native, "owner": "synthetic:system"}
+    case.raw["linkage"] = {"pyarrow/libarrow.so": "libc.so => " + str(token) + " (0x1)\n"}
+    case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+    return str(token), native, [{"path": str(path), "target": target} for path, target in links]
+
+
+@pytest.mark.parametrize("shape", ["leaf-only", "parent-only", "actual-loader-parent-and-leaf",
+                                  "directory-link-before-parent-component"])
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_external_native_alias_captures_all_components_and_replays_only_from_copies(
+        verifier, completed_source_case, tmp_path, monkeypatch, shape, retained):
+    case = completed_source_case
+    token, native, links = use_external_native_component_alias(case, shape)
+    attestation = case.publish(verifier, tmp_path / "native-component-alias.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    alias = initial["attestation"]["artifact_closure"]["generator_aliases"][token]
+    assert alias == {"links": links, "file": native}
+    assert native in initial["files"]
+    assert token not in {row["path"] for row in initial["files"]}
+    assert initial["attestation"]["artifact_closure"]["native_files"] == case.raw["native_files"]
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+def test_external_native_alias_rejects_unrecorded_canonical_path_even_with_identical_bytes(
+        verifier, completed_source_case):
+    case = completed_source_case
+    token, native, _ = use_external_native_component_alias(case, "leaf-only")
+    unrecorded = Path(native["path"]).with_name("unrecorded-libc.so")
+    case.put(unrecorded, Path(native["path"]).read_bytes())
+    Path(token).unlink()
+    Path(token).symlink_to(unrecorded.name)
+    with pytest.raises(ValueError, match="unrecorded external native"):
+        case.capture(verifier)
+
+
+@pytest.mark.parametrize("change", ["missing-parent", "foreign-link", "reordered-links", "duplicate-link",
+                                   "cyclic-target", "empty-target", "nul-target", "rebound-file"])
+def test_external_native_alias_retained_metadata_rejects_broken_or_rebound_component_proof(
+        verifier, tmp_path, monkeypatch, change):
+    historical = tmp_path / "historical-native"
+    token = str(historical / "lib64/ld.so")
+    canonical = historical / "usr/lib/libc.so"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b"\x7fELF retained canonical native\n")
+    native = record(canonical)
+    links = [{"path": str(historical / "lib64"), "target": "usr/lib64"},
+             {"path": str(historical / "usr/lib64/ld.so"), "target": "../lib/libc.so"}]
+    alias = {"links": links, "file": native}
+    if change == "missing-parent":
+        links.pop(0)
+    elif change == "foreign-link":
+        links[0]["path"] = str(historical / "foreign")
+    elif change == "reordered-links":
+        links.reverse()
+    elif change == "duplicate-link":
+        links.insert(1, dict(links[0]))
+    elif change == "cyclic-target":
+        links[0]["target"] = "lib64"
+    elif change == "empty-target":
+        links[0]["target"] = ""
+    elif change == "nul-target":
+        links[0]["target"] = "usr/lib64\x00"
+    else:
+        alias["file"] = {**native, "path": str(historical / "unrecorded.so")}
+    captured = {"closure": [native], "artifact_closure": {"generator_aliases": {token: alias}}}
+    copied = tmp_path / "retained-native"
+    copied.write_bytes(canonical.read_bytes())
+    shutil.rmtree(historical)
+    forbid_history(monkeypatch, historical)
+    evidence = verifier._Evidence(verifier._Resolver([record(copied)]), captured)
+    with pytest.raises(ValueError, match="alias|reference|captured|target|identity|path"):
+        evidence._tool_file(token)

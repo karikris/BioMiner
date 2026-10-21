@@ -549,33 +549,74 @@ class _Evidence:
         return result
 
     def _tool_file(self, token):
+        _logical_path(token)
         alias = None
         if self.captured is not None:
             alias = self.captured.get("artifact_closure", {}).get("generator_aliases", {}).get(token)
-        else:
-            current, links, seen = token, [], set()
-            while Path(current).is_symlink():
-                _require(current not in seen and len(seen) < 64, "generator tool alias is cyclic")
-                seen.add(current)
+            if alias is None:
+                return self.reference(token)
+            _require(isinstance(alias, dict) and isinstance(alias.get("links"), list)
+                     and 0 < len(alias["links"]) <= 64, "generator tool alias is malformed")
+        links = [] if alias is None else alias["links"]
+        targets = {}
+        for link in links:
+            _require(isinstance(link, dict), "generator tool alias chain differs")
+            path = str(_logical_path(link.get("path")))
+            target = link.get("target")
+            _require(path not in targets and isinstance(target, str) and bool(target)
+                     and "\x00" not in target and "\\" not in target, "generator tool alias chain differs")
+            targets[path] = target
+        pending, resolved = deque(token.split("/")), []
+        active, completed, encountered = set(), {}, []
+        while pending:
+            component = pending.popleft()
+            if isinstance(component, tuple):
+                path = component[0]
+                active.remove(path)
+                completed[path] = tuple(resolved)
+                continue
+            if component in ("", "."):
+                continue
+            if component == "..":
+                if resolved:
+                    resolved.pop()
+                continue
+            current = "/" + "/".join([*resolved, component])
+            target = targets.get(current)
+            if self.captured is None and target is None and Path(current).is_symlink():
                 target = os.readlink(current)
+                _require(isinstance(target, str) and bool(target) and "\x00" not in target
+                         and "\\" not in target and len(targets) < 64, "generator tool alias is malformed")
+                targets[current] = target
                 links.append({"path": current, "target": target})
-                current = _join(posixpath.dirname(current), target)
-            if links:
-                alias = {"links": links, "file": self.reference(current)}
-        if alias is None:
+            if target is None:
+                resolved.append(component)
+                continue
+            _require(current not in active, "generator tool alias is cyclic")
+            if current in completed:
+                resolved = list(completed[current])
+                continue
+            encountered.append(current)
+            active.add(current)
+            # Expand each link before interpreting any following '..'. The
+            # marker permits later reuse of an already completed directory link.
+            pending.appendleft((current,))
+            if target.startswith("/"):
+                resolved = []
+            pending.extendleft(reversed(target.split("/")))
+        _require(encountered == list(targets), "generator tool alias chain differs")
+        if not links:
             return self.reference(token)
-        _require(isinstance(alias, dict) and isinstance(alias.get("links"), list)
-                 and bool(alias["links"]), "generator tool alias is malformed")
-        current, seen = token, set()
-        for link in alias["links"]:
-            _require(isinstance(link, dict) and link.get("path") == current
-                     and current not in seen and isinstance(link.get("target"), str),
-                     "generator tool alias chain differs")
-            seen.add(current)
-            current = _join(posixpath.dirname(current), link["target"])
-        reference = _reference(alias.get("file"))
-        _require(current == reference["path"], "generator tool alias target differs")
-        self.resolver.read(reference)
+        canonical = "/" + "/".join(resolved)
+        if alias is not None:
+            _require(canonical == _reference(alias.get("file"))["path"], "generator tool alias target differs")
+            if self.resolver.retained is None:
+                _require(all(Path(link["path"]).is_symlink() and os.readlink(link["path"]) == link["target"]
+                             for link in links), "generator tool alias chain changed")
+        reference = self.reference(canonical)
+        if alias is not None:
+            _require(reference == _reference(alias["file"]), "generator tool alias target differs")
+        alias = {"links": links, "file": reference}
         self.aliases[token] = alias
         return reference
 

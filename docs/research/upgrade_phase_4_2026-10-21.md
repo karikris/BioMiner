@@ -1234,3 +1234,21 @@ Independent review passed, SHA-256
 A bounded diagnostic returned source proofs for all eight actual Arrow 25
 ExternalProjects; this component diagnostic is not a complete attestation.
 Combined capture/public verification/retained replay remain pending.
+
+## Native provider directory aliases
+
+Both complete captures reached ELF closure and rejected the loader's `/lib64`
+spelling against its recorded canonical `/usr/lib` path. A batch comparison of
+all six external providers in each family identified this single mismatch.
+The reader now captures parent and leaf symlinks in component order, including
+links encountered before `..`, and replays the complete ordered chain. Exact
+canonical native path and hash equality, source families and admission pins
+remain unchanged. Retained replay reads only copied canonical files.
+
+Focused RED recorded twelve failures and fourteen passes in 2.40 seconds.
+All 350 cases passed in 17.74 seconds, exit 0 without interruption; receipt
+SHA-256 `09f0bbfbe1f26757d68273c5271b6e2137da0056d89c82cad83f3ab5a1b256ac`.
+Independent review passed, SHA-256
+`986b3e3ab6a244fb10f36eb8906ad15ae7bd0d1f7c00cdb70c6fda8ec7c6ce7f`.
+All 324 earlier test bytes remain preserved. Fresh complete captures and
+public verification/retained-copy replay remain pending.
