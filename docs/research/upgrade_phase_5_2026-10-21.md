@@ -128,3 +128,45 @@ Report `live-backend-qualification-2/report.json` has SHA-256
 outer receipt is `6f3e00ee…`, final integrity `23ec5a00…` and independent
 review `144e9f30…`. Phase-5 live qualification remains incomplete. No claim of
 successful object publication, security clearance or runtime admission follows.
+
+
+## Task 5.3b: completed paired resource comparison
+
+Starting main SHA: `ad33fc475b07ca071660505ca4dd304127834263`.
+All 12 sequential fresh workers passed: three interleaved repetitions in each
+nine-distribution matrix cell, identical 200,000-row CSV input, four Polars
+threads and one BLAS thread. Every output matched the same 171,428-row logical
+oracle and schema, every owned scratch directory was removed, and before/after
+whole frozen-input checks passed. No compared work-time or RSS pair/median
+exceeded the reviewed 15% threshold; flags are empty. There was no overlapping live/native
+qualification during measurement.
+
+| Cell | Median work (ms) | Median peak process RSS (KiB) |
+|---|---:|---:|
+| Polars 1 / Arrow 25 | 96.251 | 287380 |
+| Polars 2 / Arrow 25 | 107.057 | 306888 |
+| Polars 1 / Arrow 26 | 98.414 | 289864 |
+| Polars 2 / Arrow 26 | 109.766 | 306860 |
+
+On Polars 2, Arrow 26/25 median work ratio is 1.0253 and RSS ratio 0.9999.
+Across Arrow versions, Polars 2/1 work ratios are 1.1123 and 1.1153; RSS ratios
+are 1.0679 and 1.0586. These observations describe this tiny synthetic fixture.
+Work timing excludes validation, import and logical-check stages. Peak process
+RSS includes imports, work and checks. Temporary/spill observations are end-of-
+work snapshots, not peak-spill or engine memory-limit evidence. They are not
+production performance or runtime-admission claims.
+
+Result `candidate-resource-benchmark-1/result.json` has SHA-256
+`27d4c00260e412664b06436e0d6e65ee1362d7e847732d6cb54120c6baccaefb`.
+Outer execution `b1c946a0…` exited 0/0 in 424.461 seconds, without interruption.
+The exact reviewed inner/outer specs are `run-2.spec.json` / `run-outer-2.spec.json`
+in `candidate-resource-benchmark-concrete-1/`; final launch review is `6dea4b59…`.
+This completes the measured resource task. Successful S3 qualification and the
+phase-5 reviewed publication/push remain required before phase-6 execution.
+
+Independent result SPEC/QUALITY review approved (`690219a2…`). A separate
+independent read-only post-run integrity observation (`0ca8dafb…`) verified
+10,232 relevant files / 1.750 GB against the original four cell and frozen-source
+inventories. This is review evidence; the benchmark did not emit a separate
+post-run inventory JSON or an integrity boolean. Its reviewed code checked the
+same frozen inputs before and after every worker. Both forms remain distinct.
