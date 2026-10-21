@@ -984,3 +984,28 @@ addendum SHA-256 is
 The original 93 tests and six reviewed primitive functions remain unchanged.
 Actual final-build capture, retained replay and native/application qualification
 remain required. Phase 4 is incomplete.
+
+## Actual ExternalProject source metadata compatibility
+
+A read-only component diagnostic against the preserved earlier Arrow 26 build
+parsed five of seven components. It exposed three Jemalloc configured scripts
+that overwrite release originals, and ORC 2.2.1’s LZ4 download record with no
+upstream CMake hash. The correction binds exactly those three scripts to the
+pinned configure/Makefile declarations and original templates. It accepts the
+LZ4 metadata shape only with the exact ORC archive/member/declaration and URL;
+the independent LZ4 archive hash and whole-source proof remain mandatory. No
+arbitrary generated directory or missing-hash exception was introduced.
+
+Focused RED recorded eight failures and 18 passes in 1.63 seconds. The first
+full run found four fixture failures and 161 passes: the new fixture restored
+stale configure bytes over its newly pinned archive. Correcting only that
+fixture restoration preserved all original 139 tests and all 26 new cases.
+The final complete suite passed 165 tests in 7.66 seconds, exit 0 without
+interruption; execution receipt SHA-256 is
+`b28ef777069419f9489d425d348a480d70a7206429571972d3a72739d5fabb91`.
+Root source/test review passed, with SHA-256
+`042661e4e238151d3a05f00d3388510ed50d4c4ac68bbb726be71414e5ad8aed`.
+
+This remains source/test evidence. Actual final-build capture, retained replay
+and native/application qualification are pending. Runtime admission remains
+closed; phase 4 remains incomplete and unpushed.

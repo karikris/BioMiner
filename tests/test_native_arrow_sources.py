@@ -1023,3 +1023,198 @@ def test_completed_capture_rejects_lz4_entrypoint_outside_its_pinned_source_decl
     case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
     with pytest.raises(ValueError, match="configur|source|entrypoint|subdir|ownership"):
         case.capture(verifier)
+
+
+JEMALLOC_CONFIGURED_BINS = ("bin/jemalloc-config", "bin/jemalloc.sh", "bin/jeprof")
+
+
+def use_jemalloc_configured_bins(case, verifier, monkeypatch, *, change=None):
+    """Model the separate AC_CONFIG_FILES/BINS outputs of the pinned release."""
+    project = case.ep["jemalloc"]
+    source = project["source"]
+    current = {path.relative_to(source).as_posix(): path.read_bytes()
+               for path in source.rglob("*") if path.is_file()}
+    previous_originals = case.jemalloc_originals()
+    originals = dict(previous_originals)
+    declared = JEMALLOC_CONFIGURED_BINS[:-1] if change == "undeclared" else JEMALLOC_CONFIGURED_BINS
+    originals["configure"] += (
+        'ac_config_files="$ac_config_files $cfgoutputs_tup config.stamp '
+        + " ".join(declared) + '"\n').encode()
+    originals["configure.ac"] = (
+        'AC_CONFIG_FILES([$cfgoutputs_tup config.stamp '
+        + " ".join(declared) + '])\n').encode()
+    bins = ("BINS := " + " ".join("$(objroot)" + name for name in JEMALLOC_CONFIGURED_BINS)
+            + "\n").encode()
+    originals["Makefile.in"] += bins
+    for name in JEMALLOC_CONFIGURED_BINS:
+        originals[name] = ("# original release " + name + "\n").encode()
+        originals[name + ".in"] = ("#!/bin/sh\n# template " + name + " @prefix@\n").encode()
+    if change == "extra_bin":
+        originals["bin/unowned"] = b"# original unowned script\n"
+    old = project["archive"]
+    archive = case.bundle(Path(old["path"]), source, originals)
+    for name, data in current.items():
+        if name not in previous_originals or data != previous_originals[name]:
+            case.put(source / name, data + bins if name == "Makefile" else data)
+    for name in JEMALLOC_CONFIGURED_BINS:
+        data = ("#!/bin/sh\n# configured " + name + " " + str(source / "dist") + "\n").encode()
+        case.put(source / name, data)
+        case.put(source / "dist" / name, data)
+    if change == "template_mismatch":
+        case.put(source / (JEMALLOC_CONFIGURED_BINS[0] + ".in"), b"unqualified template mutation\n")
+    elif change == "extra_bin":
+        case.put(source / "bin/unowned", b"unqualified changed script\n")
+    project["archive"] = archive
+    case.manifest["dependencies"]["jemalloc"].update(archive=archive, sha256=archive["sha256"])
+    next(row for row in case.cohort_rows if row["name"] == "jemalloc")["sha256"] = archive["sha256"]
+    case.cohort = case.json(Path(case.cohort["path"]), {"sources": case.cohort_rows})
+    monkeypatch.setattr(verifier, "COHORT_SHA256", case.cohort["sha256"])
+    path = Path(project["urlinfo"]["path"])
+    project["urlinfo"] = case.put(path, path.read_bytes().replace(
+        old["sha256"].encode(), archive["sha256"].encode()))
+    for relative in ("cpp/cmake_modules/ThirdpartyToolchain.cmake", "cpp/thirdparty/versions.txt"):
+        path = case.arrow / relative
+        path.write_text(path.read_text().replace(old["sha256"], archive["sha256"]))
+    case.refresh()
+    return project, originals
+
+
+def replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch):
+    retained_root = tmp_path / "retained-actual-ep"
+    retained_root.mkdir()
+    retained = {}
+    for reference in initial["files"]:
+        copied = retained_root / reference["sha256"]
+        copied.write_bytes(Path(reference["path"]).read_bytes())
+        retained[reference["sha256"]] = record(copied)
+    shutil.rmtree(case.root)
+    Path(attestation["path"]).unlink()
+    forbid_history(monkeypatch, case.root)
+    replay = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"],
+                                                  retained_inputs=list(retained.values()))
+    assert replay["attestation"] == initial["attestation"]
+    assert all(Path(row["path"]).is_relative_to(retained_root) for row in replay["files"])
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_jemalloc_configured_bins_preserve_original_and_template_evidence(
+        verifier, completed_source_case, tmp_path, monkeypatch, retained):
+    case = completed_source_case
+    project, originals = use_jemalloc_configured_bins(case, verifier, monkeypatch)
+    attestation = case.publish(verifier, tmp_path / "jemalloc-bin-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    proof = initial["attestation"]["external_projects"]["jemalloc"]
+    generated = {row["output"]["path"]: row for row in proof["generated_outputs"]}
+    for name in JEMALLOC_CONFIGURED_BINS:
+        row = generated[str(project["source"] / name)]
+        assert row["rule"] == "jemalloc-configure-v1"
+        assert row["original_sha256"] == digest(originals[name])
+        assert row["output"] == record(project["source"] / name)
+        inputs = {ref["path"]: ref for ref in row["inputs"]}
+        for relative in ("configure", "Makefile.in", name + ".in"):
+            ref = record(project["source"] / relative)
+            assert inputs[ref["path"]] == ref
+        assert digest(originals[name]) != row["output"]["sha256"]
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["undeclared", "template_mismatch", "extra_bin"])
+def test_jemalloc_configured_bins_reject_unqualified_replacements(
+        verifier, completed_source_case, monkeypatch, change):
+    case = completed_source_case
+    use_jemalloc_configured_bins(case, verifier, monkeypatch, change=change)
+    with pytest.raises(ValueError, match="source|template|generated|declar|archive|Jemalloc"):
+        case.capture(verifier)
+
+
+def refresh_lz4_owner(case, owner):
+    case.refresh()
+    case.selected["source_trees"].append({"path": str(owner.parent.parent),
+                                          "files": case.inventory(owner.parent.parent)})
+    case.raw["compiled_dependencies"] = case.json(case.work / "compiled-dependencies.json", case.selected)
+    case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+
+
+def replace_lz4_owner_archive(case, owner, archive_path, archive_bytes, verifier, monkeypatch):
+    current = owner.read_bytes()
+    archive = case.bundle(archive_path, owner.parent.parent,
+                          {"cmake_modules/ThirdpartyToolchain.cmake": archive_bytes})
+    case.put(owner, current)
+    case.archives = [row for row in case.archives if row["path"] != archive["path"]]
+    case.archives.append({**archive, "matches_arrow_versions_pin": True})
+    monkeypatch.setattr(verifier, "ORC_ARCHIVE_SHA256", archive["sha256"], raising=False)
+    refresh_lz4_owner(case, owner)
+    return archive
+
+
+def use_lz4_unhashed_download(case, verifier, monkeypatch):
+    """ORC 2.2.1 owns this no-URL_HASH declaration; LZ4 is pinned separately."""
+    project, _, owner = use_actual_cmake_ep_configuration(case, "lz4", verifier, monkeypatch)
+    declaration = (
+        b'set(LZ4_VERSION "1.10.0")\n'
+        b'set(LZ4_CONFIGURE SOURCE_SUBDIR "build/cmake" CMAKE_ARGS ${LZ4_CMAKE_ARGS})\n'
+        b'ExternalProject_Add(lz4_ep\n'
+        b'  URL "https://github.com/lz4/lz4/archive/v${LZ4_VERSION}.tar.gz"\n'
+        b'  ${LZ4_CONFIGURE}\n  ${THIRDPARTY_LOG_OPTIONS}\n'
+        b'  BUILD_BYPRODUCTS ${LZ4_STATIC_LIB})\n')
+    case.put(owner, declaration)
+    info = Path(project["urlinfo"]["path"])
+    project["urlinfo"] = case.put(info, (
+        "source_dir=" + str(project["source"]) + "\nhash=\n"
+        "url(s)=https://github.com/lz4/lz4/archive/v1.10.0.tar.gz\n").encode())
+    archive_path = (case.cpp / "_deps/orc-subbuild/orc-populate-prefix/src/orc-2.2.1.tar.gz")
+    owner_archive = replace_lz4_owner_archive(case, owner, archive_path, declaration, verifier, monkeypatch)
+    return project, owner, owner_archive
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_lz4_unhashed_download_retains_independent_pin_and_original_orc_ownership(
+        verifier, completed_source_case, tmp_path, monkeypatch, retained):
+    case = completed_source_case
+    project, owner, owner_archive = use_lz4_unhashed_download(case, verifier, monkeypatch)
+    attestation = case.publish(verifier, tmp_path / "lz4-empty-hash-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    proof = initial["attestation"]["external_projects"]["lz4"]
+    assert proof["archive"] == project["archive"]
+    assert proof["archive"]["sha256"] == verifier.EP_ARCHIVE_SHA256["lz4"]
+    assert proof["download_record"] == project["urlinfo"]
+    assert b"\nhash=\n" in Path(proof["download_record"]["path"]).read_bytes()
+    assert proof["source_subdir_declaration"] == record(owner)
+    assert owner_archive in initial["files"]
+    assert record(owner) in initial["files"]
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["other_ep_empty_hash", "wrong_independent_pin", "foreign_owner",
+                                    "owner_archive_mismatch", "upstream_hash_conflict", "foreign_url"])
+def test_lz4_unhashed_download_rejects_unowned_or_conflicting_download_evidence(
+        verifier, completed_source_case, monkeypatch, change):
+    case = completed_source_case
+    project, owner, owner_archive = use_lz4_unhashed_download(case, verifier, monkeypatch)
+    if change == "other_ep_empty_hash":
+        other = case.ep["mimalloc"]
+        path = Path(other["urlinfo"]["path"])
+        path.write_text(path.read_text().replace("hash=SHA256=" + other["archive"]["sha256"], "hash="))
+    elif change == "wrong_independent_pin":
+        monkeypatch.setitem(verifier.EP_ARCHIVE_SHA256, "lz4", "0" * 64)
+    elif change == "foreign_owner":
+        tree = next(row for row in case.selected["source_trees"] if row["path"] == str(owner.parent.parent))
+        tree["path"] = str(case.root / "foreign-orc-source")
+        case.raw["compiled_dependencies"] = case.json(case.work / "compiled-dependencies.json", case.selected)
+        case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+    elif change == "owner_archive_mismatch":
+        replace_lz4_owner_archive(case, owner, Path(owner_archive["path"]),
+                                  owner.read_bytes() + b"# different original member\n", verifier, monkeypatch)
+    elif change == "upstream_hash_conflict":
+        data = owner.read_bytes().replace(b"  ${LZ4_CONFIGURE}\n", (
+            '  URL_HASH "SHA256=' + project["archive"]["sha256"] + '"\n  ${LZ4_CONFIGURE}\n').encode())
+        case.put(owner, data)
+        replace_lz4_owner_archive(case, owner, Path(owner_archive["path"]), data, verifier, monkeypatch)
+    elif change == "foreign_url":
+        path = Path(project["urlinfo"]["path"])
+        path.write_text(path.read_text().replace("https://github.com/lz4/lz4/archive/v1.10.0.tar.gz",
+                                               "https://example.invalid/foreign.tar.gz"))
+    with pytest.raises(ValueError, match="archive|source|configur|ownership|download|LZ4|hash"):
+        case.capture(verifier)

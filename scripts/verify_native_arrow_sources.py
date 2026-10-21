@@ -52,6 +52,7 @@ EP_ARCHIVE_SHA256 = {
     "substrait": "f989a862f694e7dbb695925ddb7c4ce06aa6c51aca945105c075139aed7e55a2",
     "utf8proc": "6f4f1b639daa6dca9f80bc5db1233e9cbaa31a67790887106160b33ef743f136",
 }
+ORC_ARCHIVE_SHA256 = "52fc762332442e8b05d7182f8c035f9e04d945b9a52be22ab69f28b3f37d4500"
 
 
 def _require(condition, message):
@@ -806,7 +807,7 @@ def _source_reference(relative, source, original, evidence):
 
 
 def _cmake_entrypoint(name, layout, original, selected, evidence):
-    relative, subdir, declaration = "CMakeLists.txt", "", None
+    relative, subdir, declaration, download_policy = "CMakeLists.txt", "", None, None
     if name == "lz4" and relative not in original:
         relative, subdir = "build/cmake/CMakeLists.txt", "build/cmake"
         owner_root = layout["base"].removesuffix("/_deps/orc-build") + "/_deps/orc-src"
@@ -824,10 +825,35 @@ def _cmake_entrypoint(name, layout, original, selected, evidence):
         calls = re.findall(r"ExternalProject_Add\(\s*lz4_ep\b([^()]*)\)", text, re.I | re.S)
         _require(len(definitions) == 1 and len(calls) == 1 and "${LZ4_CONFIGURE}" in calls[0],
                  "LZ4 source-owned nested CMake entrypoint declaration differs")
+        if not re.search(r"\bURL_HASH\b", calls[0]):
+            # ORC 2.2.1 does not declare a CMake download hash for LZ4.
+            # Prove that omission from its original pinned archive; the LZ4
+            # archive still has its independent pin and full source proof.
+            expected_url = "https://github.com/lz4/lz4/archive/v1.10.0.tar.gz"
+            _require(re.findall(r'set\(\s*LZ4_VERSION\s+"([^"]+)"\s*\)', text) == ["1.10.0"]
+                     and shlex.split(calls[0], comments=True) == [
+                         "URL", "https://github.com/lz4/lz4/archive/v${LZ4_VERSION}.tar.gz",
+                         "${LZ4_CONFIGURE}", "${THIRDPARTY_LOG_OPTIONS}",
+                         "BUILD_BYPRODUCTS", "${LZ4_STATIC_LIB}"],
+                     "LZ4 source-owned unhashed download declaration differs")
+            owner_archive_path = (layout["base"].removesuffix("/_deps/orc-build")
+                                  + "/_deps/orc-subbuild/orc-populate-prefix/src/orc-2.2.1.tar.gz")
+            archives = [row for row in selected.get("downloaded_archives", [])
+                        if row.get("path") == owner_archive_path and row.get("sha256") == ORC_ARCHIVE_SHA256]
+            _require(len(archives) == 1, "LZ4 unhashed download lacks its pinned ORC source archive")
+            owner_archive = _reference(archives[0])
+            owner_original = _archive_index(owner_archive, evidence.resolver)
+            _require(_source_reference(owner_relative, owner_root, owner_original, evidence) == declaration,
+                     "LZ4 download declaration differs from original ORC source")
+            download_policy = {"kind": "orc-lz4-source-owned-no-url-hash-v1", "upstream_hash": None,
+                               "url": expected_url, "owner_archive": owner_archive,
+                               "owner_declaration": declaration}
     reference = _source_reference(relative, layout["source"], original, evidence)
     result = {"source_subdir": subdir, "source_entrypoint": reference}
     if declaration:
         result["source_subdir_declaration"] = declaration
+    if download_policy:
+        result["download_hash_policy"] = download_policy
     return result
 
 
@@ -870,8 +896,15 @@ def _ep_configuration(name, layout, archive_ref, evidence, *, cmake_entrypoint=N
         _require(recorded == [";".join(command)], "ExternalProject configure command differs from its captured stamp")
     urlinfo = evidence.reference(layout["stamp"] + "/" + layout["target"] + "-urlinfo.txt")
     info = _text(evidence.resolver.read(urlinfo))
+    policy = cmake_entrypoint.get("download_hash_policy") if cmake_entrypoint else None
+    hashes = re.findall(r"^hash=(.*)$", info, re.M)
+    if policy is None:
+        hash_matches = hashes == ["SHA256=" + archive_ref["sha256"]]
+    else:
+        hash_matches = (name == "lz4" and archive_ref["sha256"] == EP_ARCHIVE_SHA256["lz4"]
+                        and hashes == [""] and re.findall(r"^url\(s\)=(.*)$", info, re.M) == [policy["url"]])
     _require(re.findall(r"^source_dir=(.*)$", info, re.M) == [layout["source"]]
-             and re.findall(r"^hash=SHA256=([0-9a-f]{64})$", info, re.M) == [archive_ref["sha256"]],
+             and hash_matches,
              "ExternalProject archive/source configuration ownership differs")
     result = {"configuration": cfg_ref, "configure_template": template, "configure_command": command,
             "configure_command_record": command_record, "download_record": urlinfo}
@@ -991,6 +1024,21 @@ def _jemalloc_project(layout, original, configuration, evidence, toolchain):
     for key in ("cfghdrs_in", "cfgoutputs_in"):
         for relative in _shell_list(configure_data, key):
             generator_inputs.append(_source_reference(relative, source, original, evidence))
+    bins = ("bin/jemalloc-config", "bin/jemalloc.sh", "bin/jeprof")
+    if any(name in original or name + ".in" in original for name in bins):
+        declarations = re.findall(
+            r'^ac_config_files="\$ac_config_files \$cfgoutputs_tup config\.stamp ([^"\n]+)"$',
+            _text(configure_data), re.M)
+        expected_bins = " ".join("$(objroot)" + name for name in bins)
+        _require(declarations == [" ".join(bins)]
+                 and _make_variable(original["Makefile.in"]["data"], "BINS") == expected_bins
+                 and _make_variable(make_data, "BINS") == expected_bins,
+                 "Jemalloc configured bin declarations differ from pinned source")
+        for relative in bins:
+            _require(original.get(relative, {}).get("type") == "file",
+                     "Jemalloc configured bin has no original release source")
+            generator_inputs.append(_source_reference(relative + ".in", source, original, evidence))
+        generated_names.update(bins)
     c_sources = re.findall(r"\$\(srcroot\)([^\s]+\.c)",
                            _make_variable(original["Makefile.in"]["data"], "C_SRCS"))
     _require(bool(c_sources), "Jemalloc source-owned C source list is missing")
