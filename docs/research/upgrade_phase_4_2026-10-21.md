@@ -1083,3 +1083,21 @@ The small DSO tests verify runtime calls and SSL/HTTP2 transitive linkage;
 passed, SHA-256 `9219fa13da504d2658a6bd6fe9130d3ccb3ddb35f5037ed1fe09045cdb74dbae`.
 A fresh Arrow 26 generation and all subsequent compatibility checks are still
 required. No runtime was admitted or activated; phase 4 remains incomplete.
+
+## Remaining LZ4 metadata and generated CLI aliases
+
+Upfront classification found eight remaining LZ4 outputs: two CPack files,
+package and pkg-config files, two manpage aliases and two CLI symlinks. Their
+finite proofs now bind original declarations/templates, cache ownership, three
+exact CMake 4.2.3 module/template hashes, and captured Ninja/executable evidence.
+Retained replay keeps symlink targets lexical and uses copied evidence only.
+Unknown names, foreign templates/modules/paths, changed package/manpage bytes
+and unowned alias commands remain rejected. Other package policies and all
+family/cohort/archive pins remain unchanged.
+
+Root RED recorded four failures and 20 passes in 1.32 seconds. All 245 tests
+passed in 12.01 seconds, exit 0 without interruption; receipt SHA-256
+`1c02869a411db1a3c1a1f529482b572f1768bbe2b64acbcab8daccfca5d23bef`.
+Independent source/test review passed, SHA-256
+`ebdf031993804325322569cf33265b283f3c42b4c1dafed1cd39a77d209cb4e6`.
+Actual capture/replay and the fresh Arrow 26 runtime checks remain required.

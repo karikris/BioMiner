@@ -53,6 +53,13 @@ EP_ARCHIVE_SHA256 = {
     "utf8proc": "6f4f1b639daa6dca9f80bc5db1233e9cbaa31a67790887106160b33ef743f136",
 }
 ORC_ARCHIVE_SHA256 = "52fc762332442e8b05d7182f8c035f9e04d945b9a52be22ab69f28b3f37d4500"
+CMAKE_LZ4_METADATA_SHA256 = {
+    "4.2.3": {
+        "Modules/CPack.cmake": "976f64fba5eff0e7f08262e8c4297bc172eab354c0ee78fa70c71893c86d25e5",
+        "Templates/CPackConfig.cmake.in": "0b64f59ee755467025c6461714ff781a7b6f2a5af0f4af8e1b0e62ce35387f26",
+        "Modules/CMakePackageConfigHelpers.cmake": "b4694d4f33a5f7f76701251584af5cfe724926c50666e7e8ec3d9c8a340e120e",
+    },
+}
 
 
 def _require(condition, message):
@@ -1286,6 +1293,145 @@ def _lz4_cmake_export_outputs(source, binary, original, entrypoint, cache, evide
     return result
 
 
+def _lz4_metadata_outputs(layout, original, entrypoint, cache, version, graph_ref, evidence, build_files):
+    source, binary = layout["source"], layout["binary"]
+    text = _text(original[entrypoint]["data"])
+    cmake_ref = _source_reference(entrypoint, source, original, evidence)
+    cache_ref = evidence.reference(binary + "/CMakeCache.txt")
+    rows = _inventory(build_files)
+    files, links = {}, []
+    common = [cmake_ref, cache_ref]
+    names = {"CPackConfig.cmake", "CPackSourceConfig.cmake", "lz4Config.cmake"}
+    modules = {}
+    if names.intersection(rows):
+        pins = CMAKE_LZ4_METADATA_SHA256.get(version)
+        _require(pins is not None and isinstance(cache.get("CMAKE_ROOT"), str),
+                 "LZ4 metadata lacks a qualified CMake module version/root")
+        for relative, checksum in pins.items():
+            reference = evidence.reference(cache["CMAKE_ROOT"] + "/" + relative)
+            _require(reference["sha256"] == checksum, "LZ4 metadata CMake module/template pin differs")
+            modules[relative] = reference
+    prefix = cache.get("CMAKE_INSTALL_PREFIX")
+    expected_prefix = posixpath.dirname(posixpath.dirname(layout["installed"]))
+    if names.intersection(rows) or "liblz4.pc" in rows:
+        _require(prefix == expected_prefix, "LZ4 metadata installation prefix belongs to another build")
+
+    if re.findall(r"\binclude\(\s*CPack\s*\)", text) == ["include(CPack)"]:
+        template_ref = modules.get("Templates/CPackConfig.cmake.in")
+        if template_ref:
+            template = evidence.resolver.read(template_ref)
+            _require(template.count(b"@_CPACK_OTHER_VARIABLES_@") == 1,
+                     "LZ4 CPack template variable section differs")
+            before, after = template.split(b"@_CPACK_OTHER_VARIABLES_@")
+            before = before.replace(b"@CMAKE_BINARY_DIR@", binary.encode())
+            after = after.replace(b"@CMAKE_BINARY_DIR@", binary.encode())
+            for name in ("CPackConfig.cmake", "CPackSourceConfig.cmake"):
+                if name not in rows:
+                    continue
+                _require(not any(posixpath.dirname(entrypoint) + "/" + candidate in original
+                                 for candidate in ("CPackConfig.cmake.in", "CPackSourceConfig.cmake.in")),
+                         "LZ4 CPack source template override is unqualified")
+                data = evidence.read(binary + "/" + name)
+                _require(data.startswith(before) and data.endswith(after),
+                         "LZ4 CPack generated template bytes differ")
+                body = _text(data[len(before):len(data) - len(after)] if after else data[len(before):])
+                pattern = r'set\((CPACK_[A-Za-z_0-9]+)\s+"((?:\\.|[^"\\])*)"\)'
+                variables = re.findall(pattern, body)
+                _require(not re.sub(pattern, "", body).strip()
+                         and len(variables) == len(dict(variables)),
+                         "LZ4 CPack generated variable metadata differs")
+                values = dict(variables)
+                expected = {
+                    "CPACK_BUILD_SOURCE_DIRS": posixpath.dirname(cmake_ref["path"]) + ";" + binary,
+                    "CPACK_OUTPUT_CONFIG_FILE": binary + "/CPackConfig.cmake",
+                    "CPACK_SOURCE_OUTPUT_CONFIG_FILE": binary + "/CPackSourceConfig.cmake",
+                    "CPACK_INSTALL_PREFIX": prefix,
+                }
+                _require(all(values.get(key) == value for key, value in expected.items()),
+                         "LZ4 CPack output/source metadata belongs to another build")
+                inputs = [*common, modules["Modules/CPack.cmake"], template_ref]
+                inputs += [_source_reference(relative, source, original, evidence)
+                           for relative in ("README.md", "LICENSE") if relative in original]
+                files[binary + "/" + name] = inputs
+
+    package_calls = re.findall(r"\bconfigure_package_config_file\s*\(([^()]*)\)", text, re.S)
+    package_args = [shlex.split(value, comments=True) for value in package_calls]
+    expected_package = ["${CMAKE_CURRENT_LIST_DIR}/lz4Config.cmake.in",
+                        "${CMAKE_CURRENT_BINARY_DIR}/lz4Config.cmake",
+                        "INSTALL_DESTINATION", "${LZ4_PKG_INSTALLDIR}"]
+    if expected_package in package_args and "lz4Config.cmake" in rows:
+        template_ref = _source_reference(posixpath.dirname(entrypoint) + "/lz4Config.cmake.in",
+                                         source, original, evidence)
+        template = evidence.resolver.read(template_ref)
+        _require(template.count(b"@PACKAGE_INIT@") == 1, "LZ4 package config template differs")
+        before, after = template.split(b"@PACKAGE_INIT@")
+        data = evidence.read(binary + "/lz4Config.cmake")
+        _require(data.startswith(before + b"####### Expanded from @PACKAGE_INIT@ by configure_package_config_file()")
+                 and data.endswith(after), "LZ4 package config template bytes differ")
+        files[binary + "/lz4Config.cmake"] = [*common, template_ref,
+                                               modules["Modules/CMakePackageConfigHelpers.cmake"]]
+
+    pc_calls = [shlex.split(value, comments=True) for value in re.findall(
+        r"\bconfigure_file\s*\(([^()]*)\)", text, re.S)]
+    if ["${LZ4_LIB_SOURCE_DIR}/liblz4.pc.in", "liblz4.pc", "@ONLY"] in pc_calls and "liblz4.pc" in rows:
+        _require(re.search(r'set\(LZ4_TOP_SOURCE_DIR\s+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/\.\./\.\."\)', text)
+                 and re.search(r'set\(LZ4_LIB_SOURCE_DIR\s+"\$\{LZ4_TOP_SOURCE_DIR\}/lib"\)', text),
+                 "LZ4 pkg-config template source declarations differ")
+        template_ref = _source_reference("lib/liblz4.pc.in", source, original, evidence)
+        header_ref = _source_reference("lib/lz4.h", source, original, evidence)
+        header = _text(evidence.resolver.read(header_ref))
+        versions = [re.findall(r"^#define LZ4_VERSION_" + name + r"\s+([0-9]+)\s*$", header, re.M)
+                    for name in ("MAJOR", "MINOR", "RELEASE")]
+        _require(all(len(value) == 1 for value in versions), "LZ4 pkg-config source version is ambiguous")
+        values = {"PREFIX": prefix, "VERSION": ".".join(value[0] for value in versions)}
+        for key, cache_key, default in (("LIBDIR", "CMAKE_INSTALL_LIBDIR", "lib"),
+                                        ("INCLUDEDIR", "CMAKE_INSTALL_INCLUDEDIR", "include")):
+            directory = cache.get(cache_key, default)
+            values[key] = directory if directory.startswith("/") else "${prefix}/" + _relative(directory)
+        data = evidence.resolver.read(template_ref)
+        for key, value in values.items():
+            data = data.replace(("@" + key + "@").encode(), value.encode())
+        _require(not re.search(rb"@[A-Za-z_0-9]+@", data)
+                 and evidence.read(binary + "/liblz4.pc") == data,
+                 "LZ4 pkg-config generated template bytes differ")
+        files[binary + "/liblz4.pc"] = [*common, template_ref, header_ref]
+
+    if (re.search(r"foreach\(f\s+lz4cat\s+unlz4\)", text)
+            and text.count('file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${f}.1" ".so man1/lz4.1\\n")') == 1):
+        for name in ("lz4cat.1", "unlz4.1"):
+            if name in rows:
+                _require(evidence.read(binary + "/" + name) == b".so man1/lz4.1\n",
+                         "LZ4 source-declared manpage alias bytes differ")
+                files[binary + "/" + name] = common
+
+    source_links = (re.search(r"foreach\(cli_tool\s+IN\s+ITEMS\s+lz4cat\s+unlz4\)", text)
+                    and re.search(r'add_custom_target\("create_\$\{cli_tool\}_symlink"\s+ALL\s+'
+                                  r'COMMAND\s+\$\{CMAKE_COMMAND\}\s+-E\s+create_symlink\s+'
+                                  r'\$<TARGET_FILE_NAME:lz4cli>\s+\$\{cli_tool\}', text))
+    if source_links:
+        blocks = _ninja_blocks(evidence.resolver.read(graph_ref))
+        executables = [block for block in blocks if "_EXECUTABLE_LINKER__" in block["rule"]
+                       and block["outputs"] == ["lz4"]]
+        for name in ("lz4cat", "unlz4"):
+            if name not in rows:
+                continue
+            _require(rows[name] == {"relative": name, "type": "symlink", "target": "lz4"}
+                     and len(executables) == 1, "LZ4 source-owned CLI symlink target differs")
+            commands = [block["fields"].get("COMMAND") for block in blocks
+                        if block["rule"] == "CUSTOM_COMMAND"
+                        and block["outputs"] == ["CMakeFiles/create_" + name + "_symlink"]]
+            _require(len(commands) == 1 and isinstance(commands[0], str),
+                     "LZ4 CLI symlink has no unique captured source command")
+            directory, command = _command_tokens(commands[0])
+            _require(directory == binary and command == [evidence.tools["cmake"]["path"],
+                     "-E", "create_symlink", "lz4", name], "LZ4 source-owned CLI symlink command differs")
+            executable = evidence.reference(binary + "/lz4")
+            links.append({"rule": "lz4-source-symlink-v1", "path": binary + "/" + name, "target": "lz4",
+                          "inputs": _unique_references([*common, graph_ref, executable, evidence.tools["cmake"]]),
+                          "command_record": graph_ref, "command": command})
+    return files, links
+
+
 def _cmake_project(name, layout, original, configuration, evidence, toolchain, version, captured):
     source, binary = layout["source"], layout["binary"]
     entrypoint = posixpath.relpath(configuration["source_entrypoint"]["path"], source)
@@ -1342,6 +1488,9 @@ def _cmake_project(name, layout, original, configuration, evidence, toolchain, v
              "ExternalProject actual cache source/binary ownership differs")
     exports = (_lz4_cmake_export_outputs(source, binary, original, entrypoint, cache, evidence)
                if name == "lz4" else {})
+    metadata, symlinks = (_lz4_metadata_outputs(layout, original, entrypoint, cache, version, graph,
+                                               evidence, build_files) if name == "lz4" else ({}, []))
+    qualified_links = {row["path"] for row in symlinks}
     cmake_root = cache.get("CMAKE_ROOT")
     if cmake_root:
         for relative in ("CMakeCCompiler.cmake.in", "CMakeCXXCompiler.cmake.in", "CMakeSystem.cmake.in",
@@ -1357,7 +1506,8 @@ def _cmake_project(name, layout, original, configuration, evidence, toolchain, v
         if row["type"] == "directory":
             continue
         if row["type"] == "symlink":
-            _require(binary == source and row["relative"] in original,
+            _require((binary == source and row["relative"] in original)
+                     or binary + "/" + row["relative"] in qualified_links,
                      "unqualified ExternalProject generated build symlink")
             continue
         path = binary + "/" + row["relative"]
@@ -1365,7 +1515,10 @@ def _cmake_project(name, layout, original, configuration, evidence, toolchain, v
             continue
         if path in represented:
             continue
-        if path in declared:
+        if path in metadata:
+            generated.append(_generated_output("lz4-source-metadata-v1", path,
+                                               [*inputs, *metadata[path]], command_record, evidence))
+        elif path in declared:
             generated.append(_generated_output("cmake-configure-file-v1", path,
                                                [*inputs, *declared[path]], command_record, evidence,
                                                original=original.get(row["relative"])))
@@ -1395,7 +1548,7 @@ def _cmake_project(name, layout, original, configuration, evidence, toolchain, v
             _require(row["relative"] in known_parents or row["relative"] in qualified_directories
                      or (binary == source and original.get(row["relative"], {}).get("type") == "directory"),
                      "unqualified ExternalProject generated build directory")
-    return generated, objects, archives, build_files, qualified_directories
+    return generated, objects, archives, build_files, qualified_directories, symlinks
 
 
 def _command_tokens(command):
@@ -1566,14 +1719,14 @@ def _external_project(name, layout, manifest, selected, compile_info, evidence, 
     configuration = _ep_configuration(name, layout, archive_ref, evidence, cmake_entrypoint=entrypoint)
     if name == "jemalloc":
         generated, objects, archives, _ = _jemalloc_project(layout, original, configuration, evidence, toolchain)
-        build_files, directories = None, set()
+        build_files, directories, symlinks = None, set(), []
     elif name in {"substrait", "orc_format"}:
         _require(configuration["configure_command"] == [], "download-only ExternalProject unexpectedly configures code")
         generated, objects, archives = _proto_project(name, layout, original, evidence, toolchain,
                                                      selected, work, arrow, compile_info)
-        build_files, directories = None, set()
+        build_files, directories, symlinks = None, set(), []
     else:
-        generated, objects, archives, build_files, directories = _cmake_project(
+        generated, objects, archives, build_files, directories, symlinks = _cmake_project(
             name, layout, original, configuration, evidence, toolchain, version, captured)
     if name == "jemalloc":
         # Installation copies are checked byte-for-byte against their source,
@@ -1609,6 +1762,8 @@ def _external_project(name, layout, manifest, selected, compile_info, evidence, 
     if build_files is not None:
         result["build_root"] = layout["binary"]
         result["build_files"] = build_files
+    if symlinks:
+        result["generated_symlinks"] = symlinks
     return result
 
 

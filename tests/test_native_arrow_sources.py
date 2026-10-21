@@ -1441,3 +1441,160 @@ def test_source_owned_cmake_exports_reject_unqualified_names_configurations_and_
     use_source_owned_cmake_exports(case, verifier, monkeypatch, change=change)
     with pytest.raises(ValueError, match="unqualified|export|Export|install|source|configuration"):
         case.capture(verifier)
+
+
+def use_remaining_source_owned_lz4_metadata(case, verifier, monkeypatch, *, change=None):
+    project, _, _, _ = use_source_owned_cmake_exports(case, verifier, monkeypatch)
+    old = project["archive"]
+    with tarfile.open(old["path"]) as archive:
+        contents = {member.name.split("/", 1)[1]: archive.extractfile(member).read()
+                    for member in archive.getmembers() if member.isfile()}
+    cmake = "build/cmake/CMakeLists.txt"
+    contents[cmake] += (
+        b'set(LZ4_TOP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")\n'
+        b'set(LZ4_LIB_SOURCE_DIR "${LZ4_TOP_SOURCE_DIR}/lib")\n'
+        + (b'include(CPack)\n' if change != "missing_cpack_include" else b'')
+        + b'configure_package_config_file("${CMAKE_CURRENT_LIST_DIR}/lz4Config.cmake.in" '
+        b'"${CMAKE_CURRENT_BINARY_DIR}/lz4Config.cmake" INSTALL_DESTINATION ${LZ4_PKG_INSTALLDIR})\n'
+        b'configure_file(${LZ4_LIB_SOURCE_DIR}/liblz4.pc.in liblz4.pc @ONLY)\n'
+        b'foreach(cli_tool IN ITEMS lz4cat unlz4)\n'
+        b'  add_custom_target("create_${cli_tool}_symlink" ALL\n'
+        b'    COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE_NAME:lz4cli> ${cli_tool}\n'
+        b'    COMMENT "Creating symlink for ${cli_tool}" VERBATIM)\nendforeach()\n'
+        b'foreach(f lz4cat unlz4)\n'
+        b'  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${f}.1" ".so man1/lz4.1\\n")\nendforeach()\n')
+    contents["README.md"] = b"LZ4 project description\n"
+    contents["LICENSE"] = b"LZ4 source license\n"
+    contents["lib/lz4.h"] = (b"#define LZ4_VERSION_MAJOR 1\n#define LZ4_VERSION_MINOR 10\n"
+                              b"#define LZ4_VERSION_RELEASE 0\n")
+    contents["lib/liblz4.pc.in"] = (b"prefix=@PREFIX@\nlibdir=@LIBDIR@\nincludedir=@INCLUDEDIR@\n"
+                                    b"Version: @VERSION@\nLibs: -L${libdir} -llz4\n")
+    contents["build/cmake/lz4Config.cmake.in"] = (
+        b'@PACKAGE_INIT@\ninclude("${CMAKE_CURRENT_LIST_DIR}/lz4Targets.cmake")\n')
+    archive = case.bundle(Path(old["path"]), project["source"], contents)
+    project["archive"] = archive
+    case.archives = [{**row, "sha256": archive["sha256"]} if row["path"] == archive["path"] else row
+                     for row in case.archives]
+    monkeypatch.setitem(verifier.EP_ARCHIVE_SHA256, "lz4", archive["sha256"])
+    owner = case.cpp / "_deps/orc-src/cmake_modules/ThirdpartyToolchain.cmake"
+    for path in (Path(project["urlinfo"]["path"]), owner,
+                 case.arrow / "cpp/cmake_modules/ThirdpartyToolchain.cmake",
+                 case.arrow / "cpp/thirdparty/versions.txt"):
+        path.write_text(path.read_text().replace(old["sha256"], archive["sha256"]))
+    cmake_root = case.root / "cmake-data"
+    module_bytes = {
+        "Modules/CPack.cmake": (
+            b'set(cpack_input_file "${CMAKE_ROOT}/Templates/CPackConfig.cmake.in")\n'
+            b'set(cpack_source_input_file "${CMAKE_ROOT}/Templates/CPackConfig.cmake.in")\n'
+            b'_cpack_set_default(CPACK_OUTPUT_CONFIG_FILE "${CMAKE_BINARY_DIR}/CPackConfig.cmake")\n'
+            b'_cpack_set_default(CPACK_SOURCE_OUTPUT_CONFIG_FILE "${CMAKE_BINARY_DIR}/CPackSourceConfig.cmake")\n'
+            b'configure_file("${cpack_input_file}" "${CPACK_OUTPUT_CONFIG_FILE}" @ONLY)\n'
+            b'configure_file("${cpack_source_input_file}" "${CPACK_SOURCE_OUTPUT_CONFIG_FILE}" @ONLY)\n'),
+        "Templates/CPackConfig.cmake.in": (
+            b"# CPack generated configuration\n@_CPACK_OTHER_VARIABLES_@\n"
+            b'set(CPACK_PROPERTIES_FILE "@CMAKE_BINARY_DIR@/CPackProperties.cmake")\n'),
+        "Modules/CMakePackageConfigHelpers.cmake": b"# pinned package-config generator\n",
+    }
+    module_refs = {name: case.put(cmake_root / name, data) for name, data in module_bytes.items()}
+    monkeypatch.setattr(verifier, "CMAKE_LZ4_METADATA_SHA256", {
+        "4.2.3": {name: row["sha256"] for name, row in module_refs.items()}}, raising=False)
+    cache = project["binary"] / "CMakeCache.txt"
+    case.put(cache, cache.read_bytes() + ("CMAKE_ROOT:INTERNAL=" + str(cmake_root)
+                                        + "\nCMAKE_INSTALL_INCLUDEDIR:PATH=include\n").encode())
+    outputs = {}
+    for name in ("CPackConfig.cmake", "CPackSourceConfig.cmake"):
+        variables = {
+            "CPACK_BUILD_SOURCE_DIRS": str(project["source"] / "build/cmake") + ";" + str(project["binary"]),
+            "CPACK_OUTPUT_CONFIG_FILE": str(project["binary"] / "CPackConfig.cmake"),
+            "CPACK_SOURCE_OUTPUT_CONFIG_FILE": str(project["binary"] / "CPackSourceConfig.cmake"),
+            "CPACK_INSTALL_PREFIX": str(project["static"].parent.parent),
+        }
+        if change == "rebound_cpack_output":
+            variables["CPACK_OUTPUT_CONFIG_FILE"] = str(case.root / "foreign-config.cmake")
+        body = "\n".join('set(' + key + ' "' + value + '")' for key, value in variables.items()).encode()
+        data = module_bytes["Templates/CPackConfig.cmake.in"].replace(
+            b"@_CPACK_OTHER_VARIABLES_@", body).replace(b"@CMAKE_BINARY_DIR@", str(project["binary"]).encode())
+        outputs[name] = case.put(project["binary"] / name, data)
+    template = contents["lib/liblz4.pc.in"]
+    for key, value in {"PREFIX": str(project["static"].parent.parent), "LIBDIR": "${prefix}/lib",
+                       "INCLUDEDIR": "${prefix}/include", "VERSION": "1.10.0"}.items():
+        template = template.replace(("@" + key + "@").encode(), value.encode())
+    outputs["liblz4.pc"] = case.put(project["binary"] / "liblz4.pc", template)
+    outputs["lz4Config.cmake"] = case.put(project["binary"] / "lz4Config.cmake", (
+        b"####### Expanded from @PACKAGE_INIT@ by configure_package_config_file() #######\n"
+        b"# configured package prefix metadata\n"
+        + contents["build/cmake/lz4Config.cmake.in"].replace(b"@PACKAGE_INIT@\n", b"")))
+    for name in ("lz4cat.1", "unlz4.1"):
+        outputs[name] = case.put(project["binary"] / name, b".so man1/lz4.1\n")
+    _, cli_object, graph_ref, _ = use_cmake_optional_ninja_compiler_fields(case)
+    executable = case.put(project["binary"] / "lz4", b"\x7fELF synthetic built CLI\n")
+    graph = Path(graph_ref["path"]).read_text()
+    graph += ("build lz4: C_EXECUTABLE_LINKER__lz4cli " + str(cli_object.relative_to(project["binary"])) + "\n")
+    for name in ("lz4cat", "unlz4"):
+        graph += ("build CMakeFiles/create_" + name + "_symlink: CUSTOM_COMMAND || lz4\n"
+                  "  COMMAND = cd " + str(project["binary"]) + " && " + case.toolchain["cmake"]["path"]
+                  + " -E create_symlink " + ("foreign" if change == "foreign_symlink_command" else "lz4")
+                  + " " + name + "\n")
+        (project["binary"] / name).symlink_to("wrong" if change == "wrong_link_target" else "lz4")
+    graph_ref = case.put(Path(graph_ref["path"]), graph.encode())
+    if change == "unknown_name":
+        case.put(project["binary"] / "CPackUnownedConfig.cmake", b"# unqualified packaging output\n")
+    elif change == "foreign_template":
+        case.put(cmake_root / "Templates/CPackConfig.cmake.in", b"# foreign CPack template\n")
+    elif change == "foreign_module":
+        case.put(cmake_root / "Modules/CPack.cmake", b"# foreign CPack module\n")
+    elif change == "pkg_bytes":
+        case.put(project["binary"] / "liblz4.pc", b"wrong configured package metadata\n")
+    elif change == "template_bytes":
+        case.put(project["source"] / "lib/liblz4.pc.in", b"unqualified original template mutation\n")
+    elif change == "man_bytes":
+        case.put(project["binary"] / "lz4cat.1", b"wrong manpage alias\n")
+    refresh_lz4_owner(case, owner)
+    case.raw["toolchain_versions"] = {"cmake": "cmake version 4.2.3"}
+    case.raw_ref = case.json(case.work / "build-receipt.json", case.raw)
+    return project, outputs, module_refs, record(cache), graph_ref, executable
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["original-files", "retained-forbid-history"])
+def test_remaining_lz4_metadata_proves_all_eight_original_module_template_and_graph_outputs(
+        verifier, completed_source_case, tmp_path, monkeypatch, retained):
+    case = completed_source_case
+    project, outputs, modules, cache, graph, executable = use_remaining_source_owned_lz4_metadata(
+        case, verifier, monkeypatch)
+    attestation = case.publish(verifier, tmp_path / "remaining-lz4-metadata-attestation.json")
+    initial = verifier.verify_completed_attestation(attestation["path"], attestation["sha256"])
+    proof = initial["attestation"]["external_projects"]["lz4"]
+    generated = {row["output"]["path"]: row for row in proof["generated_outputs"]}
+    original_cmake = record(project["source"] / "build/cmake/CMakeLists.txt")
+    assert len(outputs) == 6
+    for name, output in outputs.items():
+        row = generated[output["path"]]
+        assert row["rule"] == "lz4-source-metadata-v1"
+        assert original_cmake in row["inputs"] and cache in row["inputs"]
+        if name.startswith("CPack"):
+            assert modules["Modules/CPack.cmake"] in row["inputs"]
+            assert modules["Templates/CPackConfig.cmake.in"] in row["inputs"]
+        elif name == "liblz4.pc":
+            assert record(project["source"] / "lib/liblz4.pc.in") in row["inputs"]
+        elif name == "lz4Config.cmake":
+            assert record(project["source"] / "build/cmake/lz4Config.cmake.in") in row["inputs"]
+            assert modules["Modules/CMakePackageConfigHelpers.cmake"] in row["inputs"]
+    links = {row["path"]: row for row in proof["generated_symlinks"]}
+    assert set(links) == {str(project["binary"] / name) for name in ("lz4cat", "unlz4")}
+    for row in links.values():
+        assert row["rule"] == "lz4-source-symlink-v1" and row["target"] == "lz4"
+        assert original_cmake in row["inputs"] and graph in row["inputs"] and executable in row["inputs"]
+        assert row["command_record"] == graph
+    if retained:
+        replay_completed_source_only_from_copies(case, attestation, initial, verifier, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", ["unknown_name", "missing_cpack_include", "foreign_template", "foreign_module",
+                                    "rebound_cpack_output", "pkg_bytes", "template_bytes", "man_bytes",
+                                    "wrong_link_target", "foreign_symlink_command"])
+def test_remaining_lz4_metadata_rejects_foreign_names_templates_bytes_paths_and_link_targets(
+        verifier, completed_source_case, monkeypatch, change):
+    case = completed_source_case
+    use_remaining_source_owned_lz4_metadata(case, verifier, monkeypatch, change=change)
+    with pytest.raises(ValueError, match="unqualified|metadata|template|module|CPack|source|symlink|alias"):
+        case.capture(verifier)
