@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import difflib
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -35,6 +36,105 @@ def recipe():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def unordered_source_archive(tmp_path):
+    """Physical member order differs from names by more than the gzip buffer."""
+    files = {name: name.encode() + b"\n" + bytes(range(251)) * 2048
+             for name in ("z.txt", "a.txt", "nested/y.txt", "b.txt")}
+    archive = tmp_path / "unordered.tar.gz"
+    packed = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=packed, mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w") as bundle:
+            for relative, data in files.items():
+                member = tarfile.TarInfo("source/" + relative)
+                member.size = len(data)
+                bundle.addfile(member, io.BytesIO(data))
+            member = tarfile.TarInfo("source/link.txt")
+            member.type, member.linkname = tarfile.SYMTYPE, "a.txt"
+            bundle.addfile(member)
+            member = tarfile.TarInfo("source/empty")
+            member.type = tarfile.DIRTYPE
+            bundle.addfile(member)
+    archive.write_bytes(packed.getvalue())
+    source = tmp_path / "source"
+    for relative, data in files.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    (source / "empty").mkdir()
+    (source / "link.txt").symlink_to("a.txt")
+    replacements = {"a.txt": b"reviewed transformation\n"}
+    generated = {"000-generated.py": b"frozen builder template\n"}
+    for relative, data in (replacements | generated).items():
+        (source / relative).write_bytes(data)
+    return archive, source, files, replacements, generated
+
+
+def test_archive_verification_reads_compressed_members_forward_and_keeps_canonical_evidence(
+        recipe, unordered_source_archive, monkeypatch):
+    archive, source, original, replacements, generated = unordered_source_archive
+    with tarfile.open(archive, "r:gz") as bundle:
+        bundle.getmembers()
+        # Count decompressor work after the required complete metadata scan.
+        reader = bundle.fileobj._buffer.raw
+        original_seek, original_rewind = reader.seek, reader._rewind
+        seeks, rewinds = [], []
+
+        def seek(offset, whence=io.SEEK_SET):
+            assert whence == io.SEEK_SET
+            seeks.append(offset)
+            return original_seek(offset, whence)
+
+        def rewind():
+            rewinds.append(reader.tell())
+            return original_rewind()
+
+        monkeypatch.setattr(reader, "seek", seek)
+        monkeypatch.setattr(reader, "_rewind", rewind)
+
+        observed = recipe.verify_archive_tree(bundle, source, replacements, generated)
+
+    assert observed == [
+        {"relative": "a.txt", "type": "file", "sha256": digest(replacements["a.txt"])},
+        {"relative": "b.txt", "type": "file", "sha256": digest(original["b.txt"])},
+        {"relative": "link.txt", "type": "symlink", "target": "a.txt"},
+        {"relative": "nested/y.txt", "type": "file", "sha256": digest(original["nested/y.txt"])},
+        {"relative": "z.txt", "type": "file", "sha256": digest(original["z.txt"])},
+        {"relative": "000-generated.py", "type": "generated", "sha256": digest(generated["000-generated.py"])},
+    ]
+    assert seeks
+    assert len(rewinds) <= 1, "member verification restarted gzip decompression"
+    assert seeks == sorted(seeks), "member data was requested out of physical archive order"
+
+
+@pytest.mark.parametrize("change", ["file", "replacement", "generated", "symlink", "directory", "extra", "missing", "file_symlink"])
+def test_physical_archive_traversal_preserves_every_source_guard(recipe, unordered_source_archive, change):
+    archive, source, original, replacements, generated = unordered_source_archive
+    if change == "file":
+        (source / "z.txt").write_bytes(b"changed regular source")
+    elif change == "replacement":
+        (source / "a.txt").write_bytes(original["a.txt"])
+    elif change == "generated":
+        (source / "000-generated.py").write_bytes(b"unapproved generated source")
+    elif change == "symlink":
+        (source / "link.txt").unlink()
+        (source / "link.txt").symlink_to("b.txt")
+    elif change == "directory":
+        (source / "empty").rmdir()
+        (source / "empty").write_bytes(b"replaced directory")
+    elif change == "extra":
+        (source / "extra.txt").write_bytes(b"unlisted source")
+    elif change == "missing":
+        (source / "z.txt").unlink()
+    else:
+        (source / "z.txt").unlink()
+        (source / "z.txt").symlink_to("b.txt")
+
+    with tarfile.open(archive, "r:gz") as bundle:
+        with pytest.raises(ValueError, match="source|layout|generated"):
+            recipe.verify_archive_tree(bundle, source, replacements, generated)
 
 
 @pytest.fixture

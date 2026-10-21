@@ -175,7 +175,8 @@ def verify_archive_tree(bundle: tarfile.TarFile, source: Path, replacements: dic
     if set(generated_files) & set(expected) or set(actual) != set(expected) | set(generated_files):
         raise ValueError("source layout changed since extraction")
     evidence = []
-    for relative, member in sorted(expected.items()):
+    # Insertion order follows tar members, keeping compressed data reads forward.
+    for relative, member in expected.items():
         path = actual[relative]
         if member is not None and member.issym():
             if not path.is_symlink() or os.readlink(path) != member.linkname:
@@ -191,6 +192,8 @@ def verify_archive_tree(bundle: tarfile.TarFile, source: Path, replacements: dic
             if path.is_symlink() or not path.is_file() or sha256(path) != hashlib.sha256(expected_bytes).hexdigest():
                 raise ValueError(f"source changed since extraction: {relative}")
             evidence.append({"relative": relative, "type": "file", "sha256": sha256(path)})
+    # Preserve canonical archive evidence and the existing generated-row suffix.
+    evidence.sort(key=lambda row: row["relative"])
     for relative, data in sorted(generated_files.items()):
         path = actual[relative]
         if path.is_symlink() or not path.is_file() or path.read_bytes() != data:

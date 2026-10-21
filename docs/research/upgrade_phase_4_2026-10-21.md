@@ -615,3 +615,38 @@ change with no blockers. Its retained review SHA-256 is
 The signed-by-agent field identifies the reviewer; it is not a cryptographic
 signature. A separate full dependency-capture probe remains distinct from this
 source/cache review.
+
+
+## Task 4.1 correction: compressed source verification
+
+The first complete configured-provider probe timed out after 300.215 seconds,
+with supervisor/runner exit 124, no report and confirmed descendant cleanup.
+Its failed receipt remains retained. The selected Boost archive contains
+62,227 regular members; filename sorting creates 30,878 backwards data-offset
+jumps. Primary CPython 3.14.7 source confirms these seeks restart gzip
+decompression readers and replay preceding data.
+
+Both new recipes now read members in physical archive order, then sort archive
+evidence before appending generated rows in their existing order. All layout,
+type, symlink, content, transformation and generated-template checks remain.
+The original Arrow 25 recipe, helper and compute patches are unchanged.
+Root reproduced two repeated-rewind failures while all 16 malformed-source
+cases passed. The complete corrected suites passed 250 tests in 2.88 seconds;
+receipt `phase4/arrow-archive-order-focused-1/execution.json` has SHA-256
+`9adaf25b23ca19df891951ad4238e16284f9cff60538cad80b01ee898e029afe`.
+
+The real read-only configured-provider probe then completed in 84.383 seconds,
+with supervisor/runner exit 0 and no interruption. It captured 469 targets,
+18 native inputs, 12 static archives and complete selected source evidence,
+including 62,228 Boost file/symlink rows. Its receipt is
+`phase4/arrow-zlib-actual-selection-probe-execution-2/execution.json`, SHA-256
+`d9aaea3c58c51b45e5eac4d6410a4f072751e2942e33cb05d13c40697ef2c767`.
+This probe reads the preserved failed generation 3. It establishes the corrected
+capture behavior, not a successful new build, wheel or runtime admission.
+
+Independent sequential SPEC/QUALITY review approved the exact four-file change
+with no blockers; review SHA-256
+`848d4d672e9754e2c9fd0089e29fd671482a3c9b42cddeaea188a84c38bb1a3a`.
+The verifier still scans all metadata, permits one initial decompressor rewind
+and retains its existing per-file memory/hash behavior. This is not a constant
+memory or universal elapsed-time claim.
