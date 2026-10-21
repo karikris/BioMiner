@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -1739,3 +1740,153 @@ def test_reviewed_sdk_sources_cannot_resolve_to_host_providers(recipe, tmp_path,
     cache.write_text("\n".join(f"{key}:STRING={value}" for key, value in entries.items()) + "\n")
     with pytest.raises(ValueError, match=package + "_SOURCE"):
         recipe.verify_cache(cache, context, stage="cpp")
+
+
+RAPIDJSON_LEGACY_TARGET = '''  add_library(RapidJSON INTERFACE IMPORTED)
+  target_include_directories(RapidJSON INTERFACE "${rapidjson_SOURCE_DIR}/include")
+  add_dependencies(RapidJSON rapidjson)'''
+
+# Exact Arrow26 wrapper shape, independent of the recipe transformation table.
+RAPIDJSON_WRAPPER = '''function(build_rapidjson)
+  list(APPEND CMAKE_MESSAGE_INDENT "RapidJSON: ")
+  message(STATUS "Building from source")
+
+  fetchcontent_declare(rapidjson
+                       ${FC_DECLARE_COMMON_OPTIONS} OVERRIDE_FIND_PACKAGE
+                       URL ${RAPIDJSON_SOURCE_URL}
+                       URL_HASH "SHA256=${ARROW_RAPIDJSON_BUILD_SHA256_CHECKSUM}")
+  prepare_fetchcontent()
+  set(CCACHE_FOUND OFF)
+  set(LIB_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}/lib")
+  set(RAPIDJSON_BUILD_DOC OFF)
+  set(RAPIDJSON_BUILD_EXAMPLES OFF)
+  set(RAPIDJSON_BUILD_TESTS OFF)
+  fetchcontent_makeavailable(rapidjson)
+  if(CMAKE_VERSION VERSION_LESS 3.28)
+    set_property(DIRECTORY ${rapidjson_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
+  endif()
+
+''' + RAPIDJSON_LEGACY_TARGET + '''
+
+  set(RAPIDJSON_VENDORED
+      TRUE
+      PARENT_SCOPE)
+  list(POP_BACK CMAKE_MESSAGE_INDENT)
+endfunction()
+'''
+
+
+@pytest.fixture
+def rapidjson_source_inputs(recipe, source_inputs, monkeypatch):
+    archive, work, original = source_inputs
+    files = dict(original)
+    key = "cpp/cmake_modules/ThirdpartyToolchain.cmake"
+    # source_inputs includes each registered transform anchor. Replace the
+    # independent old RapidJSON fragment once if a future recipe adds it.
+    toolchain = files[key].decode().replace(RAPIDJSON_LEGACY_TARGET + "\n", "")
+    files[key] = (toolchain + "\n" + RAPIDJSON_WRAPPER).encode()
+    archive_at(archive, f"arrow-{recipe.ARROW_COMMIT}", files,
+               {"python/NOTICE.txt": "../NOTICE.txt"})
+    monkeypatch.setattr(recipe, "ARROW_ARCHIVE_SHA256", digest(archive.read_bytes()))
+    return archive, work, files
+
+
+@pytest.mark.parametrize("upstream_target", [True, False], ids=["upstream-export", "legacy-fallback"])
+def test_rapidjson_transformed_wrapper_preserves_target_and_effective_source_includes(
+        recipe, rapidjson_source_inputs, tmp_path, upstream_target):
+    cmake = shutil.which("cmake")
+    assert cmake, "CMake is required for this compiler-free target configuration test"
+    archive, work, original = rapidjson_source_inputs
+    source, evidence = recipe.prepare_source(archive, work, resume=False)
+    key = "cpp/cmake_modules/ThirdpartyToolchain.cmake"
+    toolchain = (source / key).read_text()
+    wrapper = "function(build_rapidjson)\n" + toolchain.split(
+        "function(build_rapidjson)\n", 1)[1].split("endfunction()", 1)[0] + "endfunction()\n"
+    cmake_source = tmp_path / "cmake-source"
+    vendor = cmake_source / "rapidjson-source"
+    (vendor / "include/rapidjson").mkdir(parents=True)
+    # This is the exact target/export behavior of pinned RapidJSON24b5. It has
+    # no BUILD_INTERFACE include of its own; directory includes are not an
+    # interface for Arrow's parent-directory consumers.
+    (vendor / "CMakeLists.txt").write_text('''add_library(RapidJSON INTERFACE)
+target_include_directories(RapidJSON INTERFACE $<INSTALL_INTERFACE:include>)
+set_property(TARGET RapidJSON PROPERTY BIOMINER_UPSTREAM_MARKER "preserved")
+install(TARGETS RapidJSON EXPORT RapidJSON-targets)
+install(EXPORT RapidJSON-targets DESTINATION lib/cmake/RapidJSON)
+''')
+    (cmake_source / "wrapper.cmake").write_text(wrapper)
+    (cmake_source / "CMakeLists.txt").write_text('''cmake_minimum_required(VERSION 3.16)
+project(rapidjson_target_compatibility LANGUAGES NONE)
+set(rapidjson_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rapidjson-source")
+function(fetchcontent_declare)
+endfunction()
+function(prepare_fetchcontent)
+endfunction()
+function(fetchcontent_makeavailable name)
+  add_custom_target(rapidjson)
+  if(UPSTREAM_TARGET)
+    add_subdirectory("${rapidjson_SOURCE_DIR}")
+  endif()
+endfunction()
+add_library(unrelated INTERFACE)
+set_property(TARGET unrelated PROPERTY BIOMINER_UNRELATED_MARKER "unchanged")
+include(wrapper.cmake)
+build_rapidjson()
+if(NOT RAPIDJSON_VENDORED)
+  message(FATAL_ERROR "lost bundled selection")
+endif()
+get_target_property(kind RapidJSON TYPE)
+get_target_property(imported RapidJSON IMPORTED)
+get_target_property(marker RapidJSON BIOMINER_UPSTREAM_MARKER)
+get_target_property(includes RapidJSON INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(dependencies RapidJSON MANUALLY_ADDED_DEPENDENCIES)
+get_target_property(unrelated_marker unrelated BIOMINER_UNRELATED_MARKER)
+file(WRITE "${CMAKE_BINARY_DIR}/target-state.txt"
+  "${kind}\\n${imported}\\n${marker}\\n${includes}\\n${dependencies}\\n${unrelated_marker}\\n")
+add_library(arrow_consumer INTERFACE)
+target_link_libraries(arrow_consumer INTERFACE RapidJSON)
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/consumer-includes.txt"
+  CONTENT "$<TARGET_PROPERTY:arrow_consumer,INTERFACE_INCLUDE_DIRECTORIES>")
+''')
+    build = tmp_path / "cmake-build"
+    completed = subprocess.run([cmake, "-S", str(cmake_source), "-B", str(build),
+                                "-DUPSTREAM_TARGET=" + ("ON" if upstream_target else "OFF")],
+                               capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    kind, imported, marker, includes, dependencies, unrelated = (
+        build / "target-state.txt").read_text().splitlines()
+    assert kind == "INTERFACE_LIBRARY"
+    assert imported == ("FALSE" if upstream_target else "TRUE")
+    assert marker == ("preserved" if upstream_target else "marker-NOTFOUND")
+    if upstream_target:
+        assert "$<INSTALL_INTERFACE:include>" in includes.split(";")
+    assert dependencies.split(";") == ["rapidjson"]
+    assert unrelated == "unchanged"
+    effective = [item for item in (build / "consumer-includes.txt").read_text().split(";") if item]
+    assert effective == [str(vendor / "include")]
+    if upstream_target:
+        exports = list(build.rglob("RapidJSON-targets.cmake"))
+        assert len(exports) == 1
+        assert str(vendor) not in exports[0].read_text()
+    assert source.is_relative_to(work)
+    assert (source / "NOTICE.txt").read_bytes() == original["NOTICE.txt"]
+    assert evidence["integrated_sources"] == [
+        {"relative": name, "sha256": value} for name, value in sorted(recipe.INTEGRATED_SOURCES.items())]
+    assert recipe.prepare_source(archive, work, resume=True) == (source, evidence)
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate"])
+def test_rapidjson_transform_requires_exact_unique_target_fragment(
+        recipe, rapidjson_source_inputs, monkeypatch, change):
+    archive, work, original = rapidjson_source_inputs
+    files = dict(original)
+    key = "cpp/cmake_modules/ThirdpartyToolchain.cmake"
+    replacement = ("  # reviewed target fragment absent" if change == "missing"
+                   else RAPIDJSON_LEGACY_TARGET + "\n" + RAPIDJSON_LEGACY_TARGET)
+    files[key] = files[key].replace(RAPIDJSON_LEGACY_TARGET.encode(), replacement.encode())
+    archive_at(archive, f"arrow-{recipe.ARROW_COMMIT}", files,
+               {"python/NOTICE.txt": "../NOTICE.txt"})
+    monkeypatch.setattr(recipe, "ARROW_ARCHIVE_SHA256", digest(archive.read_bytes()))
+    with pytest.raises(ValueError, match="anchor"):
+        recipe.prepare_source(archive, work, resume=False)
+    assert not work.exists()
