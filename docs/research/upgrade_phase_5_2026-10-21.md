@@ -292,3 +292,46 @@ Independent actual-view closing review approved (`9dc4c4f3…`), explicitly
 separating unchanged raw measurements from the derived representation. GitHits
 also confirmed Python 3.14.7's exclusive-create output mode maps to
 `O_EXCL | O_CREAT` in `python/cpython@823f0323`, `Modules/_io/fileio.c`.
+
+
+## Phase-5 candidate publication and summary boundary
+
+All four compatibility checks passed and the unchanged finite validator accepted
+the complete evidence. The eight chronological task commits are:
+
+| Task | Commit |
+|---|---|
+| 5.1 matrix | `9dac033` |
+| 5.3a resource preflight | `ee33b52` |
+| 5.4 phase-6 preparation | `12a7e53` |
+| 5.2a live diagnostics / preserved failure | `ad33fc4` |
+| 5.3b resource measurements | `d3a7d73` |
+| 5.5 pending-live checkpoint | `8d31012` |
+| 5.2b successful live qualification | `21b84d4` |
+| 5.3c exact resource metadata view | `84c7aef` |
+
+Tested commit is `84c7aefc50c51d8bfb304a6be987e84e9c61010e`.
+The final manifest has SHA-256
+`f2aa60d0802e032eab46c1c13f830ba9286d369d8d4d03b9a415f698dfe28fbb`;
+its reviewed core digest is
+`50ccfaf77bf5fea9062cd7b0f09b061c298acf2c64d6debc1f4f563c68a07eca`.
+The original three subject identities and 358 committed source hashes are
+unchanged from the actually pushed phase-4 boundary. Two stale preparation
+state strings were corrected in an immutable successor before approval; the
+old ready1 digest was never approved.
+
+Independent final SPEC and QUALITY reports are `091fd687…` and `11502398…`;
+approved wrappers are `3a5568f2…` and `b2afa2a7…`. Formal validation passed
+(exit 0/0, `bbc0edd2…`); publication revalidated the evidence and passed
+(exit 0/0, `d89f6076…`). The create-only compatibility candidate receipt is
+`/home/toffe/.local/state/biominer/upgrades/20261021/phase-5-compatibility-candidate.json`,
+SHA-256 `9694d828578cbcaa0c50b2f7c1e0895135f47e1e18b0c6d789c1990054263318`.
+
+This distinct documentation/provenance summary is the required next commit.
+After its normal push and remote-SHA verification, root must finalize the pushed
+receipt and run the fresh continuation into phase 6. No Git commit may intervene
+between that summary boundary and the first phase-6 execution. Push and next-
+phase authorization are recorded by their actual receipts, not inferred here.
+Phase-6 synthetic canary/recovery remain unrun at this publication checkpoint.
+Every security/admission/registration/production-migration flag remains closed;
+this is compatibility qualification only. Unrelated scientific work is preserved.
