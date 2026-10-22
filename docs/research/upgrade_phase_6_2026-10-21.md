@@ -180,3 +180,49 @@ and exact canonical path/case bindings. The original failed extractor, raw
 summaries, producer, context and six executions remain unchanged.
 
 Independent actual-result review `834b2247a20f99e98a09f11ddb8a7d946f7026a1ad0baea13231270b1d8e9068` approves task 6.2 with no blockers. Separate physical-resolution preservation review `faa48a90…` confirms the exact limited disposition survives the derived records. Final phase-manifest joins, reviews and publication remain task 6.3.
+
+## Task 6.3: final compatibility bindings and phase handoff
+
+Starting main SHA: `0abbaa55ca4472f6663dbc47892be2063aa0d4b0`.
+The final source map preserves all original 358 entries and adds ten existing
+probe/test/helper files. Their bytes match the frozen application source,
+its source commit and committed main; no application code changes accompany
+these additions. Addendum `bdc01708…` preserves the earlier six-file addendum
+`8c783548…` and explicitly adds the four fixture helpers used by the probe.
+Both check records bind all 13 relevant source files plus `pyproject.toml`.
+The original three phase-five subjects remain identical; the additional
+recovery application is explicitly the complete Arrow25 candidate with its
+own wheel, source/build and installation identities.
+
+Root ran the unchanged `44ff68a2…` canary/recovery semantic reader against
+both actual results. Each record carries the original six public executions,
+the successful original outer execution and separate derivation execution;
+each also binds four actual before/after integrity records and 14 frozen source
+files. All 368 source hashes match committed task bytes. Actual semantic/source
+verification passed, outer/runner exit0 (`65c036d6d4dd1401845fa840c383317eb2ae2dbd7e308c7c13dceda8b21809a5`).
+The draft subject for this check is `54b07673…`; it deliberately remains a draft
+until this task commit and the final digest-bound independent phase reviews.
+
+The amended qualification scope now has passing evidence for:
+
+| Check | Verified outcome |
+|---|---|
+| Arrow25/26 native capabilities and target API | Both candidate families passed their separate phase-four proofs |
+| Polars1/2 × Arrow25/26 | Four cells, 59 cases each, no logical differences |
+| Complete source and installed application | 4,254 tests per suite and three CLI checks passed on the frozen target inputs |
+| Disposable PostgreSQL and S3 | Both passed, with verified namespace cleanup |
+| Paired resources | Twelve sequential workers, three repetitions per cell, no 15% review flags |
+| Synthetic canary and recovery | Both probes and 35 recovery cases per runtime passed; 91 final coordinator/extractor controls passed |
+
+The phase-five S3 configuration correction used the supplied bucket name rather
+than its bucket ID. Only that local setting changed; credential values were not
+reported or committed. The exact live result and configuration evidence remain
+in the phase-five report and provenance.
+
+This work qualifies the selected candidates for the agreed compatibility scope.
+Cybersecurity clearance, runtime admission/registration/activation, production
+migration and a currently safe production fallback remain excluded. All six
+corresponding flags stay false. No scientific production workload was run.
+Failed attempts, withdrawn reviews and original observations remain available.
+The final independent phase reviews, create-only publication, distinct summary
+commit, normal main push and pushed-receipt finalization follow this task.
