@@ -1,5 +1,9 @@
 # Phase 6: synthetic canary and recovery qualification
 
+All candidate compatibility checks in the amended request passed. Final reviewed
+publication evidence appears below; the task sections retain the observed
+failures and intermediate checkpoints. Production admission remains closed.
+
 The phase-5 summary was normally pushed to main as
 `12ec32a0c843713a628d59aa8c4d9a870140b3e8`; local and remote SHAs matched.
 Its actual finalized pushed receipt has SHA-256
@@ -226,3 +230,43 @@ corresponding flags stay false. No scientific production workload was run.
 Failed attempts, withdrawn reviews and original observations remain available.
 The final independent phase reviews, create-only publication, distinct summary
 commit, normal main push and pushed-receipt finalization follow this task.
+
+
+## Final reviewed publication
+
+The exact tested task commit is `0af323e2c96bea6e742b9a1d3fa4ab614a592e03`.
+All three task commits are directly on main, in order:
+
+| Task | Commit |
+|---|---|
+| 6.1 | `02beab73cad7926a76a12fb84c4a94278ced0103` |
+| 6.2 | `0abbaa55ca4472f6663dbc47892be2063aa0d4b0` |
+| 6.3 | `0af323e2c96bea6e742b9a1d3fa4ab614a592e03` |
+
+Final manifest `compatibility-phase6-concrete-1/manifest.final.1.json` has SHA-256
+`59c43fe186ccf568955bb4681ddc434c202be87dbbdd84b588e96f76b1f19d35`.
+The independently approved core binding digest is
+`179bc9f6fdc868841456f4ba2658b824f7cbe2b101000ea9e225131b446e8268`.
+Final SPEC report/wrapper hashes are `ffebbafc…` / `ae7332ef…`; final QUALITY
+report/wrapper hashes are `409dff28…` / `27a6c56f…`. Both approve the same exact
+core with no blockers. The final manifest adds only their two references to
+the reviewed ready manifest.
+
+The unchanged compatibility operator formally validated and published phase six,
+both outer/runner exit0. Execution hashes are
+`6f45f77528ae0d0ae5604caa79e6100ddef6d60a6719f023e18ab0a81826ec3d`
+and `94b102e1954fbe621c016bb68243210d7d5b0b47f29c76def01e3b85d7d951f2`.
+The create-only candidate receipt at
+`/home/toffe/.local/state/biominer/upgrades/20261021/phase-6-compatibility-candidate.json`
+has SHA-256 `6846cd7423997473de6f9e3c6b838f6a748c393f3fd5d3f1410e261b842671da`.
+All admission, registration, production and security flags remain false.
+
+This separate summary changes documentation and curated provenance only.
+Normal push and finalization follow its commit. The terminal post-push receipt
+path is `/home/toffe/.local/state/biominer/upgrades/20261021/phase-6-compatibility-pushed.json`;
+its create-only record binds the distinct summary commit and freshly observed
+remote main SHA. Finalization execution is retained under
+`compatibility-phase6-boundary-1/finalize/`. These external records avoid a
+self-referential commit hash. Phase six is the final amended compatibility phase;
+there is no phase-seven continuation. Unrelated working-tree changes remain
+unstaged, and neither contained environment was reactivated.
