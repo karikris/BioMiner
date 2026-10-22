@@ -254,3 +254,41 @@ Independent actual-result SPEC/QUALITY review approved (`5d470247…`), includin
 all 17 journal references and exact task-owner/context joins. This result proves
 ordinary disposable PostgreSQL/S3 compatibility and cleanup for these frozen
 inputs; it is not phase-level approval, production activation or admission.
+
+
+## Task 5.3c: exact resource-observation metadata view
+
+Starting main SHA: `21b84d4d773137d79b87a7500bcaf10c4d76173f`.
+The actual resource result merged two supervisor fields (`execution` and
+`launch_wall_seconds`) into each copied observation. The unchanged phase reader
+requires the copied value to equal the original observation JSON exactly. Root
+reproduced that representation rejection (`693c4cc0…`); it was not a benchmark
+or logical-data failure. Neither the original result nor the pushed phase reader
+was edited.
+
+A finite stdlib-only adapter accepts only the exact completed raw result
+`27d4c002…`. It verifies all 12 original observations, their exact two extra
+fields, successful execution/cleanup/subreaper records and matching launch
+elapsed values. The derived view retains the two supervisor fields separately,
+uses each original observation verbatim, and explicitly links the raw result,
+adapter and original measurement context/harness. Every top-level metric,
+comparison, original reference, measurement and source byte remains unchanged.
+Unknown differences, changed observations, failed/interrupted executions,
+elapsed mismatch, aliasing and output overwrite are rejected.
+
+The 22 controls first produced setup errors while the adapter was intentionally
+absent; then all 22 passed in 1.14 seconds with the controlled executor and exact
+code/test pins. Independent code review approved (`aa422eaa…`). Actual derivation
+exited 0/0 (`ed00d665…`) and created the read-only view
+`candidate-resource-observation-view-1/result.json`, SHA-256
+`81cd448af06a7a650ca5f335c79bb61f3e6f0ca99ae28c4aa7d825930778fb9f`.
+Root's actual unchanged-reader check accepted both this resource view and the
+successful live result (`46543cb4…`), after separately asserting exact original
+observations and all unchanged metrics. No benchmark or live job was rerun.
+The original `27d4c002…` result and `44ff68a2…` phase reader remain immutable.
+Final phase-level reviews, publication/push and phase-6 qualification remain.
+
+Independent actual-view closing review approved (`9dc4c4f3…`), explicitly
+separating unchanged raw measurements from the derived representation. GitHits
+also confirmed Python 3.14.7's exclusive-create output mode maps to
+`O_EXCL | O_CREAT` in `python/cpython@823f0323`, `Modules/_io/fileio.c`.
