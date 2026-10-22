@@ -22,7 +22,11 @@ interpreter (this is one shell line):
 BIOMINER_PYTHON="$PWD/.native-runtime/application-p2a26-20261022-1/env/bin/python" bash scripts/start_butterfly_keyword_enrichment.sh --local --output "$PWD/data/derived/image_species_keywords/v4" --secrets-file "$HOME/.config/agent-env/secrets.env"
 ```
 
-The launcher prints its supervisor PID and launcher log. It uses the public
+The launcher uses a transient systemd user service when available, and prints its
+unit name, supervisor PID and launcher log. This survives the launching tool's
+process cleanup. Otherwise it uses nohup for an ordinary persistent terminal;
+`BIOMINER_JOB_SUPERVISOR=systemd` or `nohup` selects the launcher explicitly.
+It uses the public
 resource supervisor with a 24-hour hard limit and 30-second shutdown grace.
 The coordinator stops between source jobs after 23.5 hours by default. Repeat
 the same command to resume after that invocation ends; an exclusive output lock

@@ -80,7 +80,8 @@ def test_background_launcher_passes_script_arguments_to_public_supervisor(tmp_pa
     )
     stub.chmod(0o700)
     environment = dict(os.environ)
-    environment.update(BIOMINER_PYTHON=str(stub), XDG_STATE_HOME=str(tmp_path / "state"))
+    environment.update(BIOMINER_PYTHON=str(stub), XDG_STATE_HOME=str(tmp_path / "state"),
+                       BIOMINER_JOB_SUPERVISOR="nohup")
     output = tmp_path / "enrichment-output"
     arguments = ["--local", "--output", str(output), "--collect-only"]
     # Keep the finite recording child owned by this test shell. The production
@@ -110,6 +111,38 @@ def test_background_launcher_passes_script_arguments_to_public_supervisor(tmp_pa
     assert "Supervisor PID:" in result.stdout
     assert "Launcher log:" in result.stdout
     assert not output.exists()
+
+
+def test_launcher_uses_independent_user_service_when_available(tmp_path):
+    # Stub both service-manager commands; this fixture cannot create a unit.
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    record = tmp_path / "service-arguments"
+    runner = binary_dir / "systemd-run"
+    runner.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shlex.quote(str(record)) + "\n")
+    control = binary_dir / "systemctl"
+    control.write_text('#!/bin/sh\ncase "$2" in is-active) exit 0;; show) echo 12345;; *) exit 1;; esac\n')
+    runner.chmod(0o700); control.chmod(0o700)
+    environment = dict(os.environ)
+    environment.update(BIOMINER_PYTHON="/usr/bin/true", BIOMINER_JOB_SUPERVISOR="auto",
+        XDG_STATE_HOME=str(tmp_path / "state"), PATH=str(binary_dir) + ":/usr/bin:/bin")
+    arguments = ["--local", "--output", str(tmp_path / "output")]
+    result = subprocess.run(["bash", str(LAUNCHER), *arguments], cwd=ROOT, env=environment,
+        text=True, capture_output=True, timeout=10, check=False)
+    assert result.returncode == 0, result.stderr
+    observed = record.read_text().splitlines()
+    assert observed[:3] == ["--user", "--quiet", "--collect"]
+    assert "--property=Type=exec" in observed
+    assert "--property=TimeoutStopSec=45" in observed
+    boundary = observed.index("--")
+    assert observed[boundary + 1:] == [str(SCRIPT), *arguments]
+    launch = next((tmp_path / "state/biominer/image-keyword-launches").iterdir())
+    unit = (launch / "unit").read_text().strip()
+    assert "--unit=" + unit in observed
+    assert "--property=StandardOutput=append:" + str(launch / "launcher.log") in observed
+    assert (launch / "pid").read_text().strip() == "12345"
+    assert "Service unit: " + unit in result.stdout
+    assert not (tmp_path / "output").exists()
 
 
 @pytest.fixture
