@@ -69,7 +69,7 @@ def test_extracts_actual_image_species_count_and_numeric_order_without_rank_loss
         _row("40", "Not image", media_type="Sound", media_format="audio/wav"),
         _row("50", "Missing URL", media_identifier=None),
         _row(None, "Missing key"), _row("-2", "Invalid key"),
-        _row("51", "Outside scope", familyKey="999"),
+        _row("51", "Outside scope", familyKey="999", family="Noctuidae"),
         _row("52", "Blank name", species=" "),
     ])
     events = []
@@ -284,14 +284,14 @@ def test_collects_observed_opaque_col_keys_without_inventing_numeric_gbif_ids(tm
     result = collect_image_species(database, manifest, tmp_path / "out")
     species = pq.read_table(tmp_path / "out/species.parquet").to_pylist()
     variants = pq.read_table(tmp_path / "out/source_name_variants.parquet").to_pylist()
-    assert result["schema_version"] == "biominer-image-species-collection/v2"
+    assert result["schema_version"] == "biominer-image-species-collection/v3"
     assert result["species_count"] == result["query_eligible_species_count"] == 1
     assert species[0]["species_key"] == "SLPT"
     assert species[0]["accepted_taxon_key"] == "gbif:SLPT"
     assert species[0]["family_key"] == species[0]["source_family_key"] == "DGC"
     assert species[0]["image_rows"] == 2
     assert variants[0]["source_family_key"] == "DGC"
-    assert "not numeric v1 API" in result["taxon_key_contract"]
+    assert "not proof of legacy numeric v1 API" in result["taxon_key_contract"]
 
 
 def test_numeric_keys_order_first_then_exact_opaque_keys_with_numeric_progress_ordinals(tmp_path):
@@ -321,6 +321,21 @@ def test_opaque_family_keys_still_require_explicit_seven_family_name_membership(
     assert result["species_count"] == 1
     exclusions = json.loads((tmp_path / "out/exclusions.json").read_text())["exclusion_counts"]
     assert exclusions["outside_butterfly_scope"] == 3
+
+
+def test_digit_only_col_family_and_species_keys_are_retained_without_legacy_api_assumption(tmp_path):
+    database, manifest = _source(tmp_path, [
+        _row("12345", "Macrosoma heliconiaria", familyKey="62533", family="Hedylidae", genus="Macrosoma"),
+        _row("00123", "Macrosoma other", familyKey="62533", family="Hedylidae", genus="Macrosoma"),
+    ])
+    result = collect_image_species(database, manifest, tmp_path / "out")
+    rows = pq.read_table(tmp_path / "out/species.parquet").to_pylist()
+    assert result["species_count"] == result["query_eligible_species_count"] == 2
+    assert [row["species_key"] for row in rows] == ["00123", "12345"]
+    assert [row["accepted_taxon_key"] for row in rows] == ["gbif:00123", "gbif:12345"]
+    assert all(row["family_key"] == row["source_family_key"] == "62533" for row in rows)
+    assert all(row["family"] == "Hedylidae" and row["query_eligible"] for row in rows)
+    assert "digit-only spelling is not proof" in result["taxon_key_contract"]
 
 
 def test_nonempty_input_with_zero_eligible_species_fails_closed_without_publication(tmp_path):

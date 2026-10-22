@@ -26,7 +26,7 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.registry.scope import load_scope
 
 
-SCHEMA_VERSION = "biominer-image-species-collection/v2"
+SCHEMA_VERSION = "biominer-image-species-collection/v3"
 RAW_ARCHIVE_SHA256 = "3494944db9bca6917e0176e63852f8c233cdd7da95904c041c55ff8e8d31c6b9"
 DEFAULT_SCOPE = Path(__file__).resolve().parents[3] / "config/butterfly_scope.json"
 EventCallback = Callable[[dict[str, Any]], None]
@@ -167,9 +167,9 @@ def _git_sha() -> str | None:
 def _source_key_sql(column: str) -> str:
     """Keep source-owned alphanumeric identifiers without numeric coercion.
 
-    Digit-only positive keys remain compatible with the legacy numeric API;
-    opaque uppercase keys retain their exact spelling, including identifiers
-    such as ``2E1``. Decimal or signed strings are never coerced into keys.
+    Source-owned keys retain exact spelling, including digit-only identifiers
+    and opaque uppercase identifiers such as ``2E1``. Digits do not establish
+    legacy numeric API identity. Decimal or signed strings are never coerced.
     """
     value = f"TRIM(CAST({column} AS VARCHAR))"
     return (f"CASE WHEN REGEXP_MATCHES({value}, '^[A-Z0-9]+$') "
@@ -222,8 +222,8 @@ def collect_image_species(
     identity = {"schema_version": SCHEMA_VERSION, "database_sha256": database_hash,
                 "manifest_chain": chain, "scope_sha256": scope_sha256,
                 "family_keys": family_keys, "family_names": sorted(scope.included_families),
-                "policy": "http-image-source-owned-alphanumeric-species-seven-family/v2",
-                "taxon_key_contract": "source-owned GBIF DWCA identifiers; opaque keys are not numeric v1 API identifiers"}
+                "policy": "http-image-source-owned-alphanumeric-species-seven-family-names/v3",
+                "taxon_key_contract": "source-owned GBIF DWCA identifiers; digit-only spelling is not proof of legacy numeric v1 API identity"}
     fingerprint = canonical_semantic_fingerprint(identity)
 
     def verify_inputs_unchanged() -> None:
@@ -256,7 +256,6 @@ def collect_image_species(
             required = {"speciesKey", "species", "familyKey", "family", "genus", "media_identifier", "media_type", "media_format"}
             if not required <= columns:
                 raise ValueError(f"missing source columns: {sorted(required - columns)}")
-            keys = ",".join("'" + str(value) + "'" for value in family_keys)
             family_names = ",".join("'" + name.replace("'", "''") + "'" for name in scope.included_families)
             species_key = _source_key_sql("speciesKey")
             family_key = _source_key_sql("familyKey")
@@ -270,8 +269,7 @@ def collect_image_species(
                          WHEN NOT COALESCE(REGEXP_MATCHES(TRIM(media_identifier), '^https?://[^/[:space:]]+[^[:space:]]*$'), FALSE) THEN 'missing_or_invalid_http_url'
                          WHEN NOT (LOWER(TRIM(COALESCE(media_type,''))) = 'stillimage'
                                    OR LOWER(TRIM(COALESCE(media_format,''))) LIKE 'image/%') THEN 'not_explicit_image'
-                         WHEN ({family_key}) IS NULL OR TRIM(COALESCE(family,'')) NOT IN ({family_names})
-                           OR (REGEXP_MATCHES(({family_key}), '^[0-9]+$') AND ({family_key}) NOT IN ({keys})) THEN 'outside_butterfly_scope'
+                         WHEN ({family_key}) IS NULL OR TRIM(COALESCE(family,'')) NOT IN ({family_names}) THEN 'outside_butterfly_scope'
                          WHEN ({species_key}) IS NULL THEN 'missing_or_invalid_species_key'
                          WHEN NULLIF(TRIM(CAST(species AS VARCHAR)), '') IS NULL THEN 'missing_species_name'
                          ELSE 'eligible'
