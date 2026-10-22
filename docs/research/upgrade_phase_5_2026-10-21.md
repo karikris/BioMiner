@@ -216,3 +216,41 @@ Independent checkpoint review (`39499cde…`) approved this coherent incomplete
 handoff only. It verified the exact draft, actual assembly, protected identities,
 completed evidence joins, preparation-only retry scope and explicit null live
 result. It is not phase approval or publication authorization.
+
+
+## Task 5.2b: successful PostgreSQL and S3 qualification
+
+Starting main SHA: `8d310128cea30a886ca91b4e02fc8fe1bf8f5cce`.
+On 2026-10-22 the user supplied additional S3 details in the approved local
+secrets file. A value-free check established that the configured bucket equalled
+the supplied Backblaze bucket ID; the matching application-key block provided a
+separate valid bucket name. Root changed only `BIOMINER_S3_BUCKET` to that name,
+using an atomic local write. Endpoint, key and every other parsed setting stayed
+unchanged. No credential or bucket value is included in this report or commit.
+Backblaze's [S3 calling documentation](https://www.backblaze.com/docs/en/cloud-storage-call-the-s3-compatible-api)
+uses the bucket name in the URL; GitHits confirmed the SDK PutObject bucket-name
+contract at `aws/aws-sdk-cpp@d207a37e` in `PutObjectRequest.h`.
+
+The exact independently reviewed fresh retry passed. PostgreSQL checks passed
+with verified client TLS, six fixture work items, 40 explicit execute calls and
+48 explicit SQL statements; rollback left no durable attempted item. S3 passed
+both public Parquet publications (two objects, eight written rows), exact reads,
+batched reads/writes, checksum/materialization, create-only collision rejection,
+manifest round-trip and lazy scan. Observed filesystem method calls were 46/128
+for fixture work and 36/96 for cleanup; these are not SDK/Rust transport counts.
+The private PostgreSQL schema and S3 namespace were cleaned; S3 remaining objects
+and cleanup errors are empty. Whole frozen-input checks passed.
+
+Actual report `live-backend-qualification-3/report.json` has SHA-256
+`6d7dd743eb0fe131013811124830d77d261b7c49591e0675e1c3cf384b8aa0e4`.
+Outer execution `09410de6…` exited 0/0 in 90.939 seconds without interruption;
+final whole-input integrity is `17a054ac…`. Final launch review is `2ae92647…`;
+reviewed launch spec is `2d407b11…`. The worker remains `8c1bed13…`, context
+`5cc2a9f3…`, and guard `1232d26a…`. Both earlier failures remain unchanged.
+This closes successful live qualification; final phase-5 evidence joining,
+independent phase reviews and publication/push remain required.
+
+Independent actual-result SPEC/QUALITY review approved (`5d470247…`), including
+all 17 journal references and exact task-owner/context joins. This result proves
+ordinary disposable PostgreSQL/S3 compatibility and cleanup for these frozen
+inputs; it is not phase-level approval, production activation or admission.
