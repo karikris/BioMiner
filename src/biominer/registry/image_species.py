@@ -26,7 +26,7 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.registry.scope import load_scope
 
 
-SCHEMA_VERSION = "biominer-image-species-collection/v1"
+SCHEMA_VERSION = "biominer-image-species-collection/v2"
 RAW_ARCHIVE_SHA256 = "3494944db9bca6917e0176e63852f8c233cdd7da95904c041c55ff8e8d31c6b9"
 DEFAULT_SCOPE = Path(__file__).resolve().parents[3] / "config/butterfly_scope.json"
 EventCallback = Callable[[dict[str, Any]], None]
@@ -164,6 +164,23 @@ def _git_sha() -> str | None:
         return None
 
 
+def _source_key_sql(column: str) -> str:
+    """Keep source-owned alphanumeric identifiers without numeric coercion.
+
+    Digit-only positive keys remain compatible with the legacy numeric API;
+    opaque uppercase keys retain their exact spelling, including identifiers
+    such as ``2E1``. Decimal or signed strings are never coerced into keys.
+    """
+    value = f"TRIM(CAST({column} AS VARCHAR))"
+    return (f"CASE WHEN REGEXP_MATCHES({value}, '^[A-Z0-9]+$') "
+            f"AND NOT REGEXP_MATCHES({value}, '^0+$') "
+            f"THEN {value} END")
+
+
+def _source_key_order(value: str) -> tuple[int, int | str, str]:
+    return (0, int(value), value) if value.isdigit() else (1, value, value)
+
+
 def collect_image_species(
     database: Path, manifest: Path, output: Path, *, threads: int = 4,
     memory_limit: str = "2GB", logger: EventCallback | None = None,
@@ -204,7 +221,9 @@ def collect_image_species(
         raise ValueError("database checksum mismatch")
     identity = {"schema_version": SCHEMA_VERSION, "database_sha256": database_hash,
                 "manifest_chain": chain, "scope_sha256": scope_sha256,
-                "family_keys": family_keys, "policy": "http-image-positive-species-seven-family/v1"}
+                "family_keys": family_keys, "family_names": sorted(scope.included_families),
+                "policy": "http-image-source-owned-alphanumeric-species-seven-family/v2",
+                "taxon_key_contract": "source-owned GBIF DWCA identifiers; opaque keys are not numeric v1 API identifiers"}
     fingerprint = canonical_semantic_fingerprint(identity)
 
     def verify_inputs_unchanged() -> None:
@@ -237,9 +256,10 @@ def collect_image_species(
             required = {"speciesKey", "species", "familyKey", "family", "genus", "media_identifier", "media_type", "media_format"}
             if not required <= columns:
                 raise ValueError(f"missing source columns: {sorted(required - columns)}")
-            keys = ",".join(str(value) for value in family_keys)
-            species_key = "CASE WHEN REGEXP_MATCHES(TRIM(CAST(speciesKey AS VARCHAR)), '^[1-9][0-9]*$') THEN TRY_CAST(speciesKey AS BIGINT) END"
-            family_key = "CASE WHEN REGEXP_MATCHES(TRIM(CAST(familyKey AS VARCHAR)), '^[1-9][0-9]*$') THEN TRY_CAST(familyKey AS BIGINT) END"
+            keys = ",".join("'" + str(value) + "'" for value in family_keys)
+            family_names = ",".join("'" + name.replace("'", "''") + "'" for name in scope.included_families)
+            species_key = _source_key_sql("speciesKey")
+            family_key = _source_key_sql("familyKey")
             normalized = f"""
                 SELECT {species_key} AS species_key,
                        NULLIF(TRIM(CAST(species AS VARCHAR)), '') AS scientific_name,
@@ -250,7 +270,8 @@ def collect_image_species(
                          WHEN NOT COALESCE(REGEXP_MATCHES(TRIM(media_identifier), '^https?://[^/[:space:]]+[^[:space:]]*$'), FALSE) THEN 'missing_or_invalid_http_url'
                          WHEN NOT (LOWER(TRIM(COALESCE(media_type,''))) = 'stillimage'
                                    OR LOWER(TRIM(COALESCE(media_format,''))) LIKE 'image/%') THEN 'not_explicit_image'
-                         WHEN ({family_key}) IS NULL OR ({family_key}) NOT IN ({keys}) THEN 'outside_butterfly_scope'
+                         WHEN ({family_key}) IS NULL OR TRIM(COALESCE(family,'')) NOT IN ({family_names})
+                           OR (REGEXP_MATCHES(({family_key}), '^[0-9]+$') AND ({family_key}) NOT IN ({keys})) THEN 'outside_butterfly_scope'
                          WHEN ({species_key}) IS NULL THEN 'missing_or_invalid_species_key'
                          WHEN NULLIF(TRIM(CAST(species AS VARCHAR)), '') IS NULL THEN 'missing_species_name'
                          ELSE 'eligible'
@@ -262,6 +283,9 @@ def collect_image_species(
             counts = dict(connection.execute(f"WITH normalized AS ({normalized}) SELECT eligibility, COUNT(*) FROM normalized GROUP BY eligibility").fetchall())
             if sum(counts.values()) != db.get("row_count"):
                 raise ValueError("database row count differs from manifest")
+            if db.get("row_count", 0) > 0 and counts.get("eligible", 0) == 0:
+                _event(logger, "species_collection_source_format_incompatibility", exclusion_counts=counts)
+                raise ValueError("nonempty source database has no eligible image species; source-format incompatibility")
             grouped = connection.execute(f"""WITH normalized AS ({normalized})
                 SELECT species_key, scientific_name, family_key, family, genus, COUNT(*) AS image_rows
                 FROM normalized WHERE eligibility='eligible'
@@ -271,26 +295,27 @@ def collect_image_species(
         verify_inputs_unchanged()
         species_rows: list[dict[str, Any]] = []
         variants: list[dict[str, Any]] = []
-        by_key: dict[int, list[tuple[Any, ...]]] = {}
+        by_key: dict[str, list[tuple[Any, ...]]] = {}
         for row in grouped:
-            by_key.setdefault(int(row[0]), []).append(row)
+            by_key.setdefault(str(row[0]), []).append(row)
         conflicts: list[dict[str, Any]] = []
-        for ordinal, (key, rows) in enumerate(sorted(by_key.items()), 1):
+        for ordinal, (key, rows) in enumerate(sorted(by_key.items(), key=lambda item: _source_key_order(item[0])), 1):
             names = {row[1] for row in rows}
             families = {(row[2], row[3]) for row in rows}
-            expected_family = {int(value): name for name, value in scope.family_taxon_keys.items()}
-            mismatch = any(expected_family[row[2]] != row[3] for row in rows)
+            expected_family = {str(value): name for name, value in scope.family_taxon_keys.items()}
+            mismatch = any(str(row[2]) in expected_family and expected_family[str(row[2])] != row[3] for row in rows)
             status = "conflicting_source_names_or_families" if len(names) > 1 or len(families) > 1 or mismatch else "source_bound"
             representative = rows[0]
             species_rows.append({"species_ordinal": ordinal, "accepted_taxon_key": f"gbif:{key}",
                 "species_key": str(key), "scientific_name": representative[1],
-                "family_key": str(representative[2]), "family": representative[3], "genus": representative[4],
+                "family_key": str(representative[2]), "source_family_key": str(representative[2]),
+                "family": representative[3], "genus": representative[4],
                 "image_rows": sum(int(row[5]) for row in rows), "name_variant_count": len(names),
                 "query_eligible": status == "source_bound", "binding_status": status})
             for row in rows:
                 variants.append({"species_ordinal": ordinal, "accepted_taxon_key": f"gbif:{key}",
                     "species_key": str(key), "scientific_name": row[1], "family_key": str(row[2]),
-                    "family": row[3], "genus": row[4], "image_rows": int(row[5]),
+                    "source_family_key": str(row[2]), "family": row[3], "genus": row[4], "image_rows": int(row[5]),
                     "query_eligible": status == "source_bound", "binding_status": status})
             if status != "source_bound":
                 conflicts.append({"species_key": str(key), "scientific_names": sorted(names),
@@ -298,7 +323,8 @@ def collect_image_species(
                                   "family_name_mismatch": mismatch})
         fields = [("species_ordinal", pa.int64()), ("accepted_taxon_key", pa.string()),
                   ("species_key", pa.string()), ("scientific_name", pa.string()),
-                  ("family_key", pa.string()), ("family", pa.string()), ("genus", pa.string()),
+                  ("family_key", pa.string()), ("source_family_key", pa.string()),
+                  ("family", pa.string()), ("genus", pa.string()),
                   ("image_rows", pa.int64())]
         tail = [("query_eligible", pa.bool_()), ("binding_status", pa.string())]
         _write_frame(staging / "species.parquet", species_rows, pa.schema(fields + [("name_variant_count", pa.int64())] + tail))
@@ -318,6 +344,7 @@ def collect_image_species(
                   "input": {"database": str(database), "database_sha256": database_hash,
                             "manifest": str(manifest), "row_count": int(db["row_count"])},
                   "identity": identity, "raw_archive_sha256": RAW_ARCHIVE_SHA256,
+                  "taxon_key_contract": identity["taxon_key_contract"],
                   "evidence_maturity": "GBIF provider-asserted species/name evidence; not verified biological identity",
                   "scope_conflict_resolution": "explicit current image-database request; validated chain to retained raw DWCA; no older registry or enrichment reused",
                   "species_count": len(species_rows), "query_eligible_species_count": sum(row["query_eligible"] for row in species_rows),

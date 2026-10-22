@@ -96,7 +96,7 @@ def test_retains_all_source_variants_and_fails_closed_for_name_family_conflicts(
     database, manifest = _source(tmp_path, [
         _row(), _row(name="Danaus alternate"),
         _row(familyKey="9417", family="Papilionidae"),
-        _row("30", "Danaus other", family="Wrong family name"),
+        _row("30", "Danaus other", family="Papilionidae"),
     ])
     result = collect_image_species(database, manifest, tmp_path / "out")
     species = pq.read_table(tmp_path / "out/species.parquet").to_pylist()
@@ -174,7 +174,7 @@ def test_rejects_wrong_raw_archive_even_if_manifest_links_are_rebound(tmp_path):
 
 
 def test_empty_cohort_has_typed_outputs_and_zero_denominator(tmp_path):
-    database, manifest = _source(tmp_path, [_row(media_type="Sound", media_format="audio/wav")])
+    database, manifest = _source(tmp_path, [])
     result = collect_image_species(database, manifest, tmp_path / "out")
     assert result["species_count"] == 0
     assert pq.read_table(tmp_path / "out/species.parquet").num_rows == 0
@@ -266,7 +266,7 @@ def test_rejects_missing_or_duplicate_raw_member_output(tmp_path, change):
 
 def test_rejects_fractional_exponent_and_signed_keys_and_embedded_url_space(tmp_path):
     database, manifest = _source(tmp_path, [
-        _row(), _row("20.4"), _row("2e1"), _row("+20"), _row("9223372036854775808"),
+        _row(), _row("20.4"), _row("2e1"), _row("+20"),
         _row("21", "Danaus other", familyKey="7017.4"),
         _row("22", "Danaus last", media_identifier="https://example.org/invalid image.jpg"),
     ])
@@ -274,6 +274,63 @@ def test_rejects_fractional_exponent_and_signed_keys_and_embedded_url_space(tmp_
     assert result["species_count"] == 1
     assert result["eligible_image_rows"] == 1
     assert pq.read_table(tmp_path / "out/species.parquet").to_pylist()[0]["species_key"] == "20"
+
+
+def test_collects_observed_opaque_col_keys_without_inventing_numeric_gbif_ids(tmp_path):
+    database, manifest = _source(tmp_path, [
+        _row("SLPT", "Ceratinia neso", familyKey="DGC", family="Nymphalidae", genus="Ceratinia"),
+        _row("SLPT", "Ceratinia neso", familyKey="DGC", family="Nymphalidae", genus="Ceratinia", taxonRank="SUBSPECIES"),
+    ])
+    result = collect_image_species(database, manifest, tmp_path / "out")
+    species = pq.read_table(tmp_path / "out/species.parquet").to_pylist()
+    variants = pq.read_table(tmp_path / "out/source_name_variants.parquet").to_pylist()
+    assert result["schema_version"] == "biominer-image-species-collection/v2"
+    assert result["species_count"] == result["query_eligible_species_count"] == 1
+    assert species[0]["species_key"] == "SLPT"
+    assert species[0]["accepted_taxon_key"] == "gbif:SLPT"
+    assert species[0]["family_key"] == species[0]["source_family_key"] == "DGC"
+    assert species[0]["image_rows"] == 2
+    assert variants[0]["source_family_key"] == "DGC"
+    assert "not numeric v1 API" in result["taxon_key_contract"]
+
+
+def test_numeric_keys_order_first_then_exact_opaque_keys_with_numeric_progress_ordinals(tmp_path):
+    database, manifest = _source(tmp_path, [
+        _row("SLPT", "Ceratinia neso", familyKey="DGC", genus="Ceratinia"),
+        _row("20"), _row("3", "Danaus other"),
+        _row("ABC", "Danaus third", familyKey="DGC"),
+        _row("2B", "Danaus fourth", familyKey="DGC"),
+        _row("2E1", "Danaus fifth", familyKey="DGC"),
+    ])
+    collect_image_species(database, manifest, tmp_path / "out")
+    rows = pq.read_table(tmp_path / "out/species.parquet").to_pylist()
+    assert [row["species_key"] for row in rows] == ["3", "20", "2B", "2E1", "ABC", "SLPT"]
+    assert [row["species_ordinal"] for row in rows] == [1, 2, 3, 4, 5, 6]
+    assert rows[3]["accepted_taxon_key"] == "gbif:2E1"
+    assert all(row["query_eligible"] for row in rows)
+
+
+def test_opaque_family_keys_still_require_explicit_seven_family_name_membership(tmp_path):
+    database, manifest = _source(tmp_path, [
+        _row("SLPT", "Ceratinia neso", familyKey="DGC", genus="Ceratinia"),
+        _row("MOTH", "Some moth", familyKey="XYZ", family="Noctuidae"),
+        _row("BAD", "Some butterfly", familyKey="DGC", family=""),
+        _row("LOWER", "Some other butterfly", familyKey="dgc"),
+    ])
+    result = collect_image_species(database, manifest, tmp_path / "out")
+    assert result["species_count"] == 1
+    exclusions = json.loads((tmp_path / "out/exclusions.json").read_text())["exclusion_counts"]
+    assert exclusions["outside_butterfly_scope"] == 3
+
+
+def test_nonempty_input_with_zero_eligible_species_fails_closed_without_publication(tmp_path):
+    database, manifest = _source(tmp_path, [_row(media_type="Sound", media_format="audio/wav")])
+    output = tmp_path / "out"
+    events = []
+    with pytest.raises(ValueError, match="source-format incompatibility"):
+        collect_image_species(database, manifest, output, logger=events.append)
+    assert not output.exists()
+    assert any(event["event"] == "species_collection_source_format_incompatibility" for event in events)
 
 
 def test_resume_rechecks_lineage_that_changes_during_input_hash(tmp_path):
