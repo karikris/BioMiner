@@ -19,7 +19,7 @@ Start or resume, from the repository root, with the explicitly selected qualifie
 interpreter (this is one shell line):
 
 ```bash
-BIOMINER_PYTHON="$PWD/.native-runtime/application-p2a26-20261022-1/env/bin/python" bash scripts/start_butterfly_keyword_enrichment.sh --local --output "$PWD/data/derived/image_species_keywords/v4" --secrets-file "$HOME/.config/agent-env/secrets.env"
+BIOMINER_PYTHON="$PWD/.native-runtime/application-p2a26-20261022-1/env/bin/python" bash scripts/start_butterfly_keyword_enrichment.sh --local --output "$PWD/data/derived/image_species_keywords/v5" --secrets-file "$HOME/.config/agent-env/secrets.env"
 ```
 
 The launcher uses a transient systemd user service when available, and prints its
@@ -38,7 +38,7 @@ production S3/PostgreSQL defaults or runtime profiles.
 Monitor:
 
 ```bash
-tail -f data/derived/image_species_keywords/v4/progress.log
+tail -f data/derived/image_species_keywords/v5/progress.log
 ```
 
 The format is `234/10608 species | 3/17 sources | source=wikidata`.
@@ -104,7 +104,12 @@ changed inputs require a new output directory. Collection v1 is retained only
 as the diagnostic zero-cohort extraction from the original numeric-key assumption;
 v2 diagnosed the numeric-looking Hedylidae key and v3 established the full cohort;
 v4 removes the remaining legacy-key assumption from conflict checks. Diagnostic
-roots are preserved and do not replace the current v4 run.
+roots are preserved. The current v5 run reuses the immutable v4 collection and
+the stopped v4 attempt's HTTP cache and quota reservations. A fresh work ledger
+uses the corrected GBIF rule: exact, accepted species matches with identical
+canonical name and family may score 99 or 100; a separate profile recheck still
+precedes names. This score is not a probability. The initial v4 results and
+shutdown manifest remain preserved.
 
 Rollback is to stop the recorded supervisor with SIGTERM and retain its output.
 Do not overwrite an incompatible collection or mutate an active worker's source

@@ -129,7 +129,7 @@ class GBIFImageNamesClient:
             status = str(matched.get("status") or matched.get("taxonomicStatus") or "").upper()
             if (not re.fullmatch(r"[1-9][0-9]*", key)
                     or str(matched.get("matchType") or "").upper() != "EXACT"
-                    or matched.get("confidence") != 100
+                    or matched.get("confidence") not in (99, 100)
                     or str(matched.get("rank") or "").upper() != "SPECIES"
                     or not _same_name(matched.get("canonicalName"), context.accepted_scientific_name)
                     or not context.family or not _same_name(matched.get("family"), context.family)

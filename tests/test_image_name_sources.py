@@ -116,14 +116,15 @@ def _gbif_exact_match():
             "rank": "SPECIES", "matchType": "EXACT", "confidence": 100, "status": "ACCEPTED"}
 
 
-def test_gbif_resolves_opaque_source_key_without_rewriting_inventory_identity(species):
+@pytest.mark.parametrize("confidence", [99, 100])
+def test_gbif_resolves_opaque_source_key_without_rewriting_inventory_identity(species, confidence):
     opaque = replace(species, accepted_taxon_key="gbif:SLPT", family_key="gbif:DGC")
     calls = []
 
     def get(path, params):
         calls.append((path, params))
         if path == "/species/match":
-            return _gbif_exact_match()
+            return {**_gbif_exact_match(), "confidence": confidence}
         if path == "/species/123":
             return _gbif_taxon()
         return {"results": [] if path.endswith("synonyms") else [{"taxonKey": 123, "vernacularName": "Lime Swallowtail", "language": "en"}], "endOfRecords": True}
@@ -139,14 +140,15 @@ def test_gbif_resolves_opaque_source_key_without_rewriting_inventory_identity(sp
 
 
 @pytest.mark.parametrize("source_key", ["12345", "00123"])
-def test_gbif_name_bridge_does_not_treat_numeric_col_key_as_legacy_usage_key(species, source_key):
+@pytest.mark.parametrize("confidence", [99, 100])
+def test_gbif_name_bridge_does_not_treat_numeric_col_key_as_legacy_usage_key(species, source_key, confidence):
     source = replace(species, accepted_taxon_key="gbif:" + source_key)
     calls = []
 
     def get(path, params):
         calls.append(path)
         if path == "/species/match":
-            return _gbif_exact_match()
+            return {**_gbif_exact_match(), "confidence": confidence}
         if path == "/species/123":
             return _gbif_taxon()
         return {"results": [], "endOfRecords": True}
@@ -170,7 +172,7 @@ def test_gbif_legacy_key_syntax_is_not_relaxed_by_source_identity_support(specie
 
 
 @pytest.mark.parametrize("field,value", [
-    ("matchType", "FUZZY"), ("matchType", "HIGHERRANK"), ("confidence", 99),
+    ("matchType", "FUZZY"), ("matchType", "HIGHERRANK"), ("confidence", 98),
     ("canonicalName", "Papilio machaon"), ("family", "Nymphalidae"),
     ("rank", "GENUS"), ("status", "SYNONYM"), ("acceptedUsageKey", 999),
     ("usageKey", "SLPT"), ("family", ""),
