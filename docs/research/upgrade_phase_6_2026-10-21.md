@@ -44,8 +44,8 @@ retained unchanged. Diagnosis receipt `d8afac7d…` binds the exact three artifa
 The initial outer execution is `4c9125d4…`, public command `006f1872…`,
 finished report `d123e8b4…`, and actual probe `b6b5ff37…`. This is a failed
 coordinator attempt with a successful public probe, not a completed six-command
-qualification. A strict validator correction and fresh owned retry roots are
-being prepared; no canary/recovery pass is inferred at this checkpoint.
+qualification. This checkpoint required a strict validator correction and
+fresh owned retry roots; no canary/recovery pass was inferred from the failed attempt.
 
 Test-first correction: 17 actual-shaped metadata cases ran against the preserved
 `2af907bc…` coordinator: four expected assertion failures and 13 passes, with
@@ -66,7 +66,8 @@ SHA-256 `cea54ce66b8b1c1f0362471e7d4a763e2ec1c24634d30f23d945f8f051c1ab92`.
 Root's combined pure controls passed **59 tests in 0.34 seconds**, outer/runner
 exit0, execution `43143ce9…`. The successor still stops for any physical Parquet
 hash difference. A successful unit run does not substitute for the six public
-commands or approve any observed encoding difference. Those remain pending.
+commands or approve any observed encoding difference. Those were still pending
+at that unit-test checkpoint.
 
 The fresh retry completed **all six public commands**, outer/runner exit0,
 without interruption (`candidate-canary-recovery-outer-execution-2/execution.json`,
@@ -90,6 +91,92 @@ a second reader issue: collection reports `tests/...` node IDs while pytest's
 PASSED summary reports the same source tests relative to the private working
 directory. Both JUnit documents contain all 35 matching class/name pairs with
 no failure, error or skip. This task records successful commands; the separate
-path-bound extraction and physical-difference review remain required.
+path-bound extraction and physical-difference review were required before
+qualification.
 
-Independent completed-command review `d327d94c9766385ada8b134d21c9ebbd06daa22b7b8b590806cace09a620b4ae` approves task 6.1 only. Its separate extraction follow-up remains open.
+Independent completed-command review `d327d94c9766385ada8b134d21c9ebbd06daa22b7b8b590806cace09a620b4ae` approves task 6.1 only. Its separate extraction follow-up is tracked in task 6.2 below.
+
+## Task 6.2: bound extraction and physical encoding disposition
+
+Starting main SHA: `02beab73cad7926a76a12fb84c4a94278ced0103`.
+The six workload commands are not repeated. A separate metadata companion was
+tested to bind each PASSED summary path, resolved from its actual planned
+working directory, to the exact frozen test file and collected case. It retains
+the original producer, launch, source, raw logs, JUnit and execution receipts.
+The derived context names its own harness explicitly. GitHits pytest 9.1.1,
+`cf470ec0`, `src/_pytest/terminal.py:1507`, confirms that the terminal formatter
+uses `config.cwd_relative_nodeid(rep.nodeid)`.
+
+Root's read-only original comparison (`f82b8812…`) reports exactly
+`batches.parquet:physical_encoding_requires_review`. Byte inspection `ecf7a14b…`
+binds both 2,116-byte batches files: the footer is 1,360 bytes, starts at byte748,
+and contains one writer marker starting at byte2061. The two changed bytes,
+at offsets2088 and2092, spell Arrow `25.0.1` versus `26.0.0`; replacing exactly
+that versioned marker makes every byte identical. The single,
+empty and malformed files are already identical. This inspection alone did not
+approve the difference; the required independent logical, provenance and
+physical review follows below.
+GitHits Arrow `44616716`, `cpp/src/parquet/parquet_version.h.in:29`, defines
+the version-specific `CREATED_BY_VERSION` marker.
+
+Independent disposition
+`phase6-physical-disposition-independent-1/disposition.json`, SHA-256
+`c1c043ab7897426a2e64ca1cbd52958e4fdb49b497f44771e5045219320c7c45`,
+approves only that exact batches pair. Its byte/source/logical proof is
+`9347cfb25b50d979cfe44719f630164e6a4d4acaf2bbb48dc85d3af37378fe2b`.
+A bounded compact-protocol traversal identifies the marker as FileMetaData
+field6 `created_by`; no native footer reader or workload rerun was needed.
+The proof also checks matching image/Parquet logical outputs, all three raw
+NPZ pairs and manifests differing only in the declared source identity fields.
+
+The new companion's 30 controls were first run before its implementation
+existed: **30 setup errors in 0.08 seconds**, receipt `10696219…`. This is an
+absence check, not a reproduced body-level regression. The original 59
+coordinator controls and original executor remain unchanged.
+
+The initial companion passed **89 combined controls in 0.52 seconds** and its
+read-only actual-input check passed (`bf21aaa8…`, `12b315f1…`). Independent
+review then found one closure omission: the new context file itself was not in
+the original guard's pinned-file set, although its nested references and the
+outer recorder already bound it. Review `7ffa9f2c…` requested the correction;
+the prior quality approval was explicitly superseded by `00ebf875…`. No derived
+results were created. Two new behavioral tests reproduced missing closure and
+undetected context mutation, **2 failed in 0.02 seconds** (`1ff6c8a3…`). The
+successor adds only an explicit context pin after loading the original run.
+
+The final companion in `candidate-canary-recovery-extraction-prep-2/` has
+SHA-256 `540d4e5c86ea4741f56aebac2bd9f3198c409122d2056a4787e5ca222fdeefbb`;
+its context is `246b0a3fd3b1670ec718566e51f32150cd06e72178c40f119a0131ec231e75ff`.
+Removing the one pin-registration line restores the initial companion byte for
+byte. Root's first combined test invocation accidentally applied the companion
+operator override to 17 coordinator cases; those failed with AttributeError,
+while 74 passed (`c605e9f6…`). The corrected invocation lets each unchanged
+file use its own operator: **91 passed in 0.51 seconds**, outer/runner exit0,
+receipt `9aec556e…`. No test assertion or production source was altered to
+correct that invocation. That checkpoint preceded the final actual-input
+metadata check reported below.
+
+The successor actual-input check passed, outer/runner exit0, receipt
+`5a78d650…`. Final independent SPEC/QUALITY approvals are `f88ee4dc…` and
+`3c73d825…`. The reviewed metadata-only derivation then passed without any
+public workload rerun: outer execution `4ba47cae…`; derived result
+`a387a4031a43fa5f020e0d8b8072ad09cb4df24dce8f1749e649d91041d0c784`.
+Both before/after guards explicitly contain the context file and report all
+inputs unchanged (`273890a1…`, `668ae7e7…`).
+
+The immutable derived canary and recovery results have SHA-256
+`ea496004601267e32d864d4d4104781ae7198bd6af6dc47cd7b294fd66a98328`
+and `4a47861404eeb7163e1c45fa7603dd90a69e846cd86cff52fc3fd7e3b0fc9b76`.
+They report `canary_passed` and `recovery_passed`, no unexplained logical or
+provenance differences, and removed workload scratch. Interruption, stale-claim,
+resume and idempotency categories each retain both runtime executions and their
+exact collected cases. The original 35 cases per runtime remain the execution
+scope; category coverage uses those same executions, not additional runs.
+
+Observation `c3f36459f5f268cb41f8bb7d875e8a3e58fa8728868d9dc2926746a807350dd9`
+retains the raw physical difference, both original hashes and the separate
+reviewed resolution. Derived PASSED-summary views retain each raw log backlink
+and exact canonical path/case bindings. The original failed extractor, raw
+summaries, producer, context and six executions remain unchanged.
+
+Independent actual-result review `834b2247a20f99e98a09f11ddb8a7d946f7026a1ad0baea13231270b1d8e9068` approves task 6.2 with no blockers. Separate physical-resolution preservation review `faa48a90…` confirms the exact limited disposition survives the derived records. Final phase-manifest joins, reviews and publication remain task 6.3.
