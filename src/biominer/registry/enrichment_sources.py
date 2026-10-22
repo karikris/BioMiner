@@ -1143,9 +1143,11 @@ class WikidataClient:
         http_get: HTTPGet | None = None,
         col_xr_resolver: GBIFCOLXRLegacyResolver | None = None,
         max_retries: int = 5,
+        legacy_ids_require_crosswalk: bool = False,
     ) -> None:
         self._http_get = http_get or _json_get(WIKIDATA_WDQS_URL, max_retries=max_retries)
         self._col_xr_resolver = col_xr_resolver or GBIFCOLXRLegacyResolver(max_retries=max_retries)
+        self._legacy_ids_require_crosswalk = legacy_ids_require_crosswalk
 
     def enrich_species(self, context: SpeciesContext) -> dict[str, list[dict[str, Any]]]:
         query = _wikidata_taxon_query(context.accepted_scientific_name)
@@ -1175,6 +1177,7 @@ class WikidataClient:
                     binding,
                     context,
                     col_xr_resolver=self._col_xr_resolver,
+                    legacy_ids_require_crosswalk=self._legacy_ids_require_crosswalk,
                 )
                 if evidence_cache[evidence_key] is not None:
                     request_count += evidence_cache[evidence_key].request_count
@@ -1412,6 +1415,7 @@ def _wikidata_match_evidence(
     context: SpeciesContext,
     *,
     col_xr_resolver: GBIFCOLXRLegacyResolver,
+    legacy_ids_require_crosswalk: bool = False,
 ) -> WikidataMatchEvidence | None:
     scientific_name = _binding_value(binding, "scientificName") or context.accepted_scientific_name
     if normalize_name_key(scientific_name) != normalize_name_key(context.accepted_scientific_name):
@@ -1425,7 +1429,7 @@ def _wikidata_match_evidence(
                 lineage_check="accepted_taxon_key",
             )
         legacy_gbif_id = _binding_value(binding, "legacyGbifId") or _binding_value(binding, "gbifId")
-        if legacy_gbif_id and f"gbif:{legacy_gbif_id}" == accepted_key:
+        if legacy_gbif_id and not legacy_ids_require_crosswalk and f"gbif:{legacy_gbif_id}" == accepted_key:
             return WikidataMatchEvidence(
                 match_method="P225+P846",
                 lineage_check="accepted_taxon_key",
