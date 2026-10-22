@@ -26,7 +26,7 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 from biominer.registry.scope import load_scope
 
 
-SCHEMA_VERSION = "biominer-image-species-collection/v3"
+SCHEMA_VERSION = "biominer-image-species-collection/v4"
 RAW_ARCHIVE_SHA256 = "3494944db9bca6917e0176e63852f8c233cdd7da95904c041c55ff8e8d31c6b9"
 DEFAULT_SCOPE = Path(__file__).resolve().parents[3] / "config/butterfly_scope.json"
 EventCallback = Callable[[dict[str, Any]], None]
@@ -222,7 +222,7 @@ def collect_image_species(
     identity = {"schema_version": SCHEMA_VERSION, "database_sha256": database_hash,
                 "manifest_chain": chain, "scope_sha256": scope_sha256,
                 "family_keys": family_keys, "family_names": sorted(scope.included_families),
-                "policy": "http-image-source-owned-alphanumeric-species-seven-family-names/v3",
+                "policy": "http-image-source-owned-alphanumeric-species-seven-family-names/v4",
                 "taxon_key_contract": "source-owned GBIF DWCA identifiers; digit-only spelling is not proof of legacy numeric v1 API identity"}
     fingerprint = canonical_semantic_fingerprint(identity)
 
@@ -300,9 +300,7 @@ def collect_image_species(
         for ordinal, (key, rows) in enumerate(sorted(by_key.items(), key=lambda item: _source_key_order(item[0])), 1):
             names = {row[1] for row in rows}
             families = {(row[2], row[3]) for row in rows}
-            expected_family = {str(value): name for name, value in scope.family_taxon_keys.items()}
-            mismatch = any(str(row[2]) in expected_family and expected_family[str(row[2])] != row[3] for row in rows)
-            status = "conflicting_source_names_or_families" if len(names) > 1 or len(families) > 1 or mismatch else "source_bound"
+            status = "conflicting_source_names_or_families" if len(names) > 1 or len(families) > 1 else "source_bound"
             representative = rows[0]
             species_rows.append({"species_ordinal": ordinal, "accepted_taxon_key": f"gbif:{key}",
                 "species_key": str(key), "scientific_name": representative[1],
@@ -317,8 +315,7 @@ def collect_image_species(
                     "query_eligible": status == "source_bound", "binding_status": status})
             if status != "source_bound":
                 conflicts.append({"species_key": str(key), "scientific_names": sorted(names),
-                                  "family_bindings": [[str(k), n] for k, n in sorted(families)],
-                                  "family_name_mismatch": mismatch})
+                                  "family_bindings": [[str(k), n] for k, n in sorted(families)]})
         fields = [("species_ordinal", pa.int64()), ("accepted_taxon_key", pa.string()),
                   ("species_key", pa.string()), ("scientific_name", pa.string()),
                   ("family_key", pa.string()), ("source_family_key", pa.string()),

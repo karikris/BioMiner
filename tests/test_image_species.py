@@ -97,13 +97,14 @@ def test_retains_all_source_variants_and_fails_closed_for_name_family_conflicts(
         _row(), _row(name="Danaus alternate"),
         _row(familyKey="9417", family="Papilionidae"),
         _row("30", "Danaus other", family="Papilionidae"),
+        _row("30", "Danaus other"),
     ])
     result = collect_image_species(database, manifest, tmp_path / "out")
     species = pq.read_table(tmp_path / "out/species.parquet").to_pylist()
     variants = pq.read_table(tmp_path / "out/source_name_variants.parquet").to_pylist()
     assert result["species_count"] == 2
     assert result["query_eligible_species_count"] == 0
-    assert len(variants) == 4
+    assert len(variants) == 5
     assert species[0]["name_variant_count"] == 2
     assert species[0]["image_rows"] == 3
     assert all(not row["query_eligible"] for row in variants)
@@ -284,7 +285,7 @@ def test_collects_observed_opaque_col_keys_without_inventing_numeric_gbif_ids(tm
     result = collect_image_species(database, manifest, tmp_path / "out")
     species = pq.read_table(tmp_path / "out/species.parquet").to_pylist()
     variants = pq.read_table(tmp_path / "out/source_name_variants.parquet").to_pylist()
-    assert result["schema_version"] == "biominer-image-species-collection/v3"
+    assert result["schema_version"] == "biominer-image-species-collection/v4"
     assert result["species_count"] == result["query_eligible_species_count"] == 1
     assert species[0]["species_key"] == "SLPT"
     assert species[0]["accepted_taxon_key"] == "gbif:SLPT"
@@ -336,6 +337,16 @@ def test_digit_only_col_family_and_species_keys_are_retained_without_legacy_api_
     assert all(row["family_key"] == row["source_family_key"] == "62533" for row in rows)
     assert all(row["family"] == "Hedylidae" and row["query_eligible"] for row in rows)
     assert "digit-only spelling is not proof" in result["taxon_key_contract"]
+
+
+def test_source_family_ids_never_inherit_an_unrelated_legacy_numeric_binding(tmp_path):
+    database, manifest = _source(tmp_path, [
+        _row("12345", "Macrosoma heliconiaria", familyKey="9417", family="Hedylidae", genus="Macrosoma"),
+    ])
+    result = collect_image_species(database, manifest, tmp_path / "out")
+    assert result["query_eligible_species_count"] == 1
+    row = pq.read_table(tmp_path / "out/species.parquet").to_pylist()[0]
+    assert (row["source_family_key"], row["family"], row["binding_status"]) == ("9417", "Hedylidae", "source_bound")
 
 
 def test_nonempty_input_with_zero_eligible_species_fails_closed_without_publication(tmp_path):
