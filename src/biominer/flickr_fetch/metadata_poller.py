@@ -29,6 +29,7 @@ from biominer.flickr_fetch.query_planner import (
     query_min_date,
     split_upload_interval,
     split_priority,
+    validate_geotagged_records,
 )
 from biominer.registry.normalize import normalize_name_key
 from biominer.registry.unified import stable_identity
@@ -1791,9 +1792,12 @@ def _progress(callback: ProgressCallback | None, event: dict[str, Any]) -> None:
         callback(event)
 
 
-def _http_fetcher(*, api_key: str | None) -> FetchMetadata:
+def _http_fetcher(*, api_key: str | None, endpoint_url: str = FLICKR_REST_BASE_URL,
+                  transport: str = "httpx") -> FetchMetadata:
     if not api_key:
         raise RuntimeError("Flickr API key is required for poll-once")
+    if transport not in {"httpx", "urllib"}:
+        raise ValueError("Unknown Flickr HTTP transport")
 
     def fetch(query: FlickrQuery) -> dict[str, Any]:
         params = {
@@ -1803,10 +1807,34 @@ def _http_fetcher(*, api_key: str | None) -> FetchMetadata:
             "format": "json",
             "nojsoncallback": 1,
         }
-        with httpx.Client(timeout=30) as client:
-            response = client.get(FLICKR_REST_BASE_URL, params=params)
-        response.raise_for_status()
-        return response.json()
+        if transport == "urllib":
+            from urllib.error import HTTPError, URLError
+            from urllib.parse import urlencode
+            from urllib.request import urlopen
+            try:
+                with urlopen(endpoint_url + "?" + urlencode(params), timeout=30) as response:
+                    payload = json.load(response)
+            except HTTPError as exc:
+                raise FlickrFetchError(f"Flickr HTTP {exc.code}",
+                                       retryable=exc.code == 429 or exc.code >= 500,
+                                       http_status=exc.code) from None
+            except (URLError, TimeoutError) as exc:
+                raise FlickrFetchError(f"Flickr transport error: {type(exc).__name__}", retryable=True) from None
+        else:
+            try:
+                with httpx.Client(timeout=30) as client:
+                    response = client.get(endpoint_url, params=params)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                raise FlickrFetchError(f"Flickr HTTP {status}", retryable=status == 429 or status >= 500,
+                                       http_status=status) from None
+            except httpx.RequestError as exc:
+                raise FlickrFetchError(f"Flickr transport error: {type(exc).__name__}", retryable=True) from None
+            payload = response.json()
+        if query.has_geo == 1 and payload.get("stat") == "ok":
+            validate_geotagged_records(_payload_photo_records(payload))
+        return payload
 
     return fetch
 

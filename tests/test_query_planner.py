@@ -109,8 +109,9 @@ def test_registry_query_definitions_load_as_single_unsliced_page_one_work(tmp_pa
     assert [query.search_field for query in queries] == ["tags", "text"]
     assert {query.lane for query in queries} == {"normal_page"}
     assert {query.page for query in queries} == {1}
-    assert {query.per_page for query in queries} == {NORMAL_PAGE_SIZE}
-    assert {query.has_geo for query in queries} == {0}
+    assert {query.per_page for query in queries} == {GEO_PAGE_SIZE}
+    assert {query.has_geo for query in queries} == {1}
+    assert all(flickr_search_params(query)["has_geo"] == 1 for query in queries)
     assert queries[0].query_definition_id == "q-tags"
     assert queries[0].query_priority == 10
     assert queries[0].registry_version == "registry-v1"
@@ -541,7 +542,8 @@ def test_plan_fixed_upload_slice_pages_creates_page_one_only_without_count_probe
 
     assert len(pages) == 2
     assert {page.lane for page in pages} == {"normal_page"}
-    assert {page.per_page for page in pages} == {NORMAL_PAGE_SIZE}
+    assert {page.per_page for page in pages} == {GEO_PAGE_SIZE}
+    assert {page.has_geo for page in pages} == {1}
     assert {page.page for page in pages} == {1}
     assert not any(page.lane == "count_probe" for page in pages)
     assert [(page.slice_index, page.min_upload_date, page.max_upload_date, page.page) for page in pages] == [

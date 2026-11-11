@@ -147,8 +147,8 @@ def load_registry_flickr_queries_from_frame(
                 search_field=field,
                 lane="bbox_page" if bbox else "normal_page",
                 page=1,
-                per_page=BBOX_PAGE_SIZE if bbox else NORMAL_PAGE_SIZE,
-                has_geo=1 if bbox else 0,
+                per_page=GEO_PAGE_SIZE,
+                has_geo=1,
                 bbox=bbox,
                 region=str(row.get("region") or "") or None,
                 term_type=str(row.get("name_class") or "") or None,
@@ -242,8 +242,8 @@ def plan_fixed_upload_slice_pages(
                 search_field=search_field,
                 lane="normal_page",
                 page=1,
-                per_page=NORMAL_PAGE_SIZE,
-                has_geo=0,
+                per_page=GEO_PAGE_SIZE,
+                has_geo=1,
                 min_upload_date=start,
                 max_upload_date=end,
                 split_reason="upload_date",
@@ -339,6 +339,21 @@ def _query_sort_key(query: FlickrQuery) -> tuple[object, ...]:
         query.search_field,
         _query_hash(query),
     )
+
+
+def validate_geotagged_records(records: Iterable[dict[str, Any]]) -> None:
+    """Reject absent/invalid public geotags; zero on one axis is valid."""
+    for record in records:
+        try:
+            latitude = float(record["latitude"])
+            longitude = float(record["longitude"])
+            accuracy = float(record["accuracy"])
+            valid = (-90 <= latitude <= 90 and -180 <= longitude <= 180
+                     and accuracy.is_integer() and 1 <= accuracy <= 16)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            raise ValueError("Flickr returned a missing or invalid public geotag")
 
 
 def flickr_search_params(query: FlickrQuery) -> dict[str, str | int]:
