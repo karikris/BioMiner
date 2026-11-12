@@ -193,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
+    from biominer.embeddinggemma.cli import add_parser as add_embeddinggemma_parser
+    add_embeddinggemma_parser(subparsers)
     add_gbif_media_resolution_parser(subparsers)
     add_gbif_quality_parser(subparsers)
     add_gbif_temporal_parser(subparsers)
@@ -709,6 +711,9 @@ def run(args: argparse.Namespace) -> int:
     if args.version:
         print("biominer 0.1.0")
         return 0
+    if args.command == "vision" and args.vision_command == "embeddinggemma":
+        from biominer.embeddinggemma.cli import run_command
+        return run_command(args)
     if args.command == GBIF_MEDIA_URL_COMMAND:
         return run_gbif_media_resolution_command(args)
     if args.command == GBIF_QUALITY_COMMAND:

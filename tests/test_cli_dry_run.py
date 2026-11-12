@@ -71,7 +71,8 @@ def test_cli_exposes_only_lean_pipeline_commands() -> None:
     )
 
     assert "run" in commands
-    assert "vision" not in commands
+    vision_choices = commands["vision"]._subparsers._group_actions[0].choices  # noqa: SLF001
+    assert set(vision_choices) == {"embeddinggemma"}
     assert "evidence" not in commands
     assert "references" in commands
     assert "storage" in commands

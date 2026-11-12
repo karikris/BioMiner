@@ -46,6 +46,10 @@ fingerprinting and validation artifacts have been produced.
 
 ## Repository boundaries
 
+For an independent local image-triage experiment, see the
+[EmbeddingGemma 2 benchmark](docs/embeddinggemma2.md). It compares two visual
+token budgets and two embedding dimensions without changing production gates.
+
 BioMiner creates immutable scientific artifacts. TaxaLens may consume completed
 artifacts for verification, replay, and research interaction; ButterflyLens
 may consume governed handoffs for its public/community product. Neither
