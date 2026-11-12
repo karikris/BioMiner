@@ -16,6 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+classification = [
+    "numpy>=2.4,<3",
+    "xlsxwriter==3.2.9",
+]
 geo = [
     "h3>=4.5,<5",
 ]
@@ -29,7 +33,9 @@ postgres = [
 ]
 test = [
     "h3>=4.5,<5",
+    "numpy>=2.4,<3",
     "pytest>=8",
+    "xlsxwriter==3.2.9",
 ]
 
 [project.scripts]

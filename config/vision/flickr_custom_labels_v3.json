@@ -1,0 +1,29 @@
+{
+  "version": "flickr-custom-labels-v3-vernacular",
+  "templates": ["a photograph of {description}.", "a close-up photograph of {description}."],
+  "heads": {
+    "subject": {
+      "adult_butterfly": "a butterfly",
+      "caterpillar_or_larva": "a caterpillar",
+      "pupa_or_chrysalis": ["a chrysalis", "a pupa"],
+      "insect_eggs": "insect eggs",
+      "moth": "a moth",
+      "other_insect": ["a beetle", "a fly", "a bee", "a wasp", "an ant", "a grasshopper", "a dragonfly"],
+      "other_arthropod": ["a spider", "a scorpion", "a tick or mite", "a centipede or millipede", "a crustacean"],
+      "bird": "a bird",
+      "mammal_or_person": ["a mammal", "a person"],
+      "other_animal": ["a reptile", "an amphibian", "a fish", "a snail or slug", "a worm"],
+      "plant_or_fungus": ["a plant", "a flower", "a tree", "a fungus"],
+      "no_identifiable_organism": ["a landscape scene", "a building", "a plate of cooked food", "an inanimate object"]
+    },
+    "context": {
+      "ordinary_organism_photo": "a living organism in a real photograph",
+      "captive_or_reared_scene": "a captive or reared animal in an enclosure",
+      "pinned_or_preserved_specimen": "a pinned or preserved biological specimen",
+      "artwork_or_illustration": "artwork or an illustration of an organism",
+      "tattoo": "a tattoo of an organism",
+      "decorative_object_or_pattern": "an organism depicted on a decorative object, logo, textile or pattern",
+      "rephotographed_image_or_screen": "another photograph, printed page or screen showing an organism"
+    }
+  }
+}

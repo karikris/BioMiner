@@ -40,6 +40,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+classification = [
+    { name = "numpy" },
+    { name = "xlsxwriter" },
+]
 geo = [
     { name = "h3" },
 ]
@@ -53,7 +57,9 @@ postgres = [
 ]
 test = [
     { name = "h3" },
+    { name = "numpy" },
     { name = "pytest" },
+    { name = "xlsxwriter" },
 ]
 
 [package.metadata]
@@ -64,7 +70,9 @@ requires-dist = [
     { name = "httpcore", specifier = ">=1.0.9,<1.1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "matplotlib", specifier = ">=3.10" },
+    { name = "numpy", marker = "extra == 'classification'", specifier = ">=2.4,<3" },
     { name = "numpy", marker = "extra == 'ml'", specifier = ">=2.4,<3" },
+    { name = "numpy", marker = "extra == 'test'", specifier = ">=2.4,<3" },
     { name = "pillow", specifier = ">=12" },
     { name = "polars", specifier = ">=1.30" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
@@ -74,8 +82,10 @@ requires-dist = [
     { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "scikit-learn", marker = "extra == 'ml'", specifier = ">=1.9,<2" },
     { name = "skops", marker = "extra == 'ml'", specifier = ">=0.14,<0.15" },
+    { name = "xlsxwriter", marker = "extra == 'classification'", specifier = "==3.2.9" },
+    { name = "xlsxwriter", marker = "extra == 'test'", specifier = "==3.2.9" },
 ]
-provides-extras = ["geo", "ml", "postgres", "test"]
+provides-extras = ["classification", "geo", "ml", "postgres", "test"]
 
 [[package]]
 name = "certifi"
