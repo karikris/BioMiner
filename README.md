@@ -49,6 +49,8 @@ fingerprinting and validation artifacts have been produced.
 For an independent local image-triage experiment, see the
 [EmbeddingGemma 2 benchmark](docs/embeddinggemma2.md). It compares two visual
 token budgets and two embedding dimensions without changing production gates.
+The [custom butterfly species run](docs/butterfly-species-run.md) applies frozen
+BioCLIP 2.5 to selected human-reviewed and four-way-agreement images.
 
 BioMiner creates immutable scientific artifacts. TaxaLens may consume completed
 artifacts for verification, replay, and research interaction; ButterflyLens

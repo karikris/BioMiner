@@ -6,26 +6,26 @@ never used to manufacture an image prediction or a wild-occurrence decision.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from datetime import UTC, datetime
 import fcntl
 import hashlib
 import io
 import json
 import math
 import os
-from pathlib import Path
 import shutil
 import sqlite3
 import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-import warnings
 
 import numpy as np
-from PIL import Image, ImageOps
 import polars as pl
+from PIL import Image, ImageOps
 
 from biominer.bioclip.bioclip import PersistentBioClipScorer
 from biominer.bioclip.bioclip_worker import decoded_rgb_image_content_hash
@@ -58,7 +58,12 @@ def load_labels(path):
     config = json.loads(Path(path).read_text())
     if not config.get("version") or not config.get("templates"):
         raise ValueError("labels require a version and templates")
-    if set(config.get("heads", {})) != {"subject", "context"}:
+    species_mode = config.get("mode") == "species"
+    if species_mode and set(config.get("heads", {})) != {"species"}:
+        raise ValueError("species mode requires exactly one species head")
+    if not species_mode and config.get("mode") is not None:
+        raise ValueError("unsupported label mode")
+    if not species_mode and set(config.get("heads", {})) != {"subject", "context"}:
         raise ValueError("labels require separate subject and context heads")
     for template in config["templates"]:
         if "{description}" not in template:
@@ -67,6 +72,9 @@ def load_labels(path):
     for labels in config["heads"].values():
         if len(labels) < 3 or any(not k or not v for k, v in labels.items()):
             raise ValueError("each head requires at least three named descriptions")
+        if species_mode and any(not isinstance(name, str) or not name.strip()
+                                or name != description for name, description in labels.items()):
+            raise ValueError("species descriptions must equal their scientific names")
         for descriptions in labels.values():
             descriptions = [descriptions] if isinstance(descriptions, str) else descriptions
             if not isinstance(descriptions, list) or any(not isinstance(v, str) or not v.strip() for v in descriptions):
@@ -105,12 +113,14 @@ def text_prototypes(scorer, config):
 def score_vector(vector, keys, prototypes):
     similarities = normalize_vectors([vector])[0] @ prototypes.T
     output = {"bioclip_status": "scored", "bioclip_wild_status": "unresolved"}
-    for head in ("subject", "context"):
+    for head in dict.fromkeys(head for head, _ in keys):
         ranked = sorted(
             ((label, float(similarities[i])) for i, (h, label) in enumerate(keys) if h == head),
             key=lambda item: (-item[1], item[0]),
         )
-        for rank, (label, score) in enumerate(ranked[:3], 1):
+        top_count = 5 if head == "species" else 3
+        for rank in range(1, top_count + 1):
+            label, score = ranked[rank - 1] if rank <= len(ranked) else (None, None)
             output[f"bioclip_{head}_top{rank}"] = label
             output[f"bioclip_{head}_top{rank}_cosine"] = score
         output[f"bioclip_{head}_margin"] = ranked[0][1] - ranked[1][1]
@@ -120,8 +130,15 @@ def score_vector(vector, keys, prototypes):
 
 
 class RunState:
-    def __init__(self, path):
+    def __init__(self, path, *, cached_paths=()):
         self.connection = sqlite3.connect(path)
+        self.cached_connections = []
+        for cached_path in cached_paths:
+            connection = sqlite3.connect(Path(cached_path).resolve().as_uri() + "?mode=ro", uri=True)
+            connection.execute("PRAGMA query_only=ON")
+            # An incompatible historical store must not silently supply vectors.
+            connection.execute("SELECT cache_key,vector FROM embeddings LIMIT 0")
+            self.cached_connections.append(connection)
         self.connection.executescript("""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS media(photo_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
@@ -138,8 +155,11 @@ class RunState:
         self.connection.execute("INSERT OR REPLACE INTO media VALUES (?, ?)", (photo_id, json.dumps(payload)))
 
     def embedding(self, key):
-        row = self.connection.execute("SELECT vector FROM embeddings WHERE cache_key=?", (key,)).fetchone()
-        return np.frombuffer(row[0], dtype="<f4").copy() if row else None
+        for connection in (self.connection, *self.cached_connections):
+            row = connection.execute("SELECT vector FROM embeddings WHERE cache_key=?", (key,)).fetchone()
+            if row:
+                return np.frombuffer(row[0], dtype="<f4").copy()
+        return None
 
     def save_embedding(self, key, vector):
         self.connection.execute("INSERT OR REPLACE INTO embeddings VALUES (?, ?)", (key, np.asarray(vector, dtype="<f4").tobytes()))
@@ -175,6 +195,8 @@ class MediaDownloader:
 
     def download(self, row):
         photo_id = str(row["flickr_photo_id"])
+        if "cached_image_path" in row:
+            return self._verified_cached_image(row, photo_id)
         previous = self.cached.get(photo_id)
         if previous and previous.get("status") == "ready":
             path = Path(previous["canonical_path"])
@@ -232,11 +254,55 @@ class MediaDownloader:
                         "height": canonical.height, "downloaded_at_utc": utc_now(),
                         "earlier_attempt_errors": failures,
                     }
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001 - retain per-image decoder/download failure evidence.
                     failures.append(f"{rendition} attempt {attempt + 1}: {type(error).__name__}: {error}")
                     if attempt + 1 < self.attempts:
                         time.sleep(self.backoff * 2 ** attempt)
         return photo_id, {"status": "media_failure", "errors": failures, "attempted_at_utc": utc_now()}
+
+    def _verified_cached_image(self, row, photo_id):
+        """Read only the attested local source; failures cannot fall back to HTTP."""
+        try:
+            source = Path(row.get("cached_image_path") or "")
+            expected = row.get("cached_image_sha256") or ""
+            if not source.is_absolute():
+                raise ValueError("cached_image_path must be absolute")
+            if (not expected.startswith("sha256:") or len(expected) != 71
+                    or any(c not in "0123456789abcdef" for c in expected[7:])):
+                raise ValueError("cached_image_sha256 requires a sha256-prefixed lowercase digest")
+            if source.stat().st_size > self.max_bytes:
+                raise ValueError("cached image exceeds byte limit")
+            with source.open("rb") as handle:
+                body = handle.read(self.max_bytes + 1)
+            if len(body) > self.max_bytes:
+                raise ValueError("cached image exceeds byte limit")
+            file_hash = hashlib.sha256(body).hexdigest()
+            if file_hash != expected[7:]:
+                raise ValueError("cached image SHA-256 mismatch")
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(body)) as image:
+                    if image.width * image.height > self.max_pixels:
+                        raise ValueError("cached image exceeds decoded pixel limit")
+                    image.load()
+                    canonical = ImageOps.exif_transpose(image).convert("RGB")
+            pixel_hash = decoded_rgb_image_content_hash(canonical)
+            path = self.root / f"{pixel_hash}.png"
+            temporary = self.root / f"{photo_id}.png.tmp"
+            canonical.save(temporary, format="PNG")
+            temporary.replace(path)
+            return photo_id, {
+                "status": "ready", "selected_url": row.get("image_url"),
+                "rendition": "verified_local_cache", "pixel_sha256": pixel_hash,
+                "byte_sha256": file_hash, "canonical_sha256": sha256_file(path),
+                "canonical_path": str(path.resolve()), "original_path": str(source.resolve()),
+                "width": canonical.width, "height": canonical.height,
+                "downloaded_at_utc": utc_now(), "earlier_attempt_errors": [],
+            }
+        except Exception as error:  # noqa: BLE001 - a failed local image must remain explicit evidence.
+            return photo_id, {"status": "media_failure", "failure_kind": "cached_image_failure",
+                              "errors": [f"{type(error).__name__}: {error}"],
+                              "attempted_at_utc": utc_now()}
 
 
 def supplied_urls(path):
@@ -387,9 +453,13 @@ def export_results(rows, predictions, media, result_dir, keys, manifest, *, fina
         output["bioclip_scoring_fingerprint"] = manifest["scoring_fingerprint"]
         if photo_id in media:
             item = media[photo_id]
-            for key in ("selected_url", "rendition", "pixel_sha256", "byte_sha256", "width", "height"):
+            for key in ("selected_url", "rendition", "pixel_sha256", "byte_sha256", "width", "height",
+                        "original_path", "canonical_path", "failure_kind"):
                 output[f"bioclip_media_{key}"] = item.get(key)
         combined.append({k: flatten(v) for k, v in output.items()})
+    if {head for head, _ in keys} == {"species"}:
+        from biominer.vision.species_results import export_species_results
+        return export_species_results(combined, result_dir, keys, manifest, final=final)
     frame = pl.DataFrame(combined, infer_schema_length=None)
     for name, writer in (("image_suggestions.parquet", "write_parquet"), ("image_suggestions.csv", "write_csv")):
         temporary = result_dir / (name + ".tmp")
@@ -453,14 +523,19 @@ def attest(scorer):
 def run_inference(rows, state, downloader, scorer, config, result_dir, attestation,
                   manifest, *, batch_size=8, download_workers=4, smoke_size=32, retry_failures=False):
     keys, prototypes, prompts = text_prototypes(scorer, config)
-    write_json(result_dir / "prompts.json", dict(config=config, prompts=prompts, keys=keys))
+    write_json(result_dir / "prompts.json", {"config": config, "prompts": prompts, "keys": keys})
     np.save(result_dir / "text_prototypes.npy", prototypes)
     scoring_key = manifest["scoring_fingerprint"]
     predictions = state.predictions(scoring_key)
     media = state.media()
     if retry_failures:
         predictions = {k: v for k, v in predictions.items() if v.get("bioclip_status") == "scored"}
-    ordered = sorted(rows, key=lambda r: hashlib.sha256(("42" + str(r["flickr_photo_id"])).encode()).hexdigest())
+    species_mode = config.get("mode") == "species"
+    if species_mode:
+        from biominer.vision.species_results import species_smoke_order
+        ordered = species_smoke_order(rows)
+    else:
+        ordered = sorted(rows, key=lambda r: hashlib.sha256(("42" + str(r["flickr_photo_id"])).encode()).hexdigest())
     batch_limit = batch_size
     counters = {"encoded_images": 0, "embedding_cache_hits": 0, "oom_retries": 0}
     started = time.monotonic()
@@ -483,6 +558,9 @@ def run_inference(rows, state, downloader, scorer, config, result_dir, attestati
             if vector is None:
                 needed.setdefault(cache_key, (photo_id, item))
             else:
+                if (vector.shape != (prototypes.shape[1],) or not np.isfinite(vector).all()
+                        or not np.isclose(np.linalg.norm(vector), 1, atol=0.01)):
+                    raise ValueError("invalid cached image embedding shape, norm or values")
                 vectors[cache_key] = vector
                 counters["embedding_cache_hits"] += 1
         remaining = list(needed.items())
@@ -550,6 +628,9 @@ def run_inference(rows, state, downloader, scorer, config, result_dir, attestati
                      "elapsed_seconds": elapsed, "memory_metrics": scorer.memory_metrics,
                      "photo_ids": [str(r["flickr_photo_id"]) for r in phase_rows],
                      "checks": "finite normalized embeddings; decoded-content equality; pinned model; full frame"}
+            if species_mode:
+                from biominer.vision.species_results import SMOKE_POLICY
+                smoke["selection_policy"] = SMOKE_POLICY
             if pending:
                 smoke["seconds_per_attempt"] = elapsed / len(pending)
                 smoke["estimated_remaining_seconds"] = smoke["seconds_per_attempt"] * (len(rows) - len(predictions))
@@ -584,6 +665,8 @@ def main(argv=None):
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--download-workers", type=int, default=4)
     parser.add_argument("--retry-failures", action="store_true")
+    parser.add_argument("--cached-bioclip-state", type=Path, action="append", default=[],
+                        help="read-only previous custom-label SQLite state; exact embedding keys only")
     args = parser.parse_args(argv)
     if args.batch_size < 1 or args.download_workers < 1:
         parser.error("worker and batch counts must be positive")
@@ -591,7 +674,11 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=True)
     with run_lock(args.output):
         rows, identity = snapshot_inputs(args.source, args.metadata, args.output)
-        state = RunState(args.output / "run_state.sqlite")
+        if config.get("mode") == "species" and any(
+            not row.get("cached_image_path") or not row.get("cached_image_sha256") for row in rows
+        ):
+            raise ValueError("species mode requires verified local cache fields for every image")
+        state = RunState(args.output / "run_state.sqlite", cached_paths=args.cached_bioclip_state)
         urls = supplied_urls(args.discovery_state)
         downloader = MediaDownloader(args.output / "media", urls, state.media(), retry_failures=args.retry_failures)
         model = ModelConfig("bioclip25-custom-labels", "BioCLIP 2.5 custom labels", "evidence", "frozen",
@@ -604,7 +691,10 @@ def main(argv=None):
                                                          "scoring": "normalized-template-mean-cosine-v1"})
             result_dir = args.output / "results" / scoring_key.removeprefix("sha256:")
             result_dir.mkdir(parents=True, exist_ok=True)
+            from biominer.embeddinggemma.common import producer_sha
             manifest = {"schema": "biominer-flickr-custom-labels-v1", "scoring_fingerprint": scoring_key,
+                        "producer_git_sha": producer_sha(),
+                        "precision_policy": "OpenCLIP 3.3.0 default fp32; no autocast",
                         "input": identity, "attestation": attestation, "labels": config,
                         "score_semantics": "cosine similarities; not calibrated probabilities",
                         "maturity": "AI suggestions only; human review and wild status unresolved",
@@ -617,13 +707,16 @@ def main(argv=None):
                 result = run_inference(rows, state, downloader, scorer, config, result_dir, attestation, manifest,
                                        batch_size=args.batch_size, download_workers=args.download_workers,
                                        retry_failures=args.retry_failures)
-                print(json.dumps({"finished": result}), flush=True)
+                print(json.dumps({"finished": {key: result.get(key) for key in (
+                    "counts", "total", "complete", "artifacts_finalized", "counters", "output_directory")}}), flush=True)
             except BaseException as error:
                 state.commit()
                 write_json(result_dir / "runner_error.json", {"error": repr(error), "at_utc": utc_now()})
                 raise
             finally:
                 state.connection.close()
+                for connection in state.cached_connections:
+                    connection.close()
 
 
 if __name__ == "__main__":
