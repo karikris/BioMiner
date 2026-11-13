@@ -3,8 +3,9 @@ import polars as pl
 import pytest
 
 
+@pytest.mark.parametrize("budget", [280, 560, 1120])
 def test_official_adapter_uses_float32_no_audio_and_explicit_budget(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, budget
 ):
     import sys
     from types import SimpleNamespace
@@ -45,13 +46,57 @@ def test_official_adapter_uses_float32_no_audio_and_explicit_budget(
     path = tmp_path / "synthetic.png"
     Image.new("RGB", (20, 20)).save(path)
     encoder = SentenceEncoder(RuntimeConfig(device="cpu"))
-    result = encoder.encode_images([path], 1120)
+    result = encoder.encode_images([path], budget)
     assert result.shape == (1, 768)
     assert calls["load"]["config_kwargs"] == {"audio_config": None}
     assert calls["load"]["model_kwargs"]["torch_dtype"] is dtype
     assert calls["force_float32"]
     assert calls["encode"]["prompt"] == ""
-    assert calls["encode"]["processing_kwargs"] == {"image": {"max_soft_tokens": 1120}}
+    assert calls["encode"]["processing_kwargs"] == {
+        "image": {"max_soft_tokens": budget}
+    }
+
+
+def test_selected_runtime_budgets_are_checked_against_cpu(tmp_path):
+    from types import SimpleNamespace
+
+    from biominer.embeddinggemma.runtime import RuntimeConfig
+    from biominer.embeddinggemma.workflow import runtime_check
+
+    class Encoder:
+        config = RuntimeConfig(device="cpu")
+
+        def __init__(self):
+            self.calls = []
+            self.model = [
+                SimpleNamespace(
+                    processor=SimpleNamespace(image_token_id=1),
+                    preprocess=lambda inputs, **kw: {
+                        "input_ids": np.ones(
+                            (1, kw["processing_kwargs"]["image"]["max_soft_tokens"]),
+                            dtype=int,
+                        )
+                    },
+                )
+            ]
+
+        def encode_images(self, paths, budget):
+            self.calls.append(budget)
+            return np.full((1, 768), 1 / np.sqrt(768), dtype=np.float32)
+
+        def encode_text(self, sentences):
+            return np.ones((len(sentences), 768), dtype=np.float32)
+
+        def metrics(self):
+            return {"device": "cpu", "dtype": "float32"}
+
+    encoder = Encoder()
+    receipt = runtime_check(encoder, tmp_path, budgets=(1120, 560))
+    assert receipt["status"] == "passed"
+    assert [row["budget"] for row in receipt["budgets"]] == [560, 1120]
+    assert [row["budget"] for row in receipt["cpu_reference"]] == [560, 1120]
+    assert encoder.calls == [560, 1120, 560, 1120]
+    assert set(receipt["fingerprints"]) == {"560", "1120"}
 
 
 def test_failed_runtime_recheck_invalidates_previous_pass(tmp_path, monkeypatch):

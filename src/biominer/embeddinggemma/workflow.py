@@ -94,7 +94,12 @@ def cohort_media(items, cache_dir: Path, root: Path, cohort: str, *, workers: in
 
 @exclusive_output()
 def runtime_check(
-    encoder, output_dir: Path, *, image: Path | None = None, cpu_reference: bool = True
+    encoder,
+    output_dir: Path,
+    *,
+    image: Path | None = None,
+    cpu_reference: bool = True,
+    budgets: tuple[int, ...] = (280, 1120),
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +112,11 @@ def runtime_check(
     atomic_json(output_dir / "receipt.json", receipt)
     try:
         return _runtime_check(
-            encoder, output_dir, image=image, cpu_reference=cpu_reference
+            encoder,
+            output_dir,
+            image=image,
+            cpu_reference=cpu_reference,
+            budgets=budgets,
         )
     except BaseException as exc:
         receipt.update(status="failed", error_type=type(exc).__name__, updated_at=now())
@@ -116,13 +125,23 @@ def runtime_check(
 
 
 def _runtime_check(
-    encoder, output_dir: Path, *, image: Path | None = None, cpu_reference: bool = True
+    encoder,
+    output_dir: Path,
+    *,
+    image: Path | None = None,
+    cpu_reference: bool = True,
+    budgets: tuple[int, ...] = (280, 1120),
 ) -> dict:
     import numpy as np
     from PIL import Image, ImageDraw, ImageOps
 
     from biominer.embeddinggemma.runtime import SentenceEncoder
 
+    budgets = tuple(sorted(set(budgets)))
+    if not budgets:
+        raise ValueError("At least one runtime-check token budget is required")
+    for budget in budgets:
+        encoder.config.fingerprint(budget)
     output_dir.mkdir(parents=True, exist_ok=True)
     if image is None:
         image = output_dir / "synthetic.png"
@@ -133,7 +152,7 @@ def _runtime_check(
         synthetic.save(image)
     rows = []
     vectors = {}
-    for budget in (280, 1120):
+    for budget in budgets:
         with Image.open(image) as opened:
             rgb = ImageOps.exif_transpose(opened).convert("RGB")
             features = encoder.model[0].preprocess(
@@ -159,7 +178,8 @@ def _runtime_check(
         vectors[budget] = vector
     if (
         image.name == "synthetic.png"
-        and rows[1]["effective_visual_tokens"] <= rows[0]["effective_visual_tokens"]
+        and len(rows) > 1
+        and rows[-1]["effective_visual_tokens"] <= rows[0]["effective_visual_tokens"]
     ):
         raise RuntimeError("Higher token budget did not change effective visual input")
     cpu = None
@@ -172,7 +192,7 @@ def _runtime_check(
             )
         )
         cpu = []
-        for budget in (280, 1120):
+        for budget in budgets:
             values = reference.encode_images([image], budget)
             cosine = float((values * vectors[budget]).sum())
             maximum = float(np.max(np.abs(values - vectors[budget])))
@@ -196,7 +216,7 @@ def _runtime_check(
         "cpu_reference": cpu,
         "metrics": encoder.metrics(),
         "producer_sha": producer_sha(),
-        "fingerprints": {str(b): encoder.config.fingerprint(b) for b in (280, 1120)},
+        "fingerprints": {str(b): encoder.config.fingerprint(b) for b in budgets},
         "bfloat16": "not_evaluated; float32 is the benchmark precision",
     }
     atomic_json(output_dir / "receipt.json", result)
@@ -260,7 +280,9 @@ def text_embeddings(encoder, labels, directory: Path):
     return vectors
 
 
-def score_cohort(items, media, labels, text, root, cohort, budget, dimension, config):
+def score_cohort(
+    items, media, labels, text, root, cohort, budget, dimension, config, *, binary=False
+):
     from biominer.embeddinggemma.encode import read_embeddings
     from biominer.embeddinggemma.scoring import score_configuration
 
@@ -284,6 +306,7 @@ def score_cohort(items, media, labels, text, root, cohort, budget, dimension, co
         root / "scores" / cohort / f"{budget}-{dimension}",
         budget=budget,
         dimension=dimension,
+        binary=binary,
         provenance={
             "fingerprint": manifest["fingerprint"],
             "metrics": {
@@ -329,7 +352,7 @@ def _run_status(root: Path):
             atomic_json(root / "run.json", status)
 
 
-def audit_cache(items, media, root: Path, *, requested: int):
+def audit_cache(items, media, root: Path, *, requested: int, group_requests=None):
     joined = items.select("item_id", "cache_group").join(media, on="item_id")
     valid = joined.filter(pl.col("status") == "ok")
     conflicts = set(
@@ -348,11 +371,14 @@ def audit_cache(items, media, root: Path, *, requested: int):
     audited = media.filter(pl.col("item_id").is_in(allowed))
     groups = {}
     for group in ("butterfly", "other_biological", "non_biological"):
+        target = (
+            group_requests.get(group, 0) if group_requests is not None else requested
+        )
         count = selected.filter(pl.col("cache_group") == group).height
         groups[group] = {
             "selected": count,
-            "requested": requested,
-            "shortfall": max(0, requested - count),
+            "requested": target,
+            "shortfall": max(0, target - count),
         }
     atomic_json(
         Path(root) / "cache-audit.json",
@@ -371,6 +397,25 @@ def audit_cache(items, media, root: Path, *, requested: int):
     return selected, audited
 
 
+def run_configurations(values=None):
+    """Parse the explicit execution order while preserving the first run's default."""
+    from biominer.embeddinggemma.runtime import VISION_BUDGETS
+
+    values = values or ("280-256", "1120-256", "280-768", "1120-768")
+    configurations = []
+    for value in values:
+        try:
+            budget, dimension = (int(part) for part in value.split("-"))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("Configuration must be BUDGET-DIMENSION") from exc
+        if budget not in VISION_BUDGETS or dimension not in (256, 768):
+            raise ValueError("Unsupported vision token budget or embedding dimension")
+        if (budget, dimension) in configurations:
+            raise ValueError("Duplicate run configuration")
+        configurations.append((budget, dimension))
+    return configurations
+
+
 def run_experiment(args, encoder=None):
     from biominer.embeddinggemma.encode import encode_media
     from biominer.embeddinggemma.labels import load_labels
@@ -380,12 +425,25 @@ def run_experiment(args, encoder=None):
 
     root = args.output_dir
     with _run_status(root) as status:
+        configurations = run_configurations(getattr(args, "configuration", None))
+        budgets = tuple(sorted({budget for budget, _ in configurations}))
+        binary = getattr(args, "binary", False)
+        plan = {"configurations": configurations, "binary": binary}
+        plan_path = root / "configuration-plan.json"
+        if plan_path.exists() and json.loads(plan_path.read_text()) != json.loads(
+            json.dumps(plan)
+        ):
+            raise ValueError(
+                "Run configuration plan changed; use a new output directory"
+            )
+        atomic_json(plan_path, plan)
         labels = load_labels(args.label_bank)
         prepare(
             args.input,
             root / "prepared",
             seed=args.seed,
             sample_per_group=args.sample_per_group,
+            sample_selection=getattr(args, "sample_selection", None),
         )
         items = read_prepared(root / "prepared")
         atomic_parquet(root / "labels.parquet", pl.DataFrame(labels))
@@ -397,11 +455,11 @@ def run_experiment(args, encoder=None):
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text())
             if receipt.get("status") != "passed" or receipt.get("fingerprints") != {
-                str(b): config.fingerprint(b) for b in (280, 1120)
+                str(b): config.fingerprint(b) for b in budgets
             }:
                 raise ValueError("Runtime receipt fingerprint changed")
         else:
-            runtime_check(encoder, root / "runtime-check")
+            runtime_check(encoder, root / "runtime-check", budgets=budgets)
         text = text_embeddings(encoder, labels, root / "text")
         status.update(
             {
@@ -414,6 +472,8 @@ def run_experiment(args, encoder=None):
                 "source_fingerprint": source_fingerprint(),
                 "evidence_maturity": "experimental_model_evidence",
                 "root": str(root.resolve()),
+                "configurations": configurations,
+                "binary": binary,
             }
         )
         atomic_json(root / "run.json", status)
@@ -434,44 +494,55 @@ def run_experiment(args, encoder=None):
                     workers=args.download_workers,
                 )
                 if cohort == "cache":
+                    group_requests = (
+                        dict(selected.group_by("cache_group").len().iter_rows())
+                        if getattr(args, "sample_selection", None) is not None
+                        else None
+                    )
                     selected, media = audit_cache(
-                        selected, media, root, requested=args.sample_per_group
+                        selected,
+                        media,
+                        root,
+                        requested=args.sample_per_group,
+                        group_requests=group_requests,
                     )
                 configuration_dirs = []
-                for dimension in (256, 768):
-                    for budget in (280, 1120):
-                        status.update(
-                            current_stage=f"{budget}-{dimension}", updated_at=now()
-                        )
-                        atomic_json(root / "run.json", status)
-                        if dimension == 256:
-                            result = encode_media(
-                                media,
-                                root / "embeddings" / str(budget),
-                                encoder=encoder,
-                                budget=budget,
-                                batch_size=args.batch_size,
-                            )
-                            status["stages"].append(
-                                {"cohort": cohort, "budget": budget, **result}
-                            )
-                        score_cohort(
-                            selected,
+                encoded_budgets = set()
+                for budget, dimension in configurations:
+                    status.update(
+                        current_stage=f"{budget}-{dimension}", updated_at=now()
+                    )
+                    atomic_json(root / "run.json", status)
+                    if budget not in encoded_budgets:
+                        result = encode_media(
                             media,
-                            labels,
-                            text,
-                            root,
-                            cohort,
-                            budget,
-                            dimension,
-                            config,
+                            root / "embeddings" / str(budget),
+                            encoder=encoder,
+                            budget=budget,
+                            batch_size=args.batch_size,
                         )
-                        configuration_dirs.append(
-                            root / "scores" / cohort / f"{budget}-{dimension}"
+                        status["stages"].append(
+                            {"cohort": cohort, "budget": budget, **result}
                         )
-                        compare_configurations(
-                            configuration_dirs, root / "comparison" / cohort
-                        )
+                        encoded_budgets.add(budget)
+                    score_cohort(
+                        selected,
+                        media,
+                        labels,
+                        text,
+                        root,
+                        cohort,
+                        budget,
+                        dimension,
+                        config,
+                        binary=binary,
+                    )
+                    configuration_dirs.append(
+                        root / "scores" / cohort / f"{budget}-{dimension}"
+                    )
+                    compare_configurations(
+                        configuration_dirs, root / "comparison" / cohort
+                    )
                 status.update(updated_at=now(), last_complete_cohort=cohort)
                 atomic_json(root / "run.json", status)
             status.update(
@@ -513,6 +584,7 @@ def execute(args):
             args.output_dir,
             seed=args.seed,
             sample_per_group=args.sample_per_group,
+            sample_selection=getattr(args, "sample_selection", None),
         )
         atomic_parquet(args.output_dir / "labels.parquet", pl.DataFrame(labels))
         return {
@@ -532,6 +604,7 @@ def execute(args):
             args.output_dir,
             image=args.image,
             cpu_reference=not args.skip_cpu_reference,
+            budgets=tuple(getattr(args, "budget", None) or (280, 1120)),
         )
     from biominer.embeddinggemma.encode import encode_media, read_embeddings
     from biominer.embeddinggemma.labels import load_labels
@@ -563,6 +636,7 @@ def execute(args):
         args.output_dir,
         budget=args.budget,
         dimension=args.dimension,
+        binary=getattr(args, "binary", False),
         provenance={
             "fingerprint": manifest["fingerprint"],
             "metrics": manifest.get("metrics", {}),

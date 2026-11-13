@@ -96,6 +96,7 @@ def prepare(
     *,
     seed: str = "embeddinggemma-v1",
     sample_per_group: int = 500,
+    sample_selection: Path | None = None,
 ) -> dict:
     """Create associations/items Parquet and publish ``manifest.json`` last.
 
@@ -125,15 +126,27 @@ def prepare(
         {"path": str(p), "sha256": sha256_file(p), "bytes": p.stat().st_size}
         for p in paths
     ]
-    fingerprint = canonical_semantic_fingerprint(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "inputs": input_records,
-            "seed": seed,
-            "sample_per_group": sample_per_group,
-            "policy": _POLICY,
+    selection = None
+    selection_record = None
+    if sample_selection is not None:
+        sample_selection = Path(sample_selection).resolve()
+        selection_record = {
+            "path": str(sample_selection),
+            "sha256": sha256_file(sample_selection),
         }
-    )
+        selection = pl.read_parquet(sample_selection).select(
+            "item_id", "benchmark_group"
+        )
+    identity = {
+        "schema_version": SCHEMA_VERSION,
+        "inputs": input_records,
+        "seed": seed,
+        "sample_per_group": sample_per_group,
+        "policy": _POLICY,
+    }
+    if selection_record is not None:
+        identity["sample_selection"] = selection_record
+    fingerprint = canonical_semantic_fingerprint(identity)
     output_dir = Path(output_dir).resolve()
     manifest_path = output_dir / "manifest.json"
     if manifest_path.exists():
@@ -153,7 +166,11 @@ def prepare(
             associations.append(association)
             grouped[association["item_id"]].append(association)
     items = [_item(item_id, rows) for item_id, rows in sorted(grouped.items())]
-    sampling = _sample(items, seed, sample_per_group)
+    sampling = (
+        _planned_sample(items, selection)
+        if selection is not None
+        else _sample(items, seed, sample_per_group)
+    )
     item_frame = pl.from_dicts(items, schema=_ITEM_SCHEMA)
     association_frame = pl.from_dicts(associations, schema=_ASSOCIATION_SCHEMA).sort(
         ["item_id", "input_path", "input_row_index"]
@@ -164,9 +181,24 @@ def prepare(
         for path, record in zip(paths, input_records, strict=True)
     ):
         raise ValueError("input fingerprint changed during preparation")
+    if (
+        selection_record is not None
+        and sha256_file(sample_selection) != selection_record["sha256"]
+    ):
+        raise ValueError("sample selection changed during preparation")
     output_dir.mkdir(parents=True, exist_ok=True)
     _atomic_parquet(output_dir / "associations.parquet", association_frame)
     _atomic_parquet(output_dir / "items.parquet", item_frame)
+    artifact_frames = {
+        "associations.parquet": association_frame,
+        "items.parquet": item_frame,
+    }
+    if selection is not None:
+        artifact_frames["benchmark-selection.parquet"] = selection.sort("item_id")
+        _atomic_parquet(
+            output_dir / "benchmark-selection.parquet",
+            artifact_frames["benchmark-selection.parquet"],
+        )
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "fingerprint": fingerprint,
@@ -197,13 +229,13 @@ def prepare(
                 "path": name,
                 "sha256": sha256_file(output_dir / name),
                 "bytes": (output_dir / name).stat().st_size,
-                "rows": association_frame.height
-                if name == "associations.parquet"
-                else item_frame.height,
+                "rows": frame.height,
             }
-            for name in ("associations.parquet", "items.parquet")
+            for name, frame in artifact_frames.items()
         },
     }
+    if selection_record is not None:
+        receipt["sample_selection"] = selection_record
     _atomic_json(manifest_path, receipt)
     return receipt
 
@@ -467,6 +499,56 @@ def _sample(items: list[dict], seed: str, requested: int) -> dict:
     }
 
 
+def _planned_sample(items: list[dict], selection: pl.DataFrame) -> dict:
+    """Use an explicit, human-labelled, content-distinct benchmark selection."""
+    permitted = {"recent_butterfly", "earlier_butterfly", "other_categories"}
+    if (
+        selection["item_id"].null_count()
+        or selection["item_id"].n_unique() != selection.height
+        or not set(selection["benchmark_group"]).issubset(permitted)
+    ):
+        raise ValueError("Invalid or duplicate benchmark sample identities/groups")
+    by_id = {item["item_id"]: item for item in items}
+    content_groups: dict[str, set[str]] = defaultdict(set)
+    for item in items:
+        if item["known_image_hash"] and item["human_group"]:
+            content_groups[item["known_image_hash"]].add(item["human_group"])
+    seen = set()
+    counts: Counter[str] = Counter()
+    for item_id, group in selection.iter_rows():
+        item = by_id.get(item_id)
+        if item is None:
+            raise ValueError("Benchmark sample is outside the prepared image corpus")
+        if item["review_status"] != "decisive" or item["human_group"] not in _GROUPS:
+            raise ValueError(
+                "Benchmark samples require decisive human content evidence"
+            )
+        if (group in {"recent_butterfly", "earlier_butterfly"}) != (
+            item["human_group"] == "butterfly"
+        ):
+            raise ValueError("Benchmark subset contradicts its human content evidence")
+        image_hash = item["known_image_hash"]
+        if not image_hash or image_hash in seen or len(content_groups[image_hash]) > 1:
+            raise ValueError("Benchmark samples require distinct known image content")
+        seen.add(image_hash)
+        item["cache_group"] = item["human_group"]
+        counts[item["human_group"]] += 1
+    return {
+        "policy": "explicit_human_labelled_content_distinct_selection",
+        "groups": {
+            group: {
+                "selected": counts[group],
+                "requested": counts[group],
+                "shortfall": 0,
+            }
+            for group in _GROUPS
+        },
+        "benchmark_groups": dict(sorted(Counter(selection["benchmark_group"]).items())),
+        "known_cross_group_content_conflicts": 0,
+        "unknown_content_duplicates": "none_in_selected_known_content",
+    }
+
+
 def _reuse(path: Path, fingerprint: str) -> dict:
     receipt = json.loads(path.read_text())
     if (
@@ -476,7 +558,10 @@ def _reuse(path: Path, fingerprint: str) -> dict:
         raise ValueError(
             "existing preparation fingerprint does not match inputs or policy"
         )
-    for name in ("items.parquet", "associations.parquet"):
+    names = ["items.parquet", "associations.parquet"]
+    if receipt.get("sample_selection"):
+        names.append("benchmark-selection.parquet")
+    for name in names:
         artifact = receipt.get("artifacts", {}).get(name, {})
         artifact_path = path.parent / name
         if not artifact_path.is_file() or sha256_file(artifact_path) != artifact.get(

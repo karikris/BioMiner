@@ -136,6 +136,87 @@ def test_all_unavailable_images_retain_typed_ranking_columns(tmp_path):
     assert rankings["status"].item() == "unavailable"
 
 
+@pytest.mark.parametrize(
+    "real,other,prediction,status",
+    [
+        (0.8, 0.2, "butterfly", "scored"),
+        (0.2, 0.8, "not_butterfly", "scored"),
+        (0.5, 0.5, None, "ambiguous"),
+    ],
+)
+def test_binary_projection_uses_existing_margin_and_preserves_ties(
+    tmp_path, real, other, prediction, status
+):
+    from biominer.embeddinggemma.common import file_sha256
+    from biominer.embeddinggemma.scoring import score_configuration
+
+    labels, text = fixture_vectors()
+    vector = np.zeros(768, dtype=np.float32)
+    vector[:4] = [real, other, 0.1, 0.9]
+    items = pl.DataFrame(
+        {
+            "item_id": ["image"],
+            "human_label": ["adult_butterfly"],
+            "human_group": ["butterfly"],
+            "review_status": ["decisive"],
+        }
+    )
+    media = pl.DataFrame(
+        {"item_id": ["image"], "status": ["ok"], "image_hash": ["hash"]}
+    )
+    embeddings = pl.DataFrame({"image_hash": ["hash"], "embedding": [vector.tolist()]})
+    manifest = score_configuration(
+        items,
+        media,
+        embeddings,
+        labels,
+        text,
+        tmp_path,
+        budget=560,
+        dimension=256,
+        provenance={},
+        binary=True,
+    )
+    path = tmp_path / "butterfly_classification.parquet"
+    row = pl.read_parquet(path).row(0, named=True)
+    assert row["prediction"] == prediction
+    assert row["classification_status"] == status
+    assert row["human_disagreement"] == (
+        None if prediction is None else prediction != "butterfly"
+    )
+    assert row["real_vs_other_margin"] is not None
+    assert manifest["outputs"][path.name] == file_sha256(path)
+
+
+def test_binary_unscored_media_never_becomes_negative(tmp_path):
+    from biominer.embeddinggemma.scoring import score_configuration
+
+    labels, text = fixture_vectors()
+    items = pl.DataFrame({"item_id": ["missing"]})
+    media = pl.DataFrame({"item_id": ["missing"], "status": ["unavailable"]})
+    empty = pl.DataFrame(
+        schema={"image_hash": pl.String, "embedding": pl.List(pl.Float32)}
+    )
+    score_configuration(
+        items,
+        media,
+        empty,
+        labels,
+        text,
+        tmp_path,
+        budget=560,
+        dimension=768,
+        provenance={},
+        binary=True,
+    )
+    row = pl.read_parquet(tmp_path / "butterfly_classification.parquet").row(
+        0, named=True
+    )
+    assert row["prediction"] is None
+    assert row["butterfly_present"] is None
+    assert row["classification_status"] == "unscored"
+
+
 def test_changed_scoring_provenance_requires_new_output_directory(tmp_path):
     from biominer.embeddinggemma.common import file_sha256
     from biominer.embeddinggemma.scoring import score_configuration

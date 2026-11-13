@@ -14,6 +14,7 @@ from biominer.common.semantic_hash import canonical_semantic_fingerprint
 MODEL_ID = "google/embeddinggemma-2"
 MODEL_REVISION = "f9972ac22e696a105c482202646979e33e4b5a1e"
 PREPROCESSING_VERSION = "embeddinggemma-full-image-exif-rgb-v1"
+VISION_BUDGETS = (280, 560, 1120)
 
 
 @dataclass(frozen=True)
@@ -32,8 +33,8 @@ class RuntimeConfig:
             raise ValueError("Model revision must be an immutable 40-character commit")
 
     def fingerprint(self, budget: int) -> str:
-        if budget not in {280, 1120}:
-            raise ValueError("Benchmark token budget must be 280 or 1120")
+        if budget not in VISION_BUDGETS:
+            raise ValueError("Benchmark token budget must be 280, 560 or 1120")
         from importlib.metadata import PackageNotFoundError, version
 
         versions = {}

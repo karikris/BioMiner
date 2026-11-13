@@ -52,6 +52,86 @@ def _items(out):
     return pl.read_parquet(out / "items.parquet")
 
 
+def test_explicit_benchmark_selection_preserves_subsets_without_automatic_sampling(
+    tmp_path,
+):
+    path = _input(
+        tmp_path,
+        [
+            _row("1", ["adult_butterfly"], image_sha256="a" * 64),
+            _row("2", ["adult_butterfly"], image_sha256="b" * 64),
+            _row("3", ["plant"], image_sha256="c" * 64),
+            _row("4", ["no_biological_subject"], image_sha256="d" * 64),
+        ],
+    )
+    _prepare([path], tmp_path / "baseline", sample_per_group=0)
+    ids = dict(
+        _items(tmp_path / "baseline").select("source_record_id", "item_id").iter_rows()
+    )
+    plan = tmp_path / "selection.parquet"
+    pl.DataFrame(
+        {
+            "item_id": [ids["1"], ids["2"], ids["3"]],
+            "benchmark_group": [
+                "recent_butterfly",
+                "earlier_butterfly",
+                "other_categories",
+            ],
+        }
+    ).write_parquet(plan)
+
+    receipt = _prepare([path], tmp_path / "selected", sample_selection=plan)
+
+    selected = _items(tmp_path / "selected").filter(pl.col("cache_group").is_not_null())
+    assert selected.height == 3
+    assert set(selected["source_record_id"]) == {"1", "2", "3"}
+    assert receipt["cache_sampling"]["benchmark_groups"] == {
+        "recent_butterfly": 1,
+        "earlier_butterfly": 1,
+        "other_categories": 1,
+    }
+    assert (
+        pl.read_parquet(tmp_path / "selected" / "benchmark-selection.parquet").height
+        == 3
+    )
+
+
+def test_explicit_benchmark_selection_rejects_duplicate_image_content(tmp_path):
+    path = _input(
+        tmp_path,
+        [
+            _row("1", ["adult_butterfly"], image_sha256="a" * 64),
+            _row("2", ["adult_butterfly"], image_sha256="a" * 64),
+        ],
+    )
+    _prepare([path], tmp_path / "baseline", sample_per_group=0)
+    plan = tmp_path / "selection.parquet"
+    pl.DataFrame(
+        {
+            "item_id": _items(tmp_path / "baseline")["item_id"],
+            "benchmark_group": ["recent_butterfly", "earlier_butterfly"],
+        }
+    ).write_parquet(plan)
+
+    with pytest.raises(ValueError, match="distinct known image content"):
+        _prepare([path], tmp_path / "selected", sample_selection=plan)
+
+
+def test_explicit_benchmark_selection_cannot_select_unreviewed_items(tmp_path):
+    path = _input(tmp_path, [_row("1")])
+    _prepare([path], tmp_path / "baseline", sample_per_group=0)
+    plan = tmp_path / "selection.parquet"
+    pl.DataFrame(
+        {
+            "item_id": _items(tmp_path / "baseline")["item_id"],
+            "benchmark_group": ["recent_butterfly"],
+        }
+    ).write_parquet(plan)
+
+    with pytest.raises(ValueError, match="decisive human"):
+        _prepare([path], tmp_path / "selected", sample_selection=plan)
+
+
 def test_prepare_deduplicates_work_and_retains_every_input_association(tmp_path):
     rows = [_row("1", ["adult_butterfly"]), _row("2")]
     a = _input(tmp_path, rows, "a.parquet")

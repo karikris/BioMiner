@@ -78,6 +78,54 @@ therefore measures storage and ranking changes, not cheaper encoder inference.
 Native vectors remain cached for reuse. Persisted per-configuration vectors
 make their storage costs inspectable independently of this shared cache.
 
+## Second butterfly experiment
+
+Reuse the same pinned model, optional environment, float32 MPS adapter, image
+cache, full-frame preprocessing and 392-label vocabulary. A separate output
+directory keeps this experiment independent of the first benchmark. Prepare
+the private input export with **every current REVIEW image excluded**, including
+source aliases and matching cached image bytes. REVIEW images must not appear
+in either inference or benchmark samples.
+
+An optional private `--sample-selection` Parquet with `item_id` and
+`benchmark_group` identifies the disjoint benchmark samples: 500 recent eligible
+butterflies, 500 earlier adult butterflies and 1,000 other human-reviewed
+categories. Preparation validates this selection rather than resampling it.
+The ordinary `cache_group` continues to record biological evidence groups;
+the selection artifact retains recent versus earlier sample membership.
+
+```bash
+.venv-embeddinggemma/bin/python -m biominer.cli vision embeddinggemma run \
+  --input "$ELIGIBLE_INPUT" --sample-selection "$SAMPLE_SELECTION" \
+  --label-bank "$LABEL_BANK" \
+  --output-dir data/experiments/embeddinggemma2-v2 \
+  --cache-dir data/cache/embeddinggemma2 \
+  --configuration 1120-256 --configuration 560-256 \
+  --configuration 1120-768 --configuration 560-768 \
+  --binary --cohort all --batch-size 4 --download-workers 4
+```
+
+Repeated `--configuration BUDGET-DIMENSION` values define execution order. The
+original four configurations remain the default when this option is absent.
+Each distinct visual budget is encoded once per image; the 768-dimensional
+passes reuse those native embeddings after the 256-dimensional comparisons.
+The run records and validates the configuration plan before resuming. Runtime
+checks verify the requested budgets against CPU float32, including 560 tokens.
+Transformers' [Gemma4 image processor](https://github.com/huggingface/transformers/blob/109a7d19/src/transformers/models/gemma4/image_processing_gemma4.py)
+supports 560 in its allowed token budgets (commit `109a7d19`, verified through
+GitHits on 2026-11-14); the existing adapter already passes this through
+`processing_kwargs.image.max_soft_tokens`.
+
+With `--binary`, each score directory also contains the checksummed
+`butterfly_classification.parquet`. Its prediction is `butterfly` when the best
+real adult butterfly/specimen evidence outranks all other content evidence,
+and `not_butterfly` for a negative margin. Eggs, larvae, pupae, detached wings,
+drawings and ornaments remain competing other content under the existing label
+policy. Exact ties, missing opposing evidence and unscored images have null
+predictions and explicit statuses. Raw margins, human disagreement and review
+order remain available; no calibrated probability or confidence threshold is
+invented. Full vocabulary rankings and existing comparison reports are retained.
+
 ## Inputs and interpretation
 
 Preparation preserves every source association, deduplicating image work by
@@ -164,3 +212,9 @@ device checks and corpus runs are opt-in commands with separate receipts.
 
 Primary references: [Google model card](https://huggingface.co/google/embeddinggemma-2)
 and [Transformers integration](https://huggingface.co/docs/transformers/model_doc/embedding_gemma2).
+
+The 560-token setting was checked through GitHits against the official
+[Gemma 4 image processor](https://github.com/huggingface/transformers/blob/109a7d19/src/transformers/models/gemma4/image_processing_gemma4.py#L123),
+which lists 70, 140, 280, 560 and 1,120 as supported budgets. This workflow
+retains its pinned dependency versions and the existing official encoder;
+no external implementation code was copied.

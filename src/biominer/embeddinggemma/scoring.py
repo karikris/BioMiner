@@ -19,7 +19,7 @@ from biominer.embeddinggemma.common import (
     producer_sha,
 )
 from biominer.embeddinggemma.labels import evidence_family, label_fingerprint
-from biominer.embeddinggemma.runtime import normalize_vectors
+from biominer.embeddinggemma.runtime import VISION_BUDGETS, normalize_vectors
 
 RANKING_SCHEMA = {
     **{
@@ -78,8 +78,9 @@ def score_configuration(
     budget: int,
     dimension: int,
     provenance: dict,
+    binary: bool = False,
 ) -> dict:
-    if budget not in {280, 1120}:
+    if budget not in VISION_BUDGETS:
         raise ValueError("Unsupported vision token budget")
     text = normalize_vectors(text_vectors, dimension)
     if len(labels) != len(text) or not labels:
@@ -128,6 +129,9 @@ def score_configuration(
             .sort("item_id")
             .to_dicts(),
             "scoring_policy": "overlapping-cosine-axes-v1",
+            **(
+                {"binary_policy": "real-butterfly-vs-other-margin-v1"} if binary else {}
+            ),
         }
     )
     previous_manifest = output_dir / "manifest.json"
@@ -286,6 +290,11 @@ def score_configuration(
     output_dir.mkdir(parents=True, exist_ok=True)
     atomic_parquet(output_dir / "scores.parquet", scores_frame)
     atomic_parquet(output_dir / "rankings.parquet", rankings)
+    if binary:
+        atomic_parquet(
+            output_dir / "butterfly_classification.parquet",
+            binary_classification(rankings),
+        )
     atomic_parquet(
         output_dir / "labels.parquet",
         pl.DataFrame(labels).with_row_index("score_index"),
@@ -348,5 +357,78 @@ def score_configuration(
             )
         },
     }
+    if binary:
+        manifest["binary_policy"] = "real-butterfly-vs-other-margin-v1"
+        manifest["outputs"]["butterfly_classification.parquet"] = file_sha256(
+            output_dir / "butterfly_classification.parquet"
+        )
     atomic_json(output_dir / "manifest.json", manifest)
     return manifest
+
+
+def binary_classification(rankings: pl.DataFrame) -> pl.DataFrame:
+    """Project the existing competing evidence axes without inventing confidence.
+
+    A positive raw margin means a real adult butterfly/specimen label outranked
+    every other content label. Exact ties, absent opposing evidence, and unscored
+    media stay explicit unknowns. The original vocabulary rankings and review
+    order remain available alongside this compact decision table.
+    """
+    valid = (pl.col("status") == "ok") & pl.col("real_vs_other_margin").is_not_null()
+    tied = pl.col("real_vs_other_margin") == 0
+    return (
+        rankings.with_columns(
+            pl.when(valid & ~tied)
+            .then(pl.col("real_vs_other_margin") > 0)
+            .otherwise(None)
+            .alias("butterfly_present"),
+            pl.when(pl.col("status") != "ok")
+            .then(pl.lit("unscored"))
+            .when(~valid)
+            .then(pl.lit("missing_evidence"))
+            .when(tied)
+            .then(pl.lit("ambiguous"))
+            .otherwise(pl.lit("scored"))
+            .alias("classification_status"),
+            pl.when(
+                (pl.col("review_status") == "decisive")
+                & pl.col("human_group").is_in(
+                    ["butterfly", "other_biological", "non_biological"]
+                )
+            )
+            .then(pl.col("human_group") == "butterfly")
+            .otherwise(None)
+            .alias("human_butterfly_present"),
+        )
+        .with_columns(
+            pl.when(pl.col("butterfly_present"))
+            .then(pl.lit("butterfly"))
+            .when(~pl.col("butterfly_present"))
+            .then(pl.lit("not_butterfly"))
+            .otherwise(None)
+            .alias("prediction"),
+            (pl.col("butterfly_present") != pl.col("human_butterfly_present")).alias(
+                "human_disagreement"
+            ),
+        )
+        .select(
+            "item_id",
+            "image_hash",
+            "status",
+            "classification_status",
+            "prediction",
+            "butterfly_present",
+            "top1_label",
+            "top1_score",
+            "top1_top2_margin",
+            "real_vs_other_margin",
+            "real_vs_depiction_margin",
+            "human_label",
+            "human_group",
+            "review_status",
+            "review_content_binding",
+            "human_butterfly_present",
+            "human_disagreement",
+            "review_order_score",
+        )
+    )

@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from biominer.embeddinggemma.runtime import MODEL_REVISION
+from biominer.embeddinggemma.runtime import MODEL_REVISION, VISION_BUDGETS
 
 
 def add_parser(subparsers):
@@ -31,12 +31,30 @@ def add_parser(subparsers):
             command.add_argument("--input", type=Path, action="append", required=True)
             command.add_argument("--sample-per-group", type=int, default=500)
             command.add_argument("--seed", default="embeddinggemma-v1")
+            command.add_argument("--sample-selection", type=Path)
         if name in {"prepare", "score", "run"}:
             command.add_argument("--label-bank", type=Path, required=True)
         if name in {"encode", "score"}:
             command.add_argument("--prepared-dir", type=Path, required=True)
             command.add_argument(
-                "--budget", type=int, choices=(280, 1120), required=True
+                "--budget", type=int, choices=VISION_BUDGETS, required=True
+            )
+        if name == "run":
+            command.add_argument(
+                "--configuration",
+                action="append",
+                choices=tuple(
+                    f"{budget}-{dimension}"
+                    for dimension in (256, 768)
+                    for budget in VISION_BUDGETS
+                ),
+                help="Repeat in requested execution order; default preserves the first benchmark",
+            )
+        if name in {"score", "run"}:
+            command.add_argument(
+                "--binary",
+                action="store_true",
+                help="Also publish butterfly/not-butterfly evidence with explicit unknowns",
             )
         if name in {"encode", "score", "run"}:
             command.add_argument(
@@ -61,6 +79,9 @@ def add_parser(subparsers):
         if name == "runtime-check":
             command.add_argument("--image", type=Path)
             command.add_argument("--skip-cpu-reference", action="store_true")
+            command.add_argument(
+                "--budget", type=int, choices=VISION_BUDGETS, action="append"
+            )
     return vision
 
 

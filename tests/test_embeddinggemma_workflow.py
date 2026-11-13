@@ -4,6 +4,7 @@ from argparse import Namespace
 import httpx
 import numpy as np
 import polars as pl
+import pytest
 
 from biominer.embeddinggemma.runtime import RuntimeConfig
 
@@ -158,13 +159,63 @@ def test_cache_audit_excludes_cross_group_duplicate_bytes(tmp_path):
     assert receipt["groups"]["butterfly"]["shortfall"] == 1
 
 
-def test_run_stages_reuse_embeddings_and_never_encode_four_times(tmp_path, monkeypatch):
+def test_cache_audit_reports_explicit_sample_group_denominators(tmp_path):
+    from biominer.embeddinggemma.workflow import audit_cache
+
+    items = pl.DataFrame(
+        {
+            "item_id": ["recent", "earlier", "other"],
+            "cache_group": ["butterfly", "butterfly", "non_biological"],
+        }
+    )
+    media = pl.DataFrame(
+        {
+            "item_id": ["recent", "earlier", "other"],
+            "status": ["ok", "unavailable", "ok"],
+            "image_hash": ["one", None, "two"],
+            "bytes_downloaded": [10, 0, 10],
+        }
+    )
+    audit_cache(
+        items,
+        media,
+        tmp_path,
+        requested=500,
+        group_requests={"butterfly": 2, "non_biological": 1},
+    )
+    groups = json.loads((tmp_path / "cache-audit.json").read_text())["groups"]
+    assert groups["butterfly"] == {"selected": 1, "requested": 2, "shortfall": 1}
+    assert groups["non_biological"] == {"selected": 1, "requested": 1, "shortfall": 0}
+    assert groups["other_biological"] == {"selected": 0, "requested": 0, "shortfall": 0}
+
+
+@pytest.mark.parametrize(
+    "configurations,expected_budgets",
+    [
+        (None, [280, 1120]),
+        (["1120-256", "560-256", "1120-768", "560-768"], [1120, 560]),
+        (["1120-768", "560-768", "1120-256", "560-256"], [1120, 560]),
+    ],
+)
+def test_run_stages_reuse_embeddings_and_never_encode_four_times(
+    tmp_path, monkeypatch, configurations, expected_budgets
+):
     from io import BytesIO
 
     from PIL import Image
 
     from biominer.embeddinggemma import media as media_module
+    from biominer.embeddinggemma import workflow
     from biominer.embeddinggemma.workflow import run_experiment
+
+    score_order = []
+    original_score = workflow.score_cohort
+
+    def score(*args, **kwargs):
+        score_order.append((args[6], args[7]))
+        return original_score(*args, **kwargs)
+
+    monkeypatch.setattr(workflow, "score_cohort", score)
 
     bank = tmp_path / "labels.md"
     bank.write_text(
@@ -212,7 +263,7 @@ def test_run_stages_reuse_embeddings_and_never_encode_four_times(tmp_path, monke
         text_calls = 0
 
         def __init__(self):
-            self.calls = {280: 0, 1120: 0}
+            self.calls = {budget: 0 for budget in expected_budgets}
 
         def encode_images(self, paths, budget):
             self.calls[budget] += len(paths)
@@ -241,15 +292,135 @@ def test_run_stages_reuse_embeddings_and_never_encode_four_times(tmp_path, monke
         limit=None,
         batch_size=4,
         download_workers=1,
+        configuration=configurations,
+        binary=configurations is not None,
     )
     first = run_experiment(args, encoder=encoder)
     second = run_experiment(args, encoder=encoder)
     assert first["status"] == second["status"] == "complete"
-    assert encoder.calls == {280: 2, 1120: 2}
+    assert encoder.calls == {budget: 2 for budget in expected_budgets}
+    expected_order = workflow.run_configurations(configurations)
+    assert score_order == expected_order * 6  # Three cohorts, then a full resume.
     assert encoder.text_calls == 1
     assert len(list((args.output_dir / "scores").glob("*/*/manifest.json"))) == 12
+    if configurations is not None:
+        assert (
+            len(
+                list(
+                    (args.output_dir / "scores").glob(
+                        "*/*/butterfly_classification.parquet"
+                    )
+                )
+            )
+            == 12
+        )
     assert (
         json.loads((args.output_dir / "run.json").read_text())["last_complete_cohort"]
         == "all"
     )
     client.close()
+
+
+@pytest.mark.parametrize(
+    "values", [["560-256", "560-256"], ["999-256"], ["560-128"], ["bad"]]
+)
+def test_run_rejects_invalid_configuration_plan(values):
+    from biominer.embeddinggemma.workflow import run_configurations
+
+    with pytest.raises(ValueError):
+        run_configurations(values)
+
+
+def test_changed_configuration_plan_cannot_resume_existing_run(tmp_path):
+    from biominer.embeddinggemma.common import atomic_json
+    from biominer.embeddinggemma.workflow import run_experiment
+
+    plan = {"configurations": [[280, 256], [1120, 256]], "binary": False}
+    atomic_json(tmp_path / "configuration-plan.json", plan)
+    args = Namespace(output_dir=tmp_path, configuration=["1120-256", "560-256"])
+    with pytest.raises(ValueError, match="configuration plan changed"):
+        run_experiment(args)
+    assert json.loads((tmp_path / "configuration-plan.json").read_text()) == plan
+
+
+def test_standalone_score_binary_flag_publishes_decision_artifact(
+    tmp_path, monkeypatch
+):
+    from biominer.cli import build_parser
+    from biominer.embeddinggemma import labels as label_module
+    from biominer.embeddinggemma import media as media_module
+    from biominer.embeddinggemma import runtime, workflow
+    from biominer.embeddinggemma.common import atomic_json, file_sha256
+    from biominer.embeddinggemma.encode import encode_media
+
+    class Encoder:
+        config = RuntimeConfig(device="cpu")
+
+        def encode_images(self, paths, budget):
+            vectors = np.zeros((len(paths), 768), dtype=np.float32)
+            vectors[:, 0] = 1
+            return vectors
+
+        def encode_text(self, sentences):
+            vectors = np.zeros((len(sentences), 768), dtype=np.float32)
+            vectors[:, : len(sentences)] = np.eye(len(sentences))
+            return vectors
+
+        def metrics(self):
+            return {"device": "cpu"}
+
+    encoder = Encoder()
+    image = tmp_path / "synthetic-image"
+    image.write_bytes(b"fixture")
+    media = pl.DataFrame(
+        {
+            "item_id": ["image"],
+            "status": ["ok"],
+            "local_path": [str(image)],
+            "image_hash": [file_sha256(image)],
+        }
+    )
+    embedding_dir = tmp_path / "embeddings"
+    encode_media(media, embedding_dir, encoder=encoder, budget=560)
+    prepared = tmp_path / "prepared"
+    atomic_json(prepared / "manifest.json", {"fixture_only": True})
+    bank = tmp_path / "labels.md"
+    bank.write_text(
+        "## Butterfly Subject (1)\n- `real_butterfly_closeup` — A butterfly\n"
+        "## Plants Fungi (1)\n- `flower_closeup` — A flower\n"
+    )
+    original_load = label_module.load_labels
+    monkeypatch.setattr(
+        label_module, "load_labels", lambda path: original_load(path, expected_count=2)
+    )
+    monkeypatch.setattr(runtime, "SentenceEncoder", lambda *args, **kw: encoder)
+    monkeypatch.setattr(
+        workflow, "read_prepared", lambda path: pl.DataFrame({"item_id": ["image"]})
+    )
+    monkeypatch.setattr(media_module, "read_cached_items", lambda *args: media)
+    output = tmp_path / "score"
+    args = build_parser().parse_args(
+        [
+            "vision",
+            "embeddinggemma",
+            "score",
+            "--prepared-dir",
+            str(prepared),
+            "--embedding-dir",
+            str(embedding_dir),
+            "--label-bank",
+            str(bank),
+            "--output-dir",
+            str(output),
+            "--budget",
+            "560",
+            "--dimension",
+            "256",
+            "--device",
+            "cpu",
+            "--binary",
+        ]
+    )
+    workflow.execute(args)
+    result = pl.read_parquet(output / "butterfly_classification.parquet")
+    assert result["prediction"].item() == "butterfly"
