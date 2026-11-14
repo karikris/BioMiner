@@ -94,6 +94,53 @@ def test_species_three_candidates_keeps_top_five_schema(species_labels):
     assert result["bioclip_species_top5_cosine"] is None
 
 
+def test_species_top_ten_are_sorted_and_exported_with_scores(tmp_path):
+    names = [f"Papilio test{n:02d}" for n in range(12)]
+    keys = [("species", name) for name in names]
+    angles = np.linspace(0.1, 2.5, 12)
+    prototypes = np.stack([np.cos(angles), np.sin(angles)], axis=1)
+    result = score_vector([1, 0], keys, prototypes)
+    assert [result[f"bioclip_species_top{rank}"] for rank in range(1, 11)] == names[:10]
+    assert result["bioclip_species_top10_cosine"] == pytest.approx(np.cos(angles[9]))
+    assert "bioclip_species_top11" not in result
+    export_results(
+        [{"item_id": "sample", "flickr_photo_id": "sample"}],
+        {"sample": result},
+        {},
+        tmp_path,
+        keys,
+        {"scoring_fingerprint": "top-ten-test"},
+        final=True,
+    )
+    frame = pl.read_parquet(tmp_path / "image_suggestions.parquet")
+    assert frame["bioclip_species_top10"].item() == names[9]
+    assert frame["bioclip_species_top10_cosine"].item() == pytest.approx(
+        np.cos(angles[9])
+    )
+    assert names[9] in (tmp_path / "report.html").read_text()
+    assert pl.read_parquet(tmp_path / "all_label_scores.parquet").height == 12
+
+
+def test_species_top_ten_pad_missing_candidates_with_typed_nulls(
+    tmp_path, species_labels
+):
+    keys = [("species", name) for name in list(species_labels["heads"]["species"])[:3]]
+    result = score_vector([1, 0], keys, normalize_vectors([[1, 0], [0, 1], [-1, 0]]))
+    assert result["bioclip_species_top10"] is None
+    export_results(
+        [{"item_id": "a", "flickr_photo_id": "a"}],
+        {"a": result},
+        {},
+        tmp_path,
+        keys,
+        {"scoring_fingerprint": "top-ten-padding"},
+    )
+    frame = pl.read_parquet(tmp_path / "image_suggestions.parquet")
+    assert frame.schema["bioclip_species_top10"] == pl.String
+    assert frame.schema["bioclip_species_top10_cosine"] == pl.Float64
+    assert frame["bioclip_species_top10"].item() is None
+
+
 def cached_row(path, photo_id="001"):
     return {
         "flickr_photo_id": photo_id,

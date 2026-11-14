@@ -95,16 +95,22 @@ That directory contains checkpointed `image_suggestions.parquet`, `progress.json
 and `report.html`. The SQLite work state preserves native image embeddings
 separately from predictions, allowing new label sets to reuse image encodings.
 
-Species rows contain top-five scientific names, raw cosine scores for every
+New species rows contain top-ten scientific names and their cosine scores, raw cosine scores for every
 candidate, and the top-two cosine margin. All selected records remain represented,
 including pending and failed records. Missing evidence stays null. Finalization
 is separate from all records merely having a terminal status.
 
-The report compares Papilio demoleus top-one/top-five suggestions against the
+The report compares Papilio demoleus top-one/top-five/top-ten suggestions against the
 saved qualified human decisions. Generic adult-butterfly decisions cannot
 establish species accuracy. Rankings are conditional on the supplied list;
 omitted species cannot be returned. Cosines and margins are not calibrated
 probabilities. Species identity and wild-occurrence status remain unresolved.
+
+Top-ten outputs use evidence schema v2 and include the saved rank count in the
+species scoring fingerprint. This prevents old top-five prediction payloads
+from being reused as complete top-ten results. Compatible native image
+embeddings retain their existing cache keys. Pending/failed rows and runs with
+fewer than ten candidates retain typed null rank fields.
 
 All runtime files, original media, private source metadata, model weights, and
 reports belong in ignored local storage and must not be committed or published.

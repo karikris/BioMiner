@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 SMOKE_POLICY = "deterministic-round-robin-selection-reason-and-collection-v1"
+SPECIES_TOP_K = 10
 
 
 def collection_names(row):
@@ -71,6 +72,14 @@ def historical_target_comparison(rows, target=None):
         target in [row.get(f"bioclip_species_top{rank}") for rank in range(1, 6)]
         for row in scored
     )
+    top10 = sum(
+        target
+        in [
+            row.get(f"bioclip_species_top{rank}")
+            for rank in range(1, SPECIES_TOP_K + 1)
+        ]
+        for row in scored
+    )
     return {
         "target_scientific_name": target,
         "human_label": f"target_scientific_name:{target}" if target else None,
@@ -80,8 +89,10 @@ def historical_target_comparison(rows, target=None):
         "unscored_labeled_rows": len(historical) - len(scored),
         "top1_matches": top1,
         "top5_matches": top5,
+        "top10_matches": top10,
         "top1_match_fraction_of_scored": top1 / len(scored) if scored else None,
         "top5_match_fraction_of_scored": top5 / len(scored) if scored else None,
+        "top10_match_fraction_of_scored": top10 / len(scored) if scored else None,
         "interpretation": (
             "Agreement with historical human labels; not ground truth or an accuracy estimate."
             if target
@@ -165,7 +176,8 @@ Historical human labels are retained separately; they are not ground truth. Wild
                 f"<h2>{escape(target)}: agreement with historical human labels</h2><p>"
                 f"{comparison['historically_labeled_rows']} historically labeled images; "
                 f"{comparison['scored_labeled_rows']} scored and {comparison['unscored_labeled_rows']} unscored. "
-                f"Top 1 matches: {comparison['top1_matches']}; top 5 matches: {comparison['top5_matches']}. "
+                f"Top 1 matches: {comparison['top1_matches']}; top 5 matches: {comparison['top5_matches']}; "
+                f"top 10 matches: {comparison['top10_matches']}. "
                 "These are historical label comparisons, not a measured biological accuracy.</p>"
             )
         else:
@@ -197,7 +209,7 @@ Historical human labels are retained separately; they are not ground truth. Wild
             )
             if row["bioclip_status"] == "scored":
                 handle.write("<ol>")
-                for rank in range(1, 6):
+                for rank in range(1, SPECIES_TOP_K + 1):
                     name = row.get(f"bioclip_species_top{rank}")
                     cosine = row.get(f"bioclip_species_top{rank}_cosine")
                     if name is not None:
@@ -215,16 +227,21 @@ Historical human labels are retained separately; they are not ground truth. Wild
 
 
 def export_species_results(rows, result_dir, keys, manifest, *, final=False):
-    score_types = {f"bioclip_species_top{rank}": pl.String for rank in range(1, 6)}
+    score_types = {
+        f"bioclip_species_top{rank}": pl.String for rank in range(1, SPECIES_TOP_K + 1)
+    }
     score_types.update(
-        {f"bioclip_species_top{rank}_cosine": pl.Float64 for rank in range(1, 6)}
+        {
+            f"bioclip_species_top{rank}_cosine": pl.Float64
+            for rank in range(1, SPECIES_TOP_K + 1)
+        }
     )
     score_types["bioclip_species_margin"] = pl.Float64
     score_types.update(
         {f"bioclip_species_cosine__{name}": pl.Float64 for _, name in keys}
     )
     for row in rows:
-        for rank in range(1, 6):
+        for rank in range(1, SPECIES_TOP_K + 1):
             row.setdefault(f"bioclip_species_top{rank}", None)
             row.setdefault(f"bioclip_species_top{rank}_cosine", None)
         row.setdefault("bioclip_species_margin", None)
@@ -245,7 +262,8 @@ def export_species_results(rows, result_dir, keys, manifest, *, final=False):
     counts.update(actual)
     progress = dict(
         manifest,
-        schema="biominer-bioclip-species-evidence-v1",
+        schema="biominer-bioclip-species-evidence-v2",
+        saved_species_ranks=SPECIES_TOP_K,
         updated_at_utc=datetime.now(UTC).isoformat(),
         counts=counts,
         total=len(rows),

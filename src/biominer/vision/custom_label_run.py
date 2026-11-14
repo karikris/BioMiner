@@ -31,6 +31,7 @@ from biominer.bioclip.bioclip import PersistentBioClipScorer
 from biominer.bioclip.bioclip_worker import decoded_rgb_image_content_hash
 from biominer.bioclip.model_registry import BioClipRuntime, ModelConfig
 from biominer.common.semantic_hash import canonical_semantic_fingerprint
+from biominer.vision.species_results import SPECIES_TOP_K
 
 MODEL = "imageomics/bioclip-2.5-vith14"
 REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
@@ -118,7 +119,7 @@ def score_vector(vector, keys, prototypes):
             ((label, float(similarities[i])) for i, (h, label) in enumerate(keys) if h == head),
             key=lambda item: (-item[1], item[0]),
         )
-        top_count = 5 if head == "species" else 3
+        top_count = SPECIES_TOP_K if head == "species" else 3
         for rank in range(1, top_count + 1):
             label, score = ranked[rank - 1] if rank <= len(ranked) else (None, None)
             output[f"bioclip_{head}_top{rank}"] = label
@@ -687,8 +688,11 @@ def main(argv=None):
         with PersistentBioClipScorer(runtime=runtime, hf_cache_dir=args.hf_cache, device=args.device,
                                      image_resize_mode="longest", preprocess_workers=2) as scorer:
             attestation = attest(scorer)
-            scoring_key = canonical_semantic_fingerprint({"labels": config, "attestation": attestation,
-                                                         "scoring": "normalized-template-mean-cosine-v1"})
+            scoring_policy = {"labels": config, "attestation": attestation,
+                              "scoring": "normalized-template-mean-cosine-v1"}
+            if config.get("mode") == "species":
+                scoring_policy["saved_species_ranks"] = SPECIES_TOP_K
+            scoring_key = canonical_semantic_fingerprint(scoring_policy)
             result_dir = args.output / "results" / scoring_key.removeprefix("sha256:")
             result_dir.mkdir(parents=True, exist_ok=True)
             from biominer.embeddinggemma.common import producer_sha
@@ -701,6 +705,8 @@ def main(argv=None):
                         "started_at_utc": utc_now(), "pid": os.getpid(), "device": args.device,
                         "batch_size": args.batch_size, "download_workers": args.download_workers,
                         "output_directory": str(result_dir.resolve())}
+            if config.get("mode") == "species":
+                manifest["saved_species_ranks"] = SPECIES_TOP_K
             write_json(result_dir / "run_manifest.json", manifest)
             write_json(args.output / "current_results.json", {"directory": str(result_dir.resolve())})
             try:
