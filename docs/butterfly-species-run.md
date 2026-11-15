@@ -46,6 +46,21 @@ head. The existing subject/context mode remains available for other runs.
 
 ## Run
 
+The versioned `config/vision/butterfly_species_v2.json` bank preserves all 244
+original descriptions and the three photographic templates, and adds
+`Pseudozizeeria maha` and `Zizeeria karsandra` (246 species descriptions total).
+Use this full bank for new cohorts; the reduced bank derived from one dataset's
+top-three matches is specific to that dataset.
+
+For a review-filtered rerun, pin a fresh private review snapshot and join by
+source provider and canonical source record ID. Exclude photos in the latest
+round-two target-confirmed or non-adult groups, including hidden datasets;
+retain other adult butterflies. Saved round-two target confirmations and the
+latest explicit non-adult human answers also exclude photos. Retain all source
+associations, record exclusions separately, verify cached image bytes, and use
+a new output directory. Human labels remain separate from model suggestions.
+Pass the v2 bank as `--labels config/vision/butterfly_species_v2.json` below.
+
 Use BioMiner's administration Python to coordinate the separate, existing
 BioCLIP model runtime. Set the selection and output directories explicitly:
 
