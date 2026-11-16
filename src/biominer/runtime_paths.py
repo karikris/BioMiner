@@ -24,6 +24,22 @@ def runtime_dir(name: str) -> Path:
     return BASE_PATH / name
 
 
+def embeddinggemma2_runtime_env(runtime_python: str | Path) -> dict[str, str]:
+    """Share immutable source and cache locations across all Gemma entry paths."""
+    runtime = Path(runtime_python).expanduser().absolute()
+    venv = runtime.parent.parent
+    known_venv = venv.name in {"venv", ".venv"} or (venv / "pyvenv.cfg").is_file()
+    root = runtime.parents[2] if runtime.parent.name == "bin" and known_venv and len(runtime.parents) >= 3 else EMBEDDINGGEMMA2_DIR
+    env = os.environ.copy()
+    env.setdefault("HF_HOME", str(root / "cache/huggingface"))
+    env.setdefault("HUGGINGFACE_HUB_CACHE", str(Path(env["HF_HOME"]) / "hub"))
+    env.setdefault("TORCH_HOME", str(root / "cache/torch"))
+    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    source = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = source + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+
+
 def _repo_root_from_source(source_file: str | Path) -> Path:
     path = Path(source_file).resolve()
     for parent in path.parents:
@@ -33,5 +49,5 @@ def _repo_root_from_source(source_file: str | Path) -> Path:
 
 
 BASE_PATH = resolve_runtime_base_path()
-YOLOE26_DIR = runtime_dir("YOLO26")
+EMBEDDINGGEMMA2_DIR = runtime_dir("EmbeddingGemma2")
 BIOCLIP25_DIR = runtime_dir("BioCLIP25")

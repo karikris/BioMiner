@@ -18,6 +18,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+embeddinggemma2 = [
+    "sentence-transformers[image]>=6.1.0,<7",
+    "transformers>=5.18.0,<6",
+    "torch>=2.10,<3",
+]
 geo = [
     "h3>=4.5,<5",
 ]

@@ -40,7 +40,7 @@ from biominer.storage.uri import is_cloud_uri, join_uri
 
 
 DEFAULT_BIOCLIP_MODEL = "imageomics/bioclip-2.5-vith14"
-DEFAULT_VISION_BACKEND = "yoloe26"
+DEFAULT_VISION_BACKEND = "embeddinggemma2"
 ADAPTIVE_VISUAL_INPUT = "raw_full_image"
 
 

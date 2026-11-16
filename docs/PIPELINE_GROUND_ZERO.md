@@ -10,7 +10,7 @@ loaded intake. The manifest records 75,352,491 occurrence rows, 18,680,565
 multimedia rows, and 75,352,491 verbatim rows, plus the archive SHA-256.
 
 The Parquet conversion is physical, not semantic: no taxonomy registry, name
-enrichment, Flickr result, media bank, YOLOE route, BioCLIP score, human review,
+enrichment, Flickr result, media bank, visual route, BioCLIP score, human review,
 release artifact, report, or live-run metadata is current project evidence.
 Earlier material was staging work and is not an input to this production cycle.
 
@@ -38,7 +38,7 @@ GBIF DWCA: occurrence.txt + multimedia.txt + verbatim.txt
   → create source-bound Flickr keyword/query definitions
   → exhaust bounded Flickr API discovery from species-specific terms outward
   → validate, deduplicate, and retain photo/query provenance
-  → optimize and evaluate YOLOE visual-domain routing
+  → evaluate EmbeddingGemma 2 full-frame visual-domain proposals
   → run BioCLIP evidence through order, superfamily, family, genus, and species
   → attach source-bound common-name evidence and publish governed handoffs
 ```
@@ -71,10 +71,18 @@ not. A Flickr result is a discovery candidate, not a biodiversity occurrence.
 
 ### 4. Visual routing
 
-YOLOE is optimized and evaluated as a route/quality gate for the photo bank.
-It distinguishes usable butterfly evidence from moths, other insects, life
-stages, specimens, artifacts, no-organism images, and ambiguous material. It
-does not decide taxonomy or turn a detector score into a probability.
+EmbeddingGemma 2 replaces YOLOE26 execution with frozen full-frame image/text
+embeddings. It proposes butterfly, moth/other-insect, life-stage, specimen,
+artifact, no-organism, and ambiguous domains. Signed cosine similarities and
+different-domain margins remain raw evidence; every proposal requires review.
+It does not decide taxonomy or measure boxes, masks, object counts, subject
+presence, or subject area. Missing measurements remain unavailable and cannot
+satisfy automatic reference-admission quality gates. Independent biological
+evaluation is required before a production routing policy can be selected.
+
+The new fingerprints and schemas reject YOLOE26 checkpoint reuse. Historical
+measured-detection readers remain separate. See the
+[migration analysis](research/embeddinggemma2_replacement_2026-11-17.md).
 
 ### 5. Hierarchical BioCLIP evidence
 

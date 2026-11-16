@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 import re
 
@@ -18,12 +18,13 @@ from biominer.vision.full_frame_attention import (
 from biominer.vision.gates import SUPPORTED_COMPARISON_ROUTES
 from biominer.vision.target_full_frame import (
     TARGET_FULL_FRAME_SCORING_UNIT_VERSION,
+    EMBEDDING_ROUTED_SCORING_UNIT_VERSION,
     TargetFullFramePlan,
 )
 
 
 FLICKR_PHOTO_EMBEDDING_UNIT_SCHEMA_VERSION = "flickr-photo-embedding-unit-v1.0.0"
-FLICKR_SCORING_UNIT_SCHEMA_VERSION = "flickr-scoring-unit-v1.0.0"
+FLICKR_SCORING_UNIT_SCHEMA_VERSION = "flickr-scoring-unit-v2.0.0"
 FLICKR_SCORING_ASSOCIATION_SCHEMA_VERSION = "flickr-scoring-association-v1.0.0"
 FLICKR_SCORING_CANDIDATE_SCHEMA_VERSION = "flickr-scoring-candidate-v1.0.0"
 
@@ -150,6 +151,10 @@ def flickr_scoring_unit_schema() -> dict[str, pl.DataType]:
         "visual_input_id": pl.String,
         "model_input_signature": pl.String,
         "routing_scoring_unit_version": pl.String,
+        "scoring_unit_kind": pl.String,
+        "routing_action": pl.String,
+        "routing_model_fingerprint": pl.String,
+        "route_evidence_fingerprint": pl.String,
         "routing_policy_version": pl.String,
         "routing_policy_fingerprint": pl.String,
         "detection_ids": pl.List(pl.String),
@@ -226,7 +231,7 @@ def build_flickr_scoring_unit_artifacts(
     photo_rows_by_key: dict[tuple[str, str], dict[str, object]] = {}
     scoring_rows: list[dict[str, object]] = []
     for unit in plan.scoring_units:
-        if unit.scoring_unit_version != TARGET_FULL_FRAME_SCORING_UNIT_VERSION:
+        if unit.scoring_unit_version not in {TARGET_FULL_FRAME_SCORING_UNIT_VERSION, EMBEDDING_ROUTED_SCORING_UNIT_VERSION}:
             raise ValueError("unsupported target full-frame scoring-unit version")
         if unit.route not in SUPPORTED_COMPARISON_ROUTES:
             raise ValueError(f"unsupported BioCLIP route {unit.route!r}")
@@ -310,12 +315,16 @@ def build_flickr_scoring_unit_artifacts(
             )
             for item in unit.detections
         }
-        if len(policy_versions) != 1 or len(policy_fingerprints) != 1:
+        image_route = unit.scoring_unit_version == EMBEDDING_ROUTED_SCORING_UNIT_VERSION
+        if image_route:
+            if unit.detections or len(unit.embedding_route_evidence) != 1:
+                raise ValueError("image route requires embedding evidence without object detections")
+        elif len(policy_versions) != 1 or len(policy_fingerprints) != 1:
             raise ValueError("one organism unit requires one routing policy identity")
         detection_ids = sorted(
             {_required_text(item.detection_id, field="detection_id") for item in unit.detections}
         )
-        if not detection_ids or len(detection_ids) != len(unit.detections):
+        if not image_route and (not detection_ids or len(detection_ids) != len(unit.detections)):
             raise ValueError("one organism unit requires unique detection evidence")
         scoring_base = {
             "schema_version": FLICKR_SCORING_UNIT_SCHEMA_VERSION,
@@ -331,10 +340,16 @@ def build_flickr_scoring_unit_artifacts(
             "visual_input_id": visual_input.visual_input_id,
             "model_input_signature": model_input_signature,
             "routing_scoring_unit_version": unit.scoring_unit_version,
-            "routing_policy_version": next(iter(policy_versions)),
-            "routing_policy_fingerprint": next(iter(policy_fingerprints)),
-            "detection_ids": detection_ids,
-            "detection_count": len(detection_ids),
+            # organism_unit_id is the historical foreign-key spelling. Kind
+            # distinguishes an image/route unit from a measured object unit.
+            "scoring_unit_kind": "full_frame_embedding_route" if image_route else "detected_object_route",
+            "routing_action": "review" if image_route else None,
+            "routing_model_fingerprint": unit.embedding_route_evidence[0].model_fingerprint if image_route else None,
+            "route_evidence_fingerprint": canonical_semantic_fingerprint([asdict(item) for item in unit.embedding_route_evidence]) if image_route else None,
+            "routing_policy_version": None if image_route else next(iter(policy_versions)),
+            "routing_policy_fingerprint": None if image_route else next(iter(policy_fingerprints)),
+            "detection_ids": None if image_route else detection_ids,
+            "detection_count": None if image_route else len(detection_ids),
         }
         scoring_rows.append(
             {
@@ -694,11 +709,28 @@ def _validate_scoring_row(
     _sha256(row["scoring_unit_fingerprint"], field="scoring_unit_fingerprint")
     if row["route"] not in SUPPORTED_COMPARISON_ROUTES:
         raise ValueError("unsupported Flickr scoring-unit route")
-    detection_ids = list(row["detection_ids"])
-    if detection_ids != sorted(set(detection_ids)) or not detection_ids:
-        raise ValueError("scoring-unit detection IDs must be sorted and unique")
-    if row["detection_count"] != len(detection_ids):
-        raise ValueError("scoring-unit detection count mismatch")
+    kind = row["scoring_unit_kind"]
+    if kind == "full_frame_embedding_route":
+        if row["routing_action"] != "review":
+            raise ValueError("embedding scoring units must retain review status")
+        if row["routing_scoring_unit_version"] != EMBEDDING_ROUTED_SCORING_UNIT_VERSION:
+            raise ValueError("unsupported image routing scoring-unit version")
+        if any(row[field] is not None for field in ("detection_ids", "detection_count", "routing_policy_version", "routing_policy_fingerprint")):
+            raise ValueError("image routing cannot supply measured detection evidence")
+        _sha256(row["routing_model_fingerprint"], field="routing_model_fingerprint")
+        _sha256(row["route_evidence_fingerprint"], field="route_evidence_fingerprint")
+    elif kind == "detected_object_route":
+        if row["routing_scoring_unit_version"] != TARGET_FULL_FRAME_SCORING_UNIT_VERSION:
+            raise ValueError("unsupported detected-object scoring-unit version")
+        if row["routing_model_fingerprint"] is not None or row["route_evidence_fingerprint"] is not None:
+            raise ValueError("object detections cannot masquerade as embedding routes")
+        detection_ids = list(row["detection_ids"] or [])
+        if detection_ids != sorted(set(detection_ids)) or not detection_ids:
+            raise ValueError("scoring-unit detection IDs must be sorted and unique")
+        if row["detection_count"] != len(detection_ids):
+            raise ValueError("scoring-unit detection count mismatch")
+    else:
+        raise ValueError("unsupported Flickr scoring-unit kind")
     try:
         photo = photo_by_id[str(row["photo_embedding_unit_id"])]
     except KeyError as exc:

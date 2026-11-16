@@ -1,4 +1,8 @@
-"""YOLOE quality and life-stage routing for provisional references."""
+"""Historical object-detection route codec and aggregation for references.
+
+New model execution uses references.embedding_routing; these measured YOLOE
+schemas remain distinct from image-level embedding suggestions.
+"""
 
 from __future__ import annotations
 

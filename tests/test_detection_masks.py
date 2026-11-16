@@ -14,7 +14,7 @@ from biominer.detection.schema import (
     build_detection_rows,
     empty_detection_frame,
 )
-from biominer.detection.yoloe26_detector import (
+from biominer.detection.legacy_yoloe_evidence import (
     _candidate_to_payload as yoloe26_candidate_to_payload,
     _detections_from_payload as yoloe26_detections_from_payload,
     detections_from_yoloe_result,

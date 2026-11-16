@@ -138,7 +138,7 @@ class DetectorRouteContract:
             raise ValueError("YOLOE-26 model_id must start with yoloe26:")
         if not self.prompt_classes or self.prompt_set_fingerprint is None:
             raise ValueError("YOLOE-26 contract requires prompts and fingerprint")
-        from biominer.detection.yoloe26_detector import (
+        from biominer.detection.legacy_yoloe_evidence import (
             yoloe26_prompt_set_fingerprint,
         )
 

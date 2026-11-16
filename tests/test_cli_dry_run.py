@@ -241,40 +241,6 @@ def test_dev_registry_recovery_commands_accept_separate_enrichment_and_output_di
     assert compile_args.translation_sources == "wikimedia"
 
 
-def test_yoloe_flickr_cli_accepts_an_exact_single_prompt() -> None:
-    args = build_parser().parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe-flickr-sample",
-            "--output-dir",
-            "staging/yoloe/australia-insect",
-            "--prompt-class",
-            "insect",
-        ]
-    )
-
-    assert args.prompt_class == ["insect"]
-
-
-def test_sharded_yoloe_cli_has_requested_parallel_defaults() -> None:
-    args = build_parser().parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe-flickr-sharded",
-            "--output-dir",
-            "staging/yoloe/australia-insect-sharded",
-        ]
-    )
-
-    assert args.shards == 4
-    assert args.download_workers_per_shard == 4
-    assert args.yoloe_batch_size == 8
-    assert args.imgsz == 768
-    assert args.prompt_class is None
-
-
 def test_registry_build_source_defaults_exclude_blocked_providers() -> None:
     source_names = {source.casefold() for source in DEFAULT_ENRICHMENT_SOURCES}
 
@@ -933,60 +899,6 @@ def test_bioclip_runtime_check_uses_sidecar_python(tmp_path, capsys, monkeypatch
     assert calls[0]["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
 
 
-def test_yoloe26_runtime_check_uses_sidecar_python_and_mps_fallback(tmp_path, capsys, monkeypatch) -> None:
-    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
-    runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("# fake python", encoding="utf-8")
-    calls: list[dict[str, object]] = []
-
-    def fake_run(cmd, *, capture_output, check, cwd, env, text):  # noqa: ANN001 - mirrors subprocess.run.
-        calls.append(
-            {
-                "cmd": cmd,
-                "capture_output": capture_output,
-                "check": check,
-                "cwd": cwd,
-                "env": env,
-                "text": text,
-            }
-        )
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=0,
-            stdout='{"checkpoint_resolved":true,"device_resolved":"mps","mps_available":true,"pytorch_mps_fallback_enabled":true}\n',
-            stderr="",
-        )
-
-    monkeypatch.setattr("biominer.cli.subprocess.run", fake_run)
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe26-runtime-check",
-            "--runtime-python",
-            str(runtime_python),
-            "--device",
-            "mps",
-            "--checkpoint",
-            "yoloe-26s-seg.pt",
-        ]
-    )
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["device_resolved"] == "mps"
-    assert payload["checkpoint_resolved"] is True
-    assert payload["pytorch_mps_fallback_enabled"] is True
-    assert calls[0]["cmd"][0] == str(runtime_python)
-    assert calls[0]["cmd"][-2:] == ["mps", "yoloe-26s-seg.pt"]
-    assert "from ultralytics import YOLOE" in calls[0]["cmd"][2]
-    assert calls[0]["cwd"] == str(tmp_path / "YOLO26" / "models")
-    assert calls[0]["env"]["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
-    assert calls[0]["env"]["BIOMINER_YOLO26_MODEL_DIR"] == str(tmp_path / "YOLO26" / "models")
-
-
 def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys, monkeypatch) -> None:
     runtime_python = tmp_path / "runtime" / "bin" / "python"
     runtime_python.parent.mkdir(parents=True)
@@ -1033,41 +945,6 @@ def test_bioclip_prefetch_model_uses_snapshot_download_sidecar(tmp_path, capsys,
     assert calls[0]["env"]["HUGGINGFACE_HUB_CACHE"] == str((tmp_path / "hf" / "hub").resolve())
 
 
-def test_yoloe26_runtime_commands_parse_with_applications_defaults() -> None:
-    parser = build_parser()
-
-    runtime = parser.parse_args(["dev", "vision", "yoloe26-runtime-check", "--device", "mps"])
-    prefetch = parser.parse_args(["dev", "vision", "yoloe26-prefetch", "--checkpoint", "yoloe-26s-seg.pt"])
-    smoke = parser.parse_args(["dev", "vision", "yoloe26-smoke", "--image", "manual.jpg"])
-
-    assert runtime.vision_command == "yoloe26-runtime-check"
-    assert runtime.dev_command == "vision"
-    assert runtime.runtime_python.endswith("/YOLO26/venv/bin/python")
-    assert prefetch.checkpoint == "yoloe-26s-seg.pt"
-    assert smoke.image == "manual.jpg"
-    with pytest.raises(SystemExit):
-        parser.parse_args(["dev", "vision", "yoloe26-prototype-run"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["dev", "vision", "benchmark-cascade"])
-    for removed in (
-        "build-text-embedding-cache",
-        "benchmark-plumbing",
-        "benchmark-rolling-matrix",
-        "benchmark-live-m5pro",
-        "prototype-smoke",
-        "prototype-smoke-five",
-        "prototype-build-embeddings",
-        "prototype-staged-flickr",
-        "prototype-benchmark-matrix",
-        "prototype-select-policy",
-    ):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["dev", "vision", removed])
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(["bioclip", "prototype-evidence"])
-
-
 def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
     parser = build_parser()
 
@@ -1083,60 +960,6 @@ def test_public_vision_surface_excludes_debug_runtime_commands() -> None:
     ):
         with pytest.raises(SystemExit):
             parser.parse_args(["vision", command])
-
-
-def test_yoloe26_smoke_resolves_paths_before_sidecar_run(tmp_path, capsys, monkeypatch) -> None:
-    runtime_python = tmp_path / "YOLO26" / "venv" / "bin" / "python"
-    runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("# fake python", encoding="utf-8")
-    image_path = tmp_path / "manual.jpg"
-    image_path.write_bytes(b"not-a-real-image-for-this-mocked-test")
-    calls: list[dict[str, object]] = []
-
-    def fake_run(cmd, *, capture_output, check, cwd, env, text):  # noqa: ANN001 - mirrors subprocess.run.
-        calls.append(
-            {
-                "cmd": cmd,
-                "capture_output": capture_output,
-                "check": check,
-                "cwd": cwd,
-                "env": env,
-                "text": text,
-            }
-        )
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=0,
-            stdout='{"detections":0,"synthetic_image":false}\n',
-            stderr="",
-        )
-
-    monkeypatch.setattr("biominer.cli.subprocess.run", fake_run)
-    monkeypatch.chdir(tmp_path)
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "dev",
-            "vision",
-            "yoloe26-smoke",
-            "--runtime-python",
-            str(runtime_python),
-            "--image",
-            "manual.jpg",
-            "--output-dir",
-            "smoke-output",
-        ]
-    )
-
-    assert run(args) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    command = calls[0]["cmd"]
-    assert payload["synthetic_image"] is False
-    assert command[0] == str(runtime_python)
-    assert command[5] == str((tmp_path / "smoke-output").resolve())
-    assert command[6] == str(image_path.resolve())
-    assert calls[0]["cwd"] == str(tmp_path / "YOLO26" / "models")
 
 
 def test_production_run_cli_resolves_registry_and_writes_dry_run_manifest(tmp_path, capsys) -> None:

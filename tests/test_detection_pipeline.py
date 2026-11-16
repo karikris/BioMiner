@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
 from pathlib import Path
 
 import polars as pl
 import pytest
 
-from biominer.detection import yoloe26_detector
 from biominer.detection.detector_base import COARSE_DETECTOR_LABELS, DecodedImage, DetectionCandidate, FakeObjectDetector, normalize_detector_label
 from biominer.detection.evaluate import evaluate_xie_style, iou_xyxy, joint_detection_species_correct
 from biominer.detection.pipeline import run_detection_pipeline
 from biominer.detection.policy import DetectionPolicy, DetectionRunPolicy
 from biominer.detection.routing import DetectionRoutingPolicy
 from biominer.detection.schema import build_detection_rows, detection_id_for
-from biominer.detection.yoloe26_detector import YoloE26SidecarObjectDetector
 
 
 def _image() -> DecodedImage:
@@ -35,7 +32,7 @@ def test_detection_policy_defaults_match_full_frame_pipeline() -> None:
     policy = DetectionPolicy()
     run_policy = DetectionRunPolicy()
 
-    assert policy.backend == "yoloe26"
+    assert policy.backend == "injected"
     assert policy.box_score_threshold == 0.20
     assert policy.nms_iou_threshold == 0.50
     assert policy.max_boxes_per_image == 8
@@ -420,199 +417,6 @@ def test_fake_detector_returns_multiple_rows_for_one_photo() -> None:
     assert detector.backend == "fake"
     assert [len(batch) for batch in detections] == [1, 2]
     assert detections[1][1].label == "caterpillar"
-
-
-def _fake_yoloe26_popen(calls: dict[str, object], response: dict[str, object] | None = None):
-    output_lines: list[str] = []
-    sidecar_response = response or {
-        "metadata": {
-            "backend": "yoloe26",
-            "model_id": "yoloe26:yoloe-26s-seg",
-            "model_version": "ultralytics:test",
-            "checkpoint": "yoloe-26s-seg.pt",
-        },
-        "detections": [[]],
-    }
-
-    class FakeStdin:
-        def write(self, text: str) -> int:
-            payload = json.loads(text)
-            calls["payload"] = payload
-            image_paths = [Path(path) for path in payload.get("image_paths", [])]
-            calls["paths_existed_during_write"] = [path.exists() for path in image_paths]
-            if image_paths:
-                calls["ppm_prefix"] = image_paths[0].read_bytes()[: len(b"P6\n4 2\n255\n")]
-            output_lines.append(json.dumps(sidecar_response, sort_keys=True) + "\n")
-            return len(text)
-
-        def flush(self) -> None:
-            return None
-
-    class FakeStdout:
-        def readline(self) -> str:
-            return output_lines.pop(0)
-
-    class FakeProcess:
-        stdin = FakeStdin()
-        stdout = FakeStdout()
-        stderr = None
-        returncode = None
-
-        def poll(self):  # noqa: ANN202
-            return self.returncode
-
-        def wait(self, timeout=None):  # noqa: ANN001, ANN202
-            self.returncode = 0
-            return self.returncode
-
-        def terminate(self) -> None:
-            self.returncode = -15
-
-    def fake_popen(command, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors subprocess.Popen.
-        calls["command"] = command
-        calls["env"] = kwargs["env"]
-        return FakeProcess()
-
-    return fake_popen
-
-
-def test_yoloe26_sidecar_detector_serializes_rgb_images_without_importing_ultralytics(tmp_path) -> None:
-    calls: dict[str, object] = {}
-    output_lines: list[str] = []
-
-    class FakeStdin:
-        def write(self, text: str) -> int:
-            payload = json.loads(text)
-            calls["payload"] = payload
-            output_lines.append(
-                json.dumps(
-                    {
-                        "metadata": {
-                            "backend": "yoloe26",
-                            "model_id": "yoloe26:yoloe-26s-seg",
-                            "model_version": "ultralytics:test",
-                            "checkpoint": "yoloe-26s-seg.pt",
-                        },
-                        "detections": [
-                            [
-                                {
-                                    "label": "butterfly",
-                                    "score": 0.91,
-                                    "bbox_xyxy": [0.0, 0.0, 4.0, 2.0],
-                                    "objectness_score": 0.88,
-                                }
-                            ]
-                        ],
-                    },
-                    sort_keys=True,
-                )
-                + "\n"
-            )
-            return len(text)
-
-        def flush(self) -> None:
-            return None
-
-    class FakeStdout:
-        def readline(self) -> str:
-            return output_lines.pop(0)
-
-    class FakeProcess:
-        stdin = FakeStdin()
-        stdout = FakeStdout()
-        stderr = None
-        returncode = None
-
-        def poll(self):  # noqa: ANN202
-            return self.returncode
-
-        def wait(self, timeout=None):  # noqa: ANN001, ANN202
-            self.returncode = 0
-            return self.returncode
-
-        def terminate(self) -> None:
-            self.returncode = -15
-
-    def fake_popen(command, **kwargs):  # noqa: ANN001, ANN003, ANN202 - mirrors subprocess.Popen.
-        calls["command"] = command
-        calls["env"] = kwargs["env"]
-        return FakeProcess()
-
-    runtime_python = str(tmp_path / "YOLO26" / "venv" / "bin" / "python")
-    detector = YoloE26SidecarObjectDetector(runtime_python=runtime_python, device="mps", popen=fake_popen)
-
-    detections = detector.detect_batch([_wide_white_image()])
-
-    payload = calls["payload"]
-    assert calls["command"] == [runtime_python, "-m", "biominer.detection.yoloe26_detector", "--persistent"]
-    assert payload["device"] == "mps"
-    assert payload["checkpoint"] == "yoloe-26s-seg.pt"
-    assert payload["transport"] == "json_b64"
-    assert "butterfly" in payload["prompt_classes"]
-    assert payload["images"][0]["width"] == 4
-    assert payload["images"][0]["height"] == 2
-    assert "src" in calls["env"]["PYTHONPATH"]
-    assert detector.model_id == "yoloe26:yoloe-26s-seg"
-    assert detector.model_version == "ultralytics:test"
-    assert detections == [[DetectionCandidate(label="butterfly_like", score=0.91, bbox_xyxy=(0.0, 0.0, 4.0, 2.0), objectness_score=0.88)]]
-
-
-def test_yoloe26_sidecar_detector_can_send_temp_image_paths_and_cleanup(tmp_path) -> None:
-    calls: dict[str, object] = {}
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
-        transport="image_path",
-        temp_dir=tmp_path / "sidecar-images",
-        popen=_fake_yoloe26_popen(calls),
-    )
-
-    detector.detect_batch([_wide_white_image()])
-
-    payload = calls["payload"]
-    image_paths = [Path(path) for path in payload["image_paths"]]
-    assert payload["transport"] == "image_path"
-    assert calls["paths_existed_during_write"] == [True]
-    assert calls["ppm_prefix"] == b"P6\n4 2\n255\n"
-    assert image_paths and not image_paths[0].exists()
-
-
-def test_yoloe26_sidecar_detector_cleans_temp_image_paths_after_sidecar_error(tmp_path) -> None:
-    calls: dict[str, object] = {}
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
-        transport="image_path",
-        temp_dir=tmp_path / "sidecar-images",
-        popen=_fake_yoloe26_popen(calls, response={"error": "boom", "error_type": "RuntimeError"}),
-    )
-
-    with pytest.raises(RuntimeError, match="boom"):
-        detector.detect_batch([_wide_white_image()])
-
-    image_paths = [Path(path) for path in calls["payload"]["image_paths"]]
-    assert image_paths and not image_paths[0].exists()
-
-
-def test_yoloe26_sidecar_detector_can_retain_temp_image_paths_for_debug(tmp_path) -> None:
-    calls: dict[str, object] = {}
-    detector = YoloE26SidecarObjectDetector(
-        runtime_python=str(tmp_path / "YOLO26" / "venv" / "bin" / "python"),
-        transport="image_path",
-        temp_dir=tmp_path / "sidecar-images",
-        retain_temp_images=True,
-        popen=_fake_yoloe26_popen(calls),
-    )
-
-    detector.detect_batch([_wide_white_image()])
-
-    image_paths = [Path(path) for path in calls["payload"]["image_paths"]]
-    assert image_paths and image_paths[0].exists()
-
-
-def test_yoloe26_sidecar_worker_missing_image_path_fails_clearly(tmp_path) -> None:
-    with pytest.raises(FileNotFoundError, match="YOLOE-26 sidecar image path does not exist"):
-        yoloe26_detector._images_from_request(  # noqa: SLF001 - worker request parser contract.
-            {"image_paths": [str(tmp_path / "missing.ppm")]}
-        )
 
 
 def test_detection_pipeline_resizes_loaded_images_before_detection(tmp_path) -> None:

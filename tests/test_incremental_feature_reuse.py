@@ -119,8 +119,8 @@ def test_content_addressed_plan_reuses_only_exact_feature_identities(
     }
 
     assert actions == {
-        "flickr:detector-hit": "reuse_yoloe_detection",
-        "flickr:detector-changed": "run_yoloe",
+        "flickr:detector-hit": "reuse_visual_routing",
+        "flickr:detector-changed": "run_visual_routing",
         "flickr:embedding-hit": "reuse_flickr_embedding",
         "flickr:preprocessing-changed": "embed_flickr_image",
         "reference:retained": "reuse_reference_embedding",
@@ -160,7 +160,7 @@ def test_plan_rejects_tampered_cache_decisions() -> None:
         [_cache(DETECTOR_SCOPE, "detector-a", "photo-a")]
     )
     plan = calculate_incremental_feature_reuse(requests, cache)
-    tampered = plan.with_columns(pl.lit("run_yoloe").alias("action"))
+    tampered = plan.with_columns(pl.lit("run_visual_routing").alias("action"))
 
     with pytest.raises(ValueError, match="action mismatch|fingerprint mismatch"):
         validate_incremental_feature_reuse_plan(tampered)

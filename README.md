@@ -9,7 +9,7 @@ The production cycle begins with a single three-member GBIF Darwin Core Archive
 download: `occurrence.txt`, `multimedia.txt`, and `verbatim.txt`. Its validated
 Zstandard Parquet representation records 75,352,491 occurrence rows,
 18,680,565 multimedia rows, and 75,352,491 verbatim rows. This is a physical
-intake only: no semantic transformation, enrichment, Flickr query, YOLOE route,
+intake only: no semantic transformation, enrichment, Flickr query, visual route,
 or BioCLIP score has been produced. Consequently, this repository currently has
 no production registry, Flickr corpus, visual evidence, or release artifact.
 
@@ -19,15 +19,20 @@ The complete active sequence and its evidence boundaries are in
 ```text
 GBIF raw DWCA → fingerprints and validation → source-bound name enrichment
 → species-first Flickr discovery → provenance-preserving photo bank
-→ YOLOE butterfly/moth/other-insect routing → hierarchical BioCLIP evidence
+→ EmbeddingGemma 2 full-frame domain proposals → hierarchical BioCLIP evidence
 → governed downstream handoffs
 ```
 
 Taxonomy and common names may be enriched from iNaturalist, Wikimedia,
 Catalogue of Life, and other documented sources, but each assertion remains
-source-bound and a query term never labels a photo. YOLOE routes visual
-evidence; BioCLIP ranks evidence at order, superfamily, family, genus, and
+source-bound and a query term never labels a photo. EmbeddingGemma 2 proposes
+visual domains for review; BioCLIP ranks evidence at order, superfamily, family, genus, and
 species. Neither model output nor a Flickr result is a verified occurrence.
+
+The [EmbeddingGemma 2 migration](docs/research/embeddinggemma2_replacement_2026-11-17.md)
+replaces YOLOE26 execution. Its full-frame image/text embeddings provide raw
+cosine evidence, not boxes, masks, object counts, or subject-size measurements.
+Reference admission still requires independent quality evidence and review.
 
 ## Operating the DWCA intake
 

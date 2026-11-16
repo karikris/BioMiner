@@ -9,7 +9,7 @@ from biominer.detection.routing import DetectionRoutingPolicy
 class DetectionPolicy:
     """Detector filtering and routing controls used by every detection pass."""
 
-    backend: str = "yoloe26"
+    backend: str = "injected"
     box_score_threshold: float = 0.20
     nms_iou_threshold: float = 0.50
     min_box_area_ratio: float = 0.0005

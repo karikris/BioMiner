@@ -9,7 +9,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 from typing import Any
 
@@ -94,7 +93,7 @@ from biominer.reference_workflow_cli import (
     is_reference_workflow_command,
     run_reference_workflow_command,
 )
-from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR, YOLOE26_DIR
+from biominer.runtime_paths import BASE_PATH, BIOCLIP25_DIR
 from biominer.run import (
     ADAPTIVE_REFERENCE_PRODUCTION_STAGES,
     ProductionRunOrchestrator,
@@ -121,10 +120,6 @@ BIOCLIP_25_HUGE_REPO_ID = "imageomics/bioclip-2.5-vith14"
 BIOCLIP_25_HUGE_REVISION = "191d741545e4c741cdef4b22c6eb69c945c1e592"
 BIOCLIP_OPENCLIP_VERSION = "3.3.0"
 BIOMINER_BASE_PATH = BASE_PATH
-YOLOE26_RUNTIME_ROOT = YOLOE26_DIR
-YOLOE26_RUNTIME_PYTHON = str(YOLOE26_RUNTIME_ROOT / "venv" / "bin" / "python")
-YOLOE26_MODEL_DIR = str(YOLOE26_RUNTIME_ROOT / "models")
-YOLOE26_CACHE_ROOT = str(YOLOE26_RUNTIME_ROOT / "cache")
 BIOCLIP25_RUNTIME_ROOT = BIOCLIP25_DIR
 BIOCLIP_RUNTIME_PYTHON = str(BIOCLIP25_RUNTIME_ROOT / "venv" / "bin" / "python")
 BIOCLIP_HF_CACHE_DIR = str(BIOCLIP25_RUNTIME_ROOT / "cache" / "huggingface")
@@ -627,76 +622,9 @@ def _add_dev_vision_commands(subparsers: Any) -> None:
     bioclip_prefetch.add_argument("--model-name", default=BIOCLIP_25_HUGE_REPO_ID)
     bioclip_prefetch.add_argument("--revision", default=BIOCLIP_25_HUGE_REVISION)
     bioclip_prefetch.add_argument("--max-workers", type=int, default=8)
-    yoloe26_runtime = subparsers.add_parser("yoloe26-runtime-check")
-    yoloe26_runtime.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    yoloe26_runtime.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    yoloe26_runtime.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    yoloe26_prefetch = subparsers.add_parser("yoloe26-prefetch")
-    yoloe26_prefetch.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    yoloe26_prefetch.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    yoloe26_prefetch.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    yoloe26_smoke = subparsers.add_parser("yoloe26-smoke")
-    yoloe26_smoke.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    yoloe26_smoke.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
-    yoloe26_smoke.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    yoloe26_smoke.add_argument("--image")
-    yoloe26_smoke.add_argument("--output-dir", default="reports/yoloe26_smoke")
-    yoloe_pilot = subparsers.add_parser(
-        "yoloe-flickr-sample",
-        help="locally screen a deterministic sample of canonical Flickr images",
-    )
-    yoloe_pilot.add_argument("--state-db", default="data/state/flickr_australia_bbox.sqlite")
-    yoloe_pilot.add_argument("--output-dir", required=True)
-    yoloe_pilot.add_argument("--reports-dir", default="reports")
-    yoloe_pilot.add_argument("--sample-size", type=int, default=10_000)
-    yoloe_pilot.add_argument("--sample-seed", default="australia-flickr-yoloe-10k-v1")
-    yoloe_pilot.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    yoloe_pilot.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    yoloe_pilot.add_argument("--device", default="mps", choices=("auto", "mps", "cpu"))
-    yoloe_pilot.add_argument("--imgsz", type=int, default=768)
-    yoloe_pilot.add_argument("--confidence", type=float, default=0.20)
-    yoloe_pilot.add_argument("--iou", type=float, default=0.50)
-    yoloe_pilot.add_argument("--max-det", type=int, default=8)
-    yoloe_pilot.add_argument("--download-workers", type=int, default=4)
-    yoloe_pilot.add_argument("--yoloe-batch-size", type=int, default=8)
-    yoloe_pilot.add_argument("--timeout-seconds", type=float, default=30.0)
-    yoloe_pilot.add_argument("--retries", type=int, default=2)
-    yoloe_pilot.add_argument("--max-image-bytes", type=int, default=20_000_000)
-    yoloe_pilot.add_argument("--max-attempts", type=int, default=3)
-    yoloe_pilot.add_argument(
-        "--prompt-class",
-        action="append",
-        help="YOLOE object prompt; repeat for multiple prompts (default: configured coarse prompt set)",
-    )
-    yoloe_sharded = subparsers.add_parser(
-        "yoloe-flickr-sharded",
-        help="screen one immutable Flickr snapshot with isolated persistent YOLOE shards",
-    )
-    yoloe_sharded.add_argument("--state-db", default="data/state/flickr_australia_bbox.sqlite")
-    yoloe_sharded.add_argument("--output-dir", required=True)
-    yoloe_sharded.add_argument("--reports-dir", default="reports")
-    yoloe_sharded.add_argument("--expected-images", type=int)
-    yoloe_sharded.add_argument("--shards", type=int, default=4)
-    yoloe_sharded.add_argument("--sample-seed", default="australia-flickr-yoloe-full-v1")
-    yoloe_sharded.add_argument("--runtime-python", default=YOLOE26_RUNTIME_PYTHON)
-    yoloe_sharded.add_argument("--checkpoint", default="yoloe-26s-seg.pt")
-    yoloe_sharded.add_argument("--device", default="mps", choices=("auto", "mps", "cpu"))
-    yoloe_sharded.add_argument("--imgsz", type=int, default=768)
-    yoloe_sharded.add_argument("--confidence", type=float, default=0.20)
-    yoloe_sharded.add_argument("--iou", type=float, default=0.50)
-    yoloe_sharded.add_argument("--max-det", type=int, default=8)
-    yoloe_sharded.add_argument("--download-workers-per-shard", type=int, default=4)
-    yoloe_sharded.add_argument("--yoloe-batch-size", type=int, default=8)
-    yoloe_sharded.add_argument("--timeout-seconds", type=float, default=30.0)
-    yoloe_sharded.add_argument("--retries", type=int, default=2)
-    yoloe_sharded.add_argument("--max-image-bytes", type=int, default=20_000_000)
-    yoloe_sharded.add_argument("--max-attempts", type=int, default=3)
-    yoloe_sharded.add_argument(
-        "--prompt-class",
-        action="append",
-        default=None,
-        help='YOLOE object prompt; repeat for multiple prompts (default: exactly "insect")',
-    )
+    from biominer.embedding_cli import add_embedding_commands
+
+    add_embedding_commands(subparsers)
     detect_eval = subparsers.add_parser("eval")
     detect_eval.add_argument("--predictions", required=True)
     detect_eval.add_argument("--ground-truth")
@@ -720,16 +648,10 @@ def run(args: argparse.Namespace) -> int:
             return _run_bioclip_runtime_check(args)
         if args.vision_command == "bioclip-prefetch-model":
             return _run_bioclip_prefetch_model(args)
-        if args.vision_command == "yoloe26-runtime-check":
-            return _run_yoloe26_runtime_check(args)
-        if args.vision_command == "yoloe26-prefetch":
-            return _run_yoloe26_prefetch(args)
-        if args.vision_command == "yoloe26-smoke":
-            return _run_yoloe26_smoke(args)
-        if args.vision_command == "yoloe-flickr-sample":
-            return _run_yoloe_flickr_sample(args)
-        if args.vision_command == "yoloe-flickr-sharded":
-            return _run_yoloe_flickr_sharded(args)
+        from biominer.embedding_cli import COMMANDS, run_embedding_command
+
+        if args.vision_command in COMMANDS:
+            return run_embedding_command(args)
         if args.vision_command == "eval":
             return _run_detect_eval(args)
         return 2
@@ -1806,230 +1728,6 @@ def _run_bioclip_prefetch_model(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_yoloe26_runtime_check(args: argparse.Namespace) -> int:
-    runtime_python = Path(args.runtime_python).expanduser()
-    if not runtime_python.exists():
-        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-        return 2
-    result = subprocess.run(
-        [
-            str(runtime_python),
-            "-c",
-            _YOLOE26_RUNTIME_CHECK_SCRIPT,
-            args.device,
-            args.checkpoint,
-        ],
-        capture_output=True,
-        check=False,
-        cwd=str(_yoloe26_model_dir(runtime_python)),
-        env=_yoloe26_worker_env(runtime_python),
-        text=True,
-    )
-    if result.returncode != 0:
-        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
-        return 2
-    print(result.stdout.strip())
-    return 0
-
-
-def _run_yoloe26_prefetch(args: argparse.Namespace) -> int:
-    runtime_python = Path(args.runtime_python).expanduser()
-    if not runtime_python.exists():
-        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-        return 2
-    result = subprocess.run(
-        [
-            str(runtime_python),
-            "-c",
-            _YOLOE26_PREFETCH_SCRIPT,
-            args.device,
-            args.checkpoint,
-            json.dumps(list(_default_yoloe26_prompts())),
-        ],
-        capture_output=True,
-        check=False,
-        cwd=str(_yoloe26_model_dir(runtime_python)),
-        env=_yoloe26_worker_env(runtime_python),
-        text=True,
-    )
-    if result.returncode != 0:
-        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
-        return 2
-    print(result.stdout.strip())
-    return 0
-
-
-def _run_yoloe26_smoke(args: argparse.Namespace) -> int:
-    runtime_python = Path(args.runtime_python).expanduser()
-    if not runtime_python.exists():
-        print(json.dumps({"error": f"YOLOE-26 runtime Python not found: {runtime_python}"}, indent=2, sort_keys=True))
-        return 2
-    output_dir = Path(args.output_dir).expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    image_path = str(Path(args.image).expanduser().resolve()) if args.image else ""
-    result = subprocess.run(
-        [
-            str(runtime_python),
-            "-c",
-            _YOLOE26_SMOKE_SCRIPT,
-            args.device,
-            args.checkpoint,
-            str(output_dir),
-            image_path,
-            json.dumps(list(_default_yoloe26_prompts())),
-        ],
-        capture_output=True,
-        check=False,
-        cwd=str(_yoloe26_model_dir(runtime_python)),
-        env=_yoloe26_worker_env(runtime_python),
-        text=True,
-    )
-    if result.returncode != 0:
-        print(json.dumps({"error": result.stderr.strip() or result.stdout.strip()}, indent=2, sort_keys=True))
-        return 2
-    print(result.stdout.strip())
-    return 0
-
-
-def _run_yoloe_flickr_sample(args: argparse.Namespace) -> int:
-    """Run local-only coarse YOLOE screening over canonical Flickr images."""
-    from biominer.flickr_fetch.yoloe_pilot import YoloePilotConfig, run_yoloe_pilot
-
-    try:
-        result = run_yoloe_pilot(
-            YoloePilotConfig(
-                state_db=Path(args.state_db),
-                output_dir=Path(args.output_dir),
-                reports_dir=Path(args.reports_dir),
-                sample_size=args.sample_size,
-                sample_seed=args.sample_seed,
-                runtime_python=Path(args.runtime_python),
-                checkpoint=args.checkpoint,
-                device=args.device,
-                imgsz=args.imgsz,
-                confidence=args.confidence,
-                iou=args.iou,
-                max_det=args.max_det,
-                download_workers=args.download_workers,
-                yoloe_batch_size=args.yoloe_batch_size,
-                timeout_seconds=args.timeout_seconds,
-                retries=args.retries,
-                max_image_bytes=args.max_image_bytes,
-                max_attempts=args.max_attempts,
-                prompt_classes=tuple(args.prompt_class) if args.prompt_class else None,
-            )
-        )
-    except (OSError, RuntimeError, ValueError, sqlite3.Error, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "sample": str(result.sample_path),
-                "results": str(result.results_path),
-                "failures": str(result.failures_path),
-                "report": str(result.report_path),
-                "counts": result.report["counts"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_yoloe_flickr_sharded(args: argparse.Namespace) -> int:
-    """Run isolated, deterministic YOLOE shards and publish a guarded merge."""
-    from biominer.flickr_fetch.yoloe_sharded import ShardedYoloeConfig, run_sharded_yoloe
-
-    try:
-        result = run_sharded_yoloe(
-            ShardedYoloeConfig(
-                state_db=Path(args.state_db),
-                output_dir=Path(args.output_dir),
-                reports_dir=Path(args.reports_dir),
-                expected_images=args.expected_images,
-                shard_count=args.shards,
-                sample_seed=args.sample_seed,
-                runtime_python=Path(args.runtime_python),
-                checkpoint=args.checkpoint,
-                device=args.device,
-                imgsz=args.imgsz,
-                confidence=args.confidence,
-                iou=args.iou,
-                max_det=args.max_det,
-                download_workers_per_shard=args.download_workers_per_shard,
-                yoloe_batch_size=args.yoloe_batch_size,
-                timeout_seconds=args.timeout_seconds,
-                retries=args.retries,
-                max_image_bytes=args.max_image_bytes,
-                max_attempts=args.max_attempts,
-                prompt_classes=tuple(args.prompt_class) if args.prompt_class else ("insect",),
-            )
-        )
-    except (OSError, RuntimeError, ValueError, sqlite3.Error, pl.exceptions.PolarsError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
-    print(
-        json.dumps(
-            {
-                "status": result.report["status"],
-                "manifest": str(result.manifest_path),
-                "sample": str(result.sample_path),
-                "results": str(result.results_path),
-                "failures": str(result.failures_path),
-                "report": str(result.report_path),
-                "counts": result.report["counts"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _yoloe26_prompt_classes(args: argparse.Namespace) -> tuple[str, ...]:
-    prompts = tuple(str(value) for value in getattr(args, "prompt_class", []) if str(value).strip())
-    if prompts:
-        return prompts
-    return _default_yoloe26_prompts(include_hard_negative_prompts=bool(getattr(args, "include_hard_negative_prompts", True)))
-
-
-def _default_yoloe26_prompts(*, include_hard_negative_prompts: bool = True) -> tuple[str, ...]:
-    from biominer.detection.yoloe26_detector import default_yoloe26_prompts
-
-    return default_yoloe26_prompts(include_hard_negative_prompts=include_hard_negative_prompts)
-
-
-def _yoloe26_worker_env(runtime_python: str | Path) -> dict[str, str]:
-    env = os.environ.copy()
-    runtime_root = _runtime_root_from_python(runtime_python, fallback=YOLOE26_RUNTIME_ROOT)
-    cache_root = runtime_root / "cache"
-    defaults = {
-        "HF_HOME": cache_root / "huggingface",
-        "HUGGINGFACE_HUB_CACHE": cache_root / "huggingface" / "hub",
-        "TORCH_HOME": cache_root / "torch",
-        "YOLO_CONFIG_DIR": cache_root / "ultralytics",
-        "BIOMINER_YOLO26_MODEL_DIR": runtime_root / "models",
-    }
-    source_path = str(Path.cwd() / "src")
-    current = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = source_path if not current else f"{source_path}{os.pathsep}{current}"
-    for key, value in defaults.items():
-        env.setdefault(key, str(value))
-        Path(env[key]).mkdir(parents=True, exist_ok=True)
-    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-    return env
-
-
-def _yoloe26_model_dir(runtime_python: str | Path) -> Path:
-    env = _yoloe26_worker_env(runtime_python)
-    model_dir = Path(env["BIOMINER_YOLO26_MODEL_DIR"])
-    model_dir.mkdir(parents=True, exist_ok=True)
-    return model_dir
-
-
 def _runtime_root_from_python(runtime_python: str | Path, *, fallback: Path) -> Path:
     path = Path(runtime_python).expanduser()
     if len(path.parents) >= 3 and path.parent.name == "bin":
@@ -2186,157 +1884,6 @@ path = snapshot_download(
     max_workers=int(sys.argv[3]),
 )
 print(json.dumps({{"snapshot_path": path, "model_name": sys.argv[1], "revision": sys.argv[2]}}, sort_keys=True))
-"""
-
-
-_YOLOE26_RUNTIME_CHECK_SCRIPT = r"""
-from __future__ import annotations
-
-import importlib.metadata
-import json
-import os
-from pathlib import Path
-import sys
-
-import torch
-from ultralytics import YOLOE
-
-requested = sys.argv[1]
-checkpoint = sys.argv[2]
-mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-if requested == "auto":
-    if torch.cuda.is_available():
-        resolved = "cuda"
-    elif mps_available:
-        resolved = "mps"
-    else:
-        resolved = "cpu"
-elif requested == "cuda" and not torch.cuda.is_available():
-    raise SystemExit("CUDA was requested but is not available")
-elif requested == "mps" and not mps_available:
-    raise SystemExit("MPS was requested but is not available")
-else:
-    resolved = requested
-
-model = YOLOE(checkpoint)
-model.set_classes(["butterfly", "moth", "caterpillar", "pupa"])
-model_dir = Path(os.environ.get("BIOMINER_YOLO26_MODEL_DIR") or Path.cwd())
-checkpoint_path = model_dir / checkpoint
-cuda_device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
-mps_fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
-print(json.dumps({
-    "runtime_python": sys.executable,
-    "checkpoint": checkpoint,
-    "checkpoint_path": str(checkpoint_path if checkpoint_path.exists() else checkpoint),
-    "checkpoint_resolved": True,
-    "device_requested": requested,
-    "device_resolved": resolved,
-    "torch_version": torch.__version__,
-    "cuda_available": torch.cuda.is_available(),
-    "cuda_device_name": cuda_device_name,
-    "mps_available": mps_available,
-    "pytorch_mps_fallback_env": mps_fallback,
-    "pytorch_mps_fallback_enabled": mps_fallback == "1",
-    "pytorch_mps_fallback_recommendation": "set PYTORCH_ENABLE_MPS_FALLBACK=1 for Apple MPS sidecar runs",
-    "ultralytics_version": importlib.metadata.version("ultralytics"),
-    "yoloe_import": True,
-    "checkpoint_load": True,
-    "set_classes": True,
-}, sort_keys=True))
-"""
-
-
-_YOLOE26_PREFETCH_SCRIPT = r"""
-from __future__ import annotations
-
-import importlib.metadata
-import json
-import os
-from pathlib import Path
-import sys
-
-import torch
-from ultralytics import YOLOE
-
-device = sys.argv[1]
-checkpoint = sys.argv[2]
-prompts = json.loads(sys.argv[3])
-model = YOLOE(checkpoint)
-model.set_classes(prompts)
-model_dir = Path(os.environ.get("BIOMINER_YOLO26_MODEL_DIR") or Path.cwd())
-checkpoint_path = model_dir / checkpoint
-print(json.dumps({
-    "runtime_python": sys.executable,
-    "checkpoint": checkpoint,
-    "checkpoint_path": str(checkpoint_path if checkpoint_path.exists() else checkpoint),
-    "model_cache_dir": str(model_dir),
-    "device_requested": device,
-    "torch_version": torch.__version__,
-    "cuda_available": torch.cuda.is_available(),
-    "mps_available": hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
-    "ultralytics_version": importlib.metadata.version("ultralytics"),
-    "prompt_class_count": len(prompts),
-}, sort_keys=True))
-"""
-
-
-_YOLOE26_SMOKE_SCRIPT = r"""
-from __future__ import annotations
-
-import json
-from pathlib import Path
-import sys
-
-from PIL import Image, ImageDraw
-
-from biominer.detection.detector_base import DecodedImage
-from biominer.detection.yoloe26_detector import YoloE26ObjectDetector
-
-device = sys.argv[1]
-checkpoint = sys.argv[2]
-output_dir = Path(sys.argv[3])
-image_path = Path(sys.argv[4]) if sys.argv[4] else None
-prompts = tuple(json.loads(sys.argv[5]))
-output_dir.mkdir(parents=True, exist_ok=True)
-
-if image_path is not None:
-    image = Image.open(image_path).convert("RGB")
-    source_uri = str(image_path)
-    synthetic = False
-else:
-    image = Image.new("RGB", (32, 32), (240, 240, 240))
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((8, 8, 24, 24), outline=(80, 80, 80), width=2)
-    source_uri = "synthetic://blank-smoke-image"
-    synthetic = True
-
-decoded = DecodedImage(width=image.width, height=image.height, mode="RGB", data=image.tobytes(), source_uri=source_uri)
-detector = YoloE26ObjectDetector(checkpoint=checkpoint, device=device, prompt_classes=prompts)
-detections = detector.detect_batch([decoded])[0]
-preview_rows = [
-    {
-        "label": item.label,
-        "score": item.score,
-        "bbox_xyxy": list(item.bbox_xyxy),
-        "objectness_score": item.objectness_score,
-    }
-    for item in detections
-]
-preview_path = output_dir / "detections_preview.json"
-preview_path.write_text(json.dumps({"synthetic_image": synthetic, "detections": preview_rows}, indent=2, sort_keys=True), encoding="utf-8")
-if detections:
-    annotated = image.copy()
-    draw = ImageDraw.Draw(annotated)
-    for item in detections:
-        draw.rectangle(item.bbox_xyxy, outline=(255, 100, 0), width=2)
-    annotated.save(output_dir / "annotated_preview.jpg")
-print(json.dumps({
-    "output_dir": str(output_dir),
-    "detections_preview": str(preview_path),
-    "detections": len(detections),
-    "synthetic_image": synthetic,
-    "checkpoint": checkpoint,
-}, sort_keys=True))
 """
 
 

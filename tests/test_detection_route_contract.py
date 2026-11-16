@@ -14,7 +14,7 @@ from biominer.detection.route_contract import (
     DetectorRouteContract,
     build_detector_route_contract,
 )
-from biominer.detection.yoloe26_detector import (
+from biominer.detection.legacy_yoloe_evidence import (
     default_yoloe26_prompts,
     yoloe26_prompt_set_fingerprint,
 )

@@ -16,6 +16,16 @@ The required next stage is source/member fingerprinting and validation. The
 full sequence and non-negotiable evidence boundaries are in
 [GBIF ground-zero pipeline](../PIPELINE_GROUND_ZERO.md).
 
+## Visual-routing software
+
+As of 2026-11-17, executable YOLOE26 controls are replaced by frozen
+`google/embeddinggemma-2` full-frame embedding proposals. Historical measured
+YOLOE evidence schemas remain readable. This software migration has not run a
+production model job or changed the ground-zero data lineage. Localization,
+organism counts and subject-size QA remain unavailable from embeddings; all
+new route proposals require review. See the
+[migration analysis](../research/embeddinggemma2_replacement_2026-11-17.md).
+
 ## Active handoff state
 
 There is no current BioMiner handoff for TaxaLens or ButterflyLens. Downstream

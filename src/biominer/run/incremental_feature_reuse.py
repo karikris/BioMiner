@@ -19,7 +19,7 @@ INCREMENTAL_FEATURE_REUSE_PLAN_SCHEMA_VERSION = (
     "incremental-feature-reuse-plan-v1.0.0"
 )
 
-DETECTOR_SCOPE = "yoloe_detection"
+DETECTOR_SCOPE = "embeddinggemma2_routing"
 FLICKR_EMBEDDING_SCOPE = "flickr_embedding"
 REFERENCE_EMBEDDING_SCOPE = "reference_embedding"
 FEATURE_SCOPES = frozenset(
@@ -201,7 +201,7 @@ def feature_item_ids_to_compute(
     validate_incremental_feature_reuse_plan(plan)
     scope = _feature_scope(feature_scope)
     compute_actions = {
-        DETECTOR_SCOPE: {"run_yoloe"},
+        DETECTOR_SCOPE: {"run_visual_routing"},
         FLICKR_EMBEDDING_SCOPE: {"embed_flickr_image"},
         REFERENCE_EMBEDDING_SCOPE: {
             "embed_new_reference_image",
@@ -357,7 +357,7 @@ def _reuse_action(
     if cache_hit:
         return {
             DETECTOR_SCOPE: (
-                "reuse_yoloe_detection",
+                "reuse_visual_routing",
                 "detector_and_input_identity_unchanged",
             ),
             FLICKR_EMBEDDING_SCOPE: (
@@ -370,7 +370,7 @@ def _reuse_action(
             ),
         }[scope]
     if scope == DETECTOR_SCOPE:
-        return "run_yoloe", "detector_or_input_cache_miss"
+        return "run_visual_routing", "detector_or_input_cache_miss"
     if scope == FLICKR_EMBEDDING_SCOPE:
         return "embed_flickr_image", "image_model_or_preprocessing_cache_miss"
     if bool(row["newly_admitted"]):

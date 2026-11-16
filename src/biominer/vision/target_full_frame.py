@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import math
 import re
 from typing import Any, Protocol
@@ -37,12 +37,14 @@ from biominer.vision.full_frame_attention import (
     FullFrameAttentionResult,
     FullFrameTransformPolicy,
     generate_full_frame_attention_variants,
+    decoded_image_content_hash,
     raw_full_frame_visual_input,
 )
 
 
 TARGET_FULL_FRAME_VISUAL_INPUT_VERSION = FULL_FRAME_VISUAL_INPUT_VERSION
 TARGET_FULL_FRAME_SCORING_UNIT_VERSION = "target-full-frame-scoring-unit-v3"
+EMBEDDING_ROUTED_SCORING_UNIT_VERSION = "embedding-routed-full-frame-scoring-unit-v1"
 TARGET_FULL_FRAME_EMBEDDING_VERSION = "target-full-frame-embedding-v3"
 TARGET_FULL_FRAME_REQUIRES_CROP_METADATA = False
 TARGET_FULL_FRAME_MATERIALIZES_CROP_FILES = False
@@ -93,6 +95,25 @@ class RawFullFrameVisualInput:
 
 
 @dataclass(frozen=True)
+class EmbeddingRouteEvidence:
+    """Image-level route evidence, separate from measured object detections."""
+
+    evidence_fingerprint: str
+    model_fingerprint: str
+    prompt_set_fingerprint: str
+    cosine_similarity: float
+    similarity_margin: float
+
+    def __post_init__(self) -> None:
+        for name in ("evidence_fingerprint", "model_fingerprint", "prompt_set_fingerprint"):
+            _require_sha256(getattr(self, name), name)
+        for name, low, high in (("cosine_similarity", -1, 1), ("similarity_margin", 0, 2)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"invalid embedding {name}")
+
+
+@dataclass(frozen=True)
 class TargetFullFrameScoringUnit:
     scoring_unit_id: str
     scoring_unit_version: str
@@ -103,6 +124,7 @@ class TargetFullFrameScoringUnit:
     route: str
     raw_visual_input_id: str
     detections: tuple[RoutedDetectionEvidence, ...]
+    embedding_route_evidence: tuple[EmbeddingRouteEvidence, ...] = ()
 
     @property
     def detection_ids(self) -> tuple[str, ...]:
@@ -327,6 +349,77 @@ def build_target_full_frame_plan(
     )
 
 
+def build_embedding_routed_full_frame_plan(
+    *,
+    embedding_rows: Iterable[Mapping[str, Any]],
+    image_loader: Callable[[dict[str, Any]], DecodedImage],
+    visual_mode: str = TARGET_AWARE_VISUAL_MODE,
+) -> TargetFullFramePlan:
+    """Offer provisional image routes to frozen BioCLIP on the same raw canvas.
+
+    This preserves the independent BioCLIP preprocessing/model contract. Gemma
+    vectors are never consumed as BioCLIP vectors or spatial detections.
+    """
+    _require_target_full_frame_mode(visual_mode)
+    contract = bioclip_visual_input_contract(visual_mode)
+    inputs: dict[str, RawFullFrameVisualInput] = {}
+    units: list[TargetFullFrameScoringUnit] = []
+    seen: set[tuple[str, str]] = set()
+    for value in embedding_rows:
+        row = dict(value)
+        if row.get("schema_version") != "flickr-embedding-screening-v1" or row.get("evidence_kind") != "full_frame_embedding":
+            raise ValueError("full-frame planning requires versioned embedding route evidence")
+        if row.get("routing_action") != "review":
+            raise ValueError("embedding route suggestions must retain review status")
+        for name in ("bbox_xyxy", "bbox_xyxyn", "mask_polygon_xyn", "detection_count", "subject_present", "subject_area_ratio", "detector_score"):
+            if row.get(name) is not None:
+                raise ValueError(f"embedding routing cannot supply measured {name}")
+        route = row.get("bioclip_route")
+        if route is None:
+            continue  # Pending domain review remains explicit in the routing artifact.
+        if route not in SUPPORTED_COMPARISON_ROUTES:
+            raise ValueError("unsupported embedding comparison route")
+        expected_route = {"adult_butterfly_field": "adult_field", "caterpillar_field": "larval",
+                          "pinned_specimen": "pinned_specimen"}.get(row.get("proposed_domain"))
+        if route != expected_route:
+            raise ValueError("embedding domain and BioCLIP route are incompatible")
+        source = _required_string(row.get("source"), "source")
+        photo = _required_string(row.get("flickr_photo_id"), "flickr_photo_id")
+        if (source, photo) in seen:
+            raise ValueError("duplicate embedding route for source/photo")
+        seen.add((source, photo))
+        source_hash = _required_string(row.get("source_record_hash"), "source_record_hash")
+        _require_sha256(source_hash, "source_record_hash")
+        evidence = EmbeddingRouteEvidence(
+            evidence_fingerprint=canonical_semantic_fingerprint(row),
+            model_fingerprint=row.get("model_fingerprint"),
+            prompt_set_fingerprint=row.get("prompt_set_fingerprint"),
+            cosine_similarity=row.get("cosine_similarity"),
+            similarity_margin=row.get("similarity_margin"),
+        )
+        image = image_loader(row)
+        if not isinstance(image, DecodedImage) or row.get("image_content_hash") != decoded_image_content_hash(image):
+            raise ValueError("embedding route image content hash mismatch")
+        raw = _raw_full_frame_visual_input(image)
+        inputs.setdefault(raw.visual_input_id, raw)
+        unit_id = _scoring_unit_id(source=source, photo_id=photo, source_record_hash=source_hash,
+            route=route, raw_visual_input_id=raw.visual_input_id, detections=(), embedding_route_evidence=(evidence,))
+        units.append(TargetFullFrameScoringUnit(
+            scoring_unit_id=unit_id, scoring_unit_version=EMBEDDING_ROUTED_SCORING_UNIT_VERSION,
+            visual_mode=visual_mode, source=source, flickr_photo_id=photo,
+            source_record_hash=source_hash, route=route, raw_visual_input_id=raw.visual_input_id,
+            detections=(), embedding_route_evidence=(evidence,),
+        ))
+    plan = TargetFullFramePlan(visual_mode=visual_mode,
+        visual_input_contract_version=contract.contract_version,
+        visual_input_contract_fingerprint=contract.fingerprint,
+        visual_inputs=tuple(inputs[key] for key in sorted(inputs)),
+        scoring_units=tuple(sorted(units, key=lambda unit: (unit.source, unit.flickr_photo_id))),
+    )
+    _validate_target_full_frame_plan(plan)
+    return plan
+
+
 def generate_target_full_frame_attention_variants(
     plan: TargetFullFramePlan,
     *,
@@ -344,6 +437,8 @@ def generate_target_full_frame_attention_variants(
     if len(matching_units) != 1:
         raise KeyError(scoring_unit_id)
     unit = matching_units[0]
+    if unit.embedding_route_evidence:
+        raise ValueError("embedding routing has no localization evidence for spatial attention")
     visual_input_by_id = {
         visual_input.visual_input_id: visual_input
         for visual_input in plan.visual_inputs
@@ -688,15 +783,27 @@ def _validate_target_full_frame_plan(plan: TargetFullFramePlan) -> None:
         photo_routes.add(photo_route)
         if unit.visual_mode != plan.visual_mode:
             raise ValueError("target full-frame scoring unit visual_mode mismatch")
-        if unit.scoring_unit_version != TARGET_FULL_FRAME_SCORING_UNIT_VERSION:
+        expected_version = (EMBEDDING_ROUTED_SCORING_UNIT_VERSION if unit.embedding_route_evidence
+                            else TARGET_FULL_FRAME_SCORING_UNIT_VERSION)
+        if unit.scoring_unit_version != expected_version:
             raise ValueError("unsupported target full-frame scoring_unit_version")
         if unit.raw_visual_input_id not in visual_input_by_id:
             raise ValueError(
                 "target full-frame scoring unit references an unknown visual input: "
                 f"{unit.raw_visual_input_id}"
             )
-        if not unit.detections:
-            raise ValueError("target full-frame scoring unit must retain detections")
+        if not unit.detections and not unit.embedding_route_evidence:
+            raise ValueError("target full-frame scoring unit must retain route evidence")
+        if unit.detections and unit.embedding_route_evidence:
+            raise ValueError("embedding route evidence must remain separate from object detections")
+        if unit.embedding_route_evidence:
+            _require_sha256(unit.source_record_hash, "source_record_hash")
+            if unit.route not in SUPPORTED_COMPARISON_ROUTES:
+                raise ValueError("unsupported embedding comparison route")
+            if len(unit.embedding_route_evidence) != 1:
+                raise ValueError("embedding scoring unit requires exactly one image route")
+            if not isinstance(unit.embedding_route_evidence[0], EmbeddingRouteEvidence):
+                raise ValueError("invalid image routing evidence")
         detection_ids = tuple(detection.detection_id for detection in unit.detections)
         if detection_ids != tuple(sorted(set(detection_ids))):
             raise ValueError(
@@ -714,6 +821,7 @@ def _validate_target_full_frame_plan(plan: TargetFullFramePlan) -> None:
             route=unit.route,
             raw_visual_input_id=unit.raw_visual_input_id,
             detections=unit.detections,
+            embedding_route_evidence=unit.embedding_route_evidence,
         )
         if unit.scoring_unit_id != expected_id:
             raise ValueError(
@@ -901,9 +1009,9 @@ def _scoring_unit_id(
     route: str,
     raw_visual_input_id: str,
     detections: tuple[RoutedDetectionEvidence, ...],
+    embedding_route_evidence: tuple[EmbeddingRouteEvidence, ...] = (),
 ) -> str:
-    return _identity(
-        {
+    payload = {
             "detections": [
                 {
                     "detector_bbox_xyxy": detection.detector_bbox_xyxy,
@@ -930,7 +1038,10 @@ def _scoring_unit_id(
             "source_record_hash": source_record_hash,
             "visual_mode": TARGET_AWARE_VISUAL_MODE,
         }
-    )
+    if embedding_route_evidence:
+        payload["embedding_route_evidence"] = [asdict(item) for item in embedding_route_evidence]
+        payload["scoring_unit_version"] = EMBEDDING_ROUTED_SCORING_UNIT_VERSION
+    return _identity(payload)
 
 
 def _same_decoded_content(

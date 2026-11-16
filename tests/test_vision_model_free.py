@@ -14,7 +14,7 @@ import importlib.abc
 import importlib.util
 import sys
 
-blocked_roots = {"open_clip", "torch", "ultralytics"}
+blocked_roots = {"open_clip", "torch", "ultralytics", "sentence_transformers", "transformers"}
 
 
 class BlockOptionalVisionDeps(importlib.abc.MetaPathFinder):
@@ -27,7 +27,9 @@ class BlockOptionalVisionDeps(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockOptionalVisionDeps())
 for module_name in (
     "biominer.cli",
-    "biominer.detection.yoloe26_detector",
+    "biominer.detection.embeddinggemma2",
+    "biominer.detection.embeddinggemma2_worker",
+    "biominer.embedding_cli",
     "biominer.bioclip.bioclip_worker",
 ):
     __import__(module_name)
