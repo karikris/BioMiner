@@ -3,7 +3,9 @@
 The ranked-slice runner preserves the existing keyword and text/tag query pairs,
 upload-time slicing, source-ID deduplication, query associations and shared rate
 ledger. `--has-geo 1` remains the default. `--has-geo 0` searches for photos without
-public geotags and uses ordinary 500-result pages. Geographic searches use 250.
+public geotags and requests ordinary 500-result pages. Geographic searches request
+250. Flickr may return a smaller page size, including 250 for non-geotagged
+queries; pagination follows the actual response size and page count.
 
 Use `--utc-upload-bounds` to encode each requested date interval as inclusive UTC
 Unix-second boundaries. The end date includes 23:59:59; an end date of today can
