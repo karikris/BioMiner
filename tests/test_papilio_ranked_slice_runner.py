@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import sqlite3
+from pathlib import Path
+
+import pytest
 
 
 def _load_runner():
@@ -94,3 +96,54 @@ def test_previous_positive_keywords_are_queued_before_unmatched_keywords():
     assert prioritized[0].term == "Small Citrus Butterfly"
     assert {(q.term, q.search_field) for q in prioritized} == {(q.term, q.search_field) for q in queries}
     assert all(q.has_geo == 1 for q in prioritized)
+
+
+def test_non_geotagged_plan_preserves_keyword_fields_and_full_utc_days():
+    from datetime import UTC, datetime
+
+    from biominer.flickr_fetch.query_planner import flickr_search_params
+
+    runner = _load_runner()
+    queries = runner.build_ranked_slice_queries(
+        start_date="2026-07-08", end_date="2026-11-17", has_geo=0,
+        utc_upload_bounds=True,
+    )
+    assert len(queries) == len({runner.query_hash(q) for q in queries}) == 19
+    assert len({q.term for q in queries}) == 15
+    pairs = {(q.term, q.search_field) for q in queries}
+    assert {("Papilio demoleus", "text"), ("Papilio demoleus", "tags"),
+            ("無尾鳳蝶", "text"), ("無尾鳳蝶", "tags"),
+            ("Lime Butterfly", "text"), ("Lime Butterfly", "tags"),
+            ("Citrus Swallowtail", "text"), ("Citrus Swallowtail", "tags")} <= pairs
+    assert all(q.has_geo == 0 and q.per_page == 500 for q in queries)
+    assert all(flickr_search_params(q)["has_geo"] == 0 for q in queries)
+    assert {q.min_upload_date for q in queries} == {
+        str(int(datetime(2026, 7, 8, tzinfo=UTC).timestamp()))}
+    assert {q.max_upload_date for q in queries} == {
+        str(int(datetime(2026, 11, 17, 23, 59, 59, tzinfo=UTC).timestamp()))}
+
+
+def test_non_geotagged_run_refuses_geotagged_api_records():
+    runner = _load_runner()
+    runner.validate_collection_records([{"latitude": 0, "longitude": 0, "accuracy": 0}, {}], has_geo=0)
+    with pytest.raises(ValueError, match="has_geo=0"):
+        runner.validate_collection_records([{"latitude": 0, "longitude": 30, "accuracy": 16}], has_geo=0)
+
+
+def test_non_geotagged_cli_plan_never_loads_credentials(tmp_path, monkeypatch):
+    import json
+    import sys
+
+    runner = _load_runner()
+    def credentials_must_not_load(**kwargs):
+        raise AssertionError("Plan-only loaded a credential")
+    monkeypatch.setattr(runner, "_load_api_key", credentials_must_not_load)
+    monkeypatch.setattr(sys, "argv", ["runner", "--run-id", "synthetic-nongeo",
+        "--output-root", str(tmp_path), "--report-dir", str(tmp_path / "reports"),
+        "--start-date", "2026-07-08", "--end-date", "2026-11-17",
+        "--has-geo", "0", "--utc-upload-bounds", "--plan-only"])
+    assert runner.main() == 0
+    plan = json.loads((tmp_path / "reports/synthetic-nongeo_query_plan.json").read_text())
+    assert plan["query_count"] == 19
+    assert plan["geotag_policy"].startswith("has_geo=0")
+    assert plan["upload_date_timezone"] == "UTC"

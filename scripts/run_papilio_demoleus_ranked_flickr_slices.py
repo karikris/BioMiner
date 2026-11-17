@@ -2,26 +2,38 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-from datetime import UTC, date, datetime
 import hashlib
 import json
 import os
-from pathlib import Path
 import sqlite3
 import sys
 import time
-from typing import Any
 from dataclasses import replace
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
+
 import polars as pl
 
-from biominer.flickr_fetch.metadata_poller import MetadataPollState, poll_once, _http_fetcher
-from biominer.flickr_fetch.query_planner import FLICKR_SEARCH_RESULT_WINDOW, FlickrQuery, GEO_PAGE_SIZE, SearchField, query_hash, validate_geotagged_records
+from biominer.flickr_fetch.metadata_poller import (
+    MetadataPollState,
+    _http_fetcher,
+    poll_once,
+)
+from biominer.flickr_fetch.query_planner import (
+    FLICKR_SEARCH_RESULT_WINDOW,
+    GEO_PAGE_SIZE,
+    NORMAL_PAGE_SIZE,
+    FlickrQuery,
+    SearchField,
+    query_hash,
+    validate_geotagged_records,
+)
 from biominer.reports.flickr_fetch import current_git_sha, write_step1_manifest
 from biominer.secrets_loader import load_runtime_secrets_env
 
-
 DEFAULT_START_DATE = "2004-02-10"
-DEFAULT_END_DATE = date.today().isoformat()
+DEFAULT_END_DATE = datetime.now(UTC).date().isoformat()
 DEFAULT_REGISTRY_VERSION = "ad-hoc-papilio-demoleus-geotagged-ranked-slices-v1"
 
 SIX_YEAR_SOURCE_ROWS: tuple[tuple[int, str, SearchField], ...] = (
@@ -81,6 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--progress-log")
     parser.add_argument("--start-date", default=DEFAULT_START_DATE)
     parser.add_argument("--end-date", default=DEFAULT_END_DATE)
+    parser.add_argument("--has-geo", type=int, choices=(0, 1), default=1,
+                        help="Flickr location filter: 0 without public geotags, 1 with geotags")
+    parser.add_argument("--utc-upload-bounds", action="store_true",
+                        help="Send inclusive UTC-day bounds as Unix seconds, including the full end day")
     parser.add_argument("--max-api-calls", type=int, default=3500)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--api-key-env", default="FLICKR_API_KEY")
@@ -138,7 +154,10 @@ def six_year_upload_ranges(*, start_date: str = DEFAULT_START_DATE, end_date: st
     return tuple(output)
 
 
-def build_ranked_slice_queries(*, start_date: str = DEFAULT_START_DATE, end_date: str = DEFAULT_END_DATE) -> tuple[FlickrQuery, ...]:
+def build_ranked_slice_queries(*, start_date: str = DEFAULT_START_DATE, end_date: str = DEFAULT_END_DATE,
+                               has_geo: int = 1, utc_upload_bounds: bool = False) -> tuple[FlickrQuery, ...]:
+    if has_geo not in (0, 1):
+        raise ValueError("has_geo must be 0 or 1")
     queries: list[FlickrQuery] = []
     for source_rank, term, search_field in six_year_query_specs():
         for slice_index, (start, end) in enumerate(six_year_upload_ranges(start_date=start_date, end_date=end_date)):
@@ -157,6 +176,14 @@ def build_ranked_slice_queries(*, start_date: str = DEFAULT_START_DATE, end_date
                     slice_index=annual_offset + slice_index,
                 )
             )
+    if has_geo == 0:
+        queries = [replace(q, has_geo=0, per_page=NORMAL_PAGE_SIZE,
+                           registry_version="ad-hoc-papilio-demoleus-nongeotagged-ranked-slices-v1") for q in queries]
+    if utc_upload_bounds:
+        queries = [replace(q,
+            min_upload_date=str(int(datetime.combine(date.fromisoformat(q.min_upload_date), datetime.min.time(), UTC).timestamp())),
+            max_upload_date=str(int(datetime.combine(date.fromisoformat(q.max_upload_date), datetime.max.time(), UTC).timestamp())))
+            for q in queries]
     return tuple(sorted(queries, key=lambda item: (item.query_priority, item.min_upload_date or "", item.max_upload_date or "", item.term, item.search_field)))
 
 
@@ -200,13 +227,28 @@ def shared_budget_fetcher(key, path, endpoint="https://api.flickr.com/services/r
     return limited_fetch
 
 
+def validate_collection_records(records, *, has_geo):
+    if has_geo == 1:
+        validate_geotagged_records(records)
+        return
+    if has_geo != 0:
+        raise ValueError("has_geo must be 0 or 1")
+    for record in records:
+        try:
+            validate_geotagged_records([record])
+        except ValueError:
+            continue
+        raise ValueError("Flickr returned public geotag coordinates for has_geo=0")
+
+
 def main() -> int:
     args = build_parser().parse_args()
     started = datetime.now(UTC)
     started_monotonic = time.perf_counter()
     run_id = args.run_id or f"papilio_demoleus_ranked_slices_{started.strftime('%Y%m%dT%H%M%SZ')}"
     paths = _resolve_paths(args, run_id)
-    queries = build_ranked_slice_queries(start_date=args.start_date, end_date=args.end_date)
+    queries = build_ranked_slice_queries(start_date=args.start_date, end_date=args.end_date,
+                                         has_geo=args.has_geo, utc_upload_bounds=args.utc_upload_bounds)
     if args.previous_source_records:
         queries = prioritize_previous_matches(queries, pl.read_parquet(args.previous_source_records))
     plan = _build_plan(run_id=run_id, queries=queries, args=args, paths=paths)
@@ -243,13 +285,13 @@ def main() -> int:
         git_sha=current_git_sha(),
     )
     state = MetadataPollState(paths["state_db"])
-    # A geotagged run must never resume non-geotagged work from an old database.
+    # Resume only the same location policy; neither mode may mix historical work.
     with sqlite3.connect(paths["state_db"]) as conn:
         for (raw_query,) in conn.execute("SELECT query_json FROM flickr_work_items"):
-            if json.loads(raw_query).get("has_geo") != 1:
-                raise ValueError("Use a new state database for the geotagged run")
+            if json.loads(raw_query).get("has_geo") != args.has_geo:
+                raise ValueError("Use a new state database for the requested has_geo policy")
         for (raw_photo,) in conn.execute("SELECT raw_json FROM source_records"):
-            validate_geotagged_records([json.loads(raw_photo)])
+            validate_collection_records([json.loads(raw_photo)], has_geo=args.has_geo)
     inserted = sum(state.enqueue_work_item(query) for query in queries)
     _log_event({"event": "work_seeded", "inserted": inserted, "work_item_count": state.work_item_count()}, paths["progress_log"])
     key = _load_api_key(api_key_env=args.api_key_env, secrets_env=args.secrets_env)
@@ -288,15 +330,17 @@ def main() -> int:
     # Validate raw records again before publishing the collection.
     with sqlite3.connect(paths["state_db"]) as conn:
         for (raw_photo,) in conn.execute("SELECT raw_json FROM source_records"):
-            validate_geotagged_records([json.loads(raw_photo)])
+            validate_collection_records([json.loads(raw_photo)], has_geo=args.has_geo)
     frame = state.canonical_source_records_frame()
-    frame.write_parquet(paths["run_dir"] / "geotagged_source_records.parquet", compression="zstd")
+    stem = "geotagged_source_records" if args.has_geo == 1 else "nongeotagged_source_records"
+    frame.write_parquet(paths["run_dir"] / f"{stem}.parquet", compression="zstd")
     flat = frame.with_columns([
         pl.col(name).map_elements(lambda value: json.dumps(value.to_list() if hasattr(value, "to_list") else value, ensure_ascii=False), return_dtype=pl.String).alias(name)
         for name, dtype in frame.schema.items() if dtype.is_nested()
     ])
-    flat.write_csv(paths["run_dir"] / "geotagged_source_records.csv", include_bom=True)
-    report["geotag_validation"] = {"all_records_valid": True, "records": frame.height}
+    flat.write_csv(paths["run_dir"] / f"{stem}.csv", include_bom=True)
+    report["geotag_validation" if args.has_geo == 1 else "nongeotag_validation"] = {
+        "all_records_valid": True, "records": frame.height, "requested_has_geo": args.has_geo}
     if any(row["capped_by_accessible_window"] for row in report["slice_results"]):
         status = report["status"] = "incomplete_result_window"
     _write_run_reports(report, paths["report_json"], paths["report_md"])
@@ -421,7 +465,9 @@ def _build_plan(*, run_id: str, queries: tuple[FlickrQuery, ...], args: argparse
         "http_transport": args.http_transport,
         "previous_source_records": str(args.previous_source_records) if args.previous_source_records else None,
         "previous_source_sha256": hashlib.sha256(args.previous_source_records.read_bytes()).hexdigest() if args.previous_source_records else None,
-        "geotag_policy": "has_geo=1; finite valid coordinates; Flickr accuracy 1..16",
+        "geotag_policy": ("has_geo=1; finite valid coordinates; Flickr accuracy 1..16" if args.has_geo == 1
+                           else "has_geo=0; no valid public geotag in returned records"),
+        "upload_date_timezone": "UTC" if args.utc_upload_bounds else "API date-string interpretation",
         "restored_runner_origin": "9dfa9a8:scripts/run_papilio_demoleus_ranked_flickr_slices.py",
         "paths": {key: str(value) for key, value in paths.items() if key not in {"report_dir", "run_dir"}},
         "queries": rows,
