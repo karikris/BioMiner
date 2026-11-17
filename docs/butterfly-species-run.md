@@ -61,6 +61,19 @@ associations, record exclusions separately, verify cached image bytes, and use
 a new output directory. Human labels remain separate from model suggestions.
 Pass the v2 bank as `--labels config/vision/butterfly_species_v2.json` below.
 
+For the 17 November incremental Flickr cohort, use
+`--labels config/vision/butterfly_species_v3.json`. This version retains the
+previous run's exclusion of `Papilio demodocus` and adds 15 scientific-name
+descriptions to the remaining 245, giving 260 candidates. The requested
+representatives cover Papilionidae, Pieridae, Nymphalidae, Lycaenidae,
+Riodinidae, Hesperiidae and Hedylidae. Its `family_representatives` field is
+annotation only: the model still ranks literal species descriptions with the
+same three templates, without family pruning or a separate family classifier.
+For this cohort, selection is the 298-image union of butterfly predictions
+across the latest four EmbeddingGemma configurations, including all 24
+configuration disagreements. This differs from the older four-way-agreement
+selection described above; it supplies no human labels or species truth.
+
 Use BioMiner's administration Python to coordinate the separate, existing
 BioCLIP model runtime. Set the selection and output directories explicitly:
 
